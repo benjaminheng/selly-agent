@@ -4,6 +4,24 @@ from __future__ import annotations
 
 import pytest
 
+from selly_agent import migrations
+from selly_agent.db import Database
+from selly_agent.events import EventBus, EventStore
+
+
+@pytest.fixture
+def bus(tmp_path):
+    """A ready EventBus backed by freshly-migrated data/events DBs under tmp_path."""
+    data_db = Database(tmp_path / "selly.db")
+    events_db = Database(tmp_path / "events.db")
+    migrations.run_startup_migrations(
+        data_db=data_db,
+        events_db=events_db,
+        backups_dir=tmp_path / "backups",
+        backups_keep=5,
+    )
+    return EventBus(EventStore(events_db))
+
 
 @pytest.fixture
 def xdg_tmp(tmp_path, monkeypatch):
