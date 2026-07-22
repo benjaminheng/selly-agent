@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "selly": {
+      "headers": {
+        "Authorization": "Bearer TESTTOKEN"
+      },
+      "type": "http",
+      "url": "http://127.0.0.1:7355/mcp"
+    }
+  }
+}

@@ -1,0 +1,5 @@
+model = "sonnet"
+
+[mcp_servers.selly]
+command = "selly-agent"
+args = ["mcp-proxy"]
