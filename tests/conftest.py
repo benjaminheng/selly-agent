@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from selly_agent import migrations
+from selly_agent.config import Config
 from selly_agent.db import Database
 from selly_agent.events import EventBus, EventStore
 
@@ -21,6 +22,35 @@ def bus(tmp_path):
         backups_keep=5,
     )
     return EventBus(EventStore(events_db))
+
+
+@pytest.fixture
+def store(bus):
+    """A Store over the same freshly-migrated selly.db the bus fixture created."""
+    from selly_agent.store import Store
+
+    return Store(Database(bus.store.db.path.parent / "selly.db"))
+
+
+@pytest.fixture
+def make_ctx(bus, store, xdg_tmp):
+    """Factory for a ToolContext, so tests pick the tier / pass id / rail per case.
+
+    Depends on xdg_tmp so secret and heartbeat reads inside handlers stay hermetic.
+    """
+    from selly_agent.tools.registry import Session, ToolContext
+
+    def _make(tier, *, pass_id=None, rail_factory=None, config=None, started_ts=1000.0):
+        return ToolContext(
+            session=Session(tier=tier, pass_id=pass_id),
+            store=store,
+            bus=bus,
+            config=config or Config(),
+            rail_factory=rail_factory,
+            started_ts=started_ts,
+        )
+
+    return _make
 
 
 @pytest.fixture

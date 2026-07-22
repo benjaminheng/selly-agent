@@ -7,14 +7,7 @@ import concurrent.futures
 
 import pytest
 
-from selly_agent.db import Database
 from selly_agent.store import ItemNotFound, Store, StoreError
-
-
-@pytest.fixture
-def store(bus) -> Store:
-    # bus already migrated a data DB at the same tmp location; reuse the migrated selly.db.
-    return Store(Database(bus.store.db.path.parent / "selly.db"))
 
 
 def _item(store: Store, **kw) -> dict:
