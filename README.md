@@ -21,7 +21,8 @@ workstreams.
 
 Design, architecture decisions, invariants, and the plan this code implements
 are tracked in a separate **projects repo** (not here) — this repo holds code
-only. If you are implementing against a plan, start there.
+only. If you are implementing against a plan, start there. For a high-level map
+of how this repo is put together, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Runtime constraints
 
