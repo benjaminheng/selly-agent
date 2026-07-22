@@ -15,13 +15,23 @@ import os
 import signal
 import sys
 import threading
+import time
 
-from . import __version__, config, heartbeat, lock, migrations, paths, retention
+from . import __version__, config, heartbeat, lock, migrations, passes, paths, retention, secrets
 from .db import Database
 from .events import EventBus, EventStore
+from .http_server import HttpServer
+from .rail.client import RailClient, RailUnprovisioned
 from .scheduler import Scheduler, Task
+from .store import Store
+from .tools.registry import ToolContext
 
 log = logging.getLogger(__name__)
+
+# How often the pass lane checks the queue, and the stray reaper scans. The lane is single-flight,
+# so a short interval only affects pickup latency, never concurrency.
+_PASS_LANE_INTERVAL_SEC = 2.0
+_STRAY_REAPER_INTERVAL_SEC = 60.0
 
 
 def _setup_logging(level_name: str) -> None:
@@ -85,6 +95,59 @@ def run_daemon(*, once: bool) -> int:
             {"db": entry.db, "version": entry.version, "name": entry.name},
         )
 
+    store = Store(data_db)
+    started_ts = time.time()
+    attended_token = secrets.ensure_mcp_token()
+
+    def rail_factory():
+        key = secrets.read_carousell_ai_api_key()
+        if not key:
+            raise RailUnprovisioned("carousell.ai is not provisioned")
+        return RailClient(
+            api_base=cfg.carousell_ai_api_base,
+            api_key=key,
+            web_base_url=cfg.carousell_ai_web_base_url,
+        )
+
+    def context_factory(session):
+        return ToolContext(
+            session=session,
+            store=store,
+            bus=bus,
+            config=cfg,
+            rail_factory=rail_factory,
+            started_ts=started_ts,
+        )
+
+    try:
+        http = HttpServer(
+            port=cfg.http_port,
+            bus=bus,
+            store=store,
+            events_db_path=events_db.path,
+            context_factory=context_factory,
+            attended_token=attended_token,
+        )
+    except OSError as exc:
+        # A fixed config port; a bind failure (port in use, etc.) is fatal — fail loud so
+        # launchd's throttle paces respawns rather than running half-initialized.
+        log.error("http server bind failed on 127.0.0.1:%s: %s", cfg.http_port, exc)
+        lock.clear_holder(paths.lock_path())
+        data_db.close()
+        events_db.close()
+        return 3
+    http.start()
+
+    pass_deps = passes.PassDeps(
+        bus=bus,
+        store=store,
+        config=cfg,
+        auth=http.auth,
+        http_endpoint=f"http://127.0.0.1:{http.port}/mcp",
+        stop_event=stop,
+        argv_builder=passes.default_argv_builder(cfg),
+    )
+
     scheduler = Scheduler(
         bus,
         tick_interval_sec=cfg.tick_interval_sec,
@@ -104,6 +167,20 @@ def run_daemon(*, once: bool) -> int:
             ),
         )
     )
+    scheduler.register(
+        Task(
+            name="pass_lane",
+            interval_sec=_PASS_LANE_INTERVAL_SEC,
+            func=lambda: passes.pass_lane(pass_deps),
+        )
+    )
+    scheduler.register(
+        Task(
+            name="stray_reaper",
+            interval_sec=_STRAY_REAPER_INTERVAL_SEC,
+            func=lambda: passes.stray_reaper(pass_deps),
+        )
+    )
 
     try:
         if once:
@@ -112,6 +189,7 @@ def run_daemon(*, once: bool) -> int:
             scheduler.run()
     finally:
         scheduler.shutdown()
+        http.stop()
         bus.publish("daemon.stop", {"pid": os.getpid()})
         lock.clear_holder(paths.lock_path())
         data_db.close()

@@ -32,7 +32,8 @@ def _env(tmp_path) -> dict:
 def _write_config(tmp_path) -> None:
     cfg_dir = tmp_path / "config" / "selly-agent"
     cfg_dir.mkdir(parents=True)
-    (cfg_dir / "config.json").write_text(json.dumps({"tick_interval_sec": 0.3}))
+    # http_port 0 → an ephemeral port, so two daemon subprocesses never collide on a fixed port.
+    (cfg_dir / "config.json").write_text(json.dumps({"tick_interval_sec": 0.3, "http_port": 0}))
 
 
 def _events_db(tmp_path) -> Path:

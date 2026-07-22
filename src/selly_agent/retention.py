@@ -19,9 +19,10 @@ log = logging.getLogger(__name__)
 
 SECONDS_PER_DAY = 86400
 
-# Kinds never pruned by age. Empty in the skeleton; 03's pass summaries join it so the store
-# keeps "full events for N days, summaries kept".
-KEEP_KINDS: tuple[str, ...] = ()
+# Kinds never pruned by age: the kept pass summaries, so the store keeps "full events for N
+# days, summaries kept" — a pass's final outcome survives a prune even when its verbose
+# per-line events age out.
+KEEP_KINDS: tuple[str, ...] = ("pass.end",)
 
 # Per-file cap for the launchd-redirected logs. The redirect never rotates, so unbounded logs
 # were exactly the kind of state/ growth the layout makes prunable.

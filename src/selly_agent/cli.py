@@ -72,6 +72,31 @@ def _build_parser() -> argparse.ArgumentParser:
         help="filter by event kind (repeatable)",
     )
 
+    pass_cmd = sub.add_parser("pass", help="pass lifecycle")
+    psub = pass_cmd.add_subparsers(dest="pass_command", required=True)
+    prun = psub.add_parser("run", help="enqueue a pass via the running daemon")
+    prun.add_argument("pass_type", help="pass type (e.g. publish)")
+    prun.add_argument("--item", default=None, help="item id the pass operates on")
+    prun.add_argument("--follow", action="store_true", help="tail the pass's events until it ends")
+
+    harness = sub.add_parser("harness", help="harness configuration")
+    hsub = harness.add_subparsers(dest="harness_command", required=True)
+    hconf = hsub.add_parser("config", help="write harness config for an attended session")
+    hconf.add_argument(
+        "--attended",
+        action="store_true",
+        required=True,
+        help="write .mcp.json for an attended Claude Code session",
+    )
+    hconf.add_argument("--dir", default=None, help="destination directory (default: cwd)")
+
+    provision = sub.add_parser("provision", help="provision an external rail")
+    prsub = provision.add_subparsers(dest="provision_command", required=True)
+    prov_ai = prsub.add_parser("carousell-ai", help="obtain the carousell.ai guest API key")
+    prov_ai.add_argument("--region", default=None, help="two-letter region code (e.g. SG)")
+
+    sub.add_parser("mcp-proxy", help="stdio<->HTTP MCP forwarder for stdio-only harnesses")
+
     return parser
 
 
@@ -93,5 +118,25 @@ def main(argv: list[str] | None = None) -> int:
         from . import inspect_cli
 
         return inspect_cli.run(args)
+
+    if args.command == "pass":
+        from . import pass_cli
+
+        return pass_cli.run(args)
+
+    if args.command == "harness":
+        from . import pass_cli
+
+        return pass_cli.harness_config(args)
+
+    if args.command == "provision":
+        from . import pass_cli
+
+        return pass_cli.provision(args)
+
+    if args.command == "mcp-proxy":
+        from . import mcp_proxy
+
+        return mcp_proxy.main(args)
 
     raise AssertionError(f"unhandled command: {args.command}")  # pragma: no cover

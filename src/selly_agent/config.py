@@ -105,8 +105,11 @@ def _validate(raw: dict) -> Config:
 
     if "http_port" in raw:
         port = raw["http_port"]
-        if not _is_real_int(port) or not (1024 <= port <= 65535):
-            raise ConfigError(f"http_port must be an integer in 1024..65535, got {port!r}")
+        # 0 is an escape hatch meaning "let the OS choose an ephemeral port" — useful for
+        # side-by-side dev daemons and tests. It is not for normal use: generated harness
+        # configs pin the port, so an ephemeral one goes stale on restart.
+        if not _is_real_int(port) or (port != 0 and not (1024 <= port <= 65535)):
+            raise ConfigError(f"http_port must be 0 or an integer in 1024..65535, got {port!r}")
         values["http_port"] = port
 
     if "pass_deadline_sec" in raw:

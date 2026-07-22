@@ -64,6 +64,11 @@ def test_claude_bin_defaults_to_null(xdg_tmp) -> None:
     assert load().claude_bin is None
 
 
+def test_http_port_zero_allowed_as_ephemeral(xdg_tmp) -> None:
+    _write_config({"http_port": 0})
+    assert load().http_port == 0
+
+
 @pytest.mark.parametrize(
     "obj",
     [

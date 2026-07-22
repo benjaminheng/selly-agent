@@ -131,6 +131,19 @@ def carousell_ai_api_key_path() -> Path:
 # --- platform-owned -----------------------------------------------------------------------
 
 
+def claude_bin_candidates() -> list[Path]:
+    """Conventional user install locations for the `claude` CLI, resolved here so the pass
+    runner never reaches for the home directory itself. PATH is searched separately by the
+    caller (shutil.which); these cover the common non-PATH installs."""
+    home = _home()
+    return [
+        home / ".local" / "bin" / "claude",
+        home / ".claude" / "local" / "claude",
+        Path("/usr/local/bin/claude"),
+        Path("/opt/homebrew/bin/claude"),
+    ]
+
+
 def launch_agents_dir(platform=None) -> Path:
     """The per-user auto-start directory, composed here from the platform's OS-specific rule
     (callers must never compose this themselves). A platform may be injected (tests); otherwise
@@ -163,6 +176,7 @@ def ensure_state_dirs() -> None:
     _ensure(state_dir(), 0o755)
     _ensure(backups_dir(), 0o755)
     _ensure(logs_dir(), 0o755)
+    _ensure(passes_dir(), 0o755)
 
 
 def ensure_config_dir() -> None:
