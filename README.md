@@ -10,12 +10,13 @@ greenfield core that ports the battle-tested engines from the legacy repo.
 
 ## Status
 
-Early. The current code is the **core skeleton**: a single stdlib-only process
-that runs idle under launchd and is observable end to end — XDG paths, config,
-a SQLite state layer with a startup migration runner, an event bus + transcript
-store, a scheduler loop, launchd integration, and the `inspect` CLI. The tool
-surface, pass runner, engines, channel, and browser layer land in later
-workstreams.
+Early. On top of the core skeleton (XDG paths, config, a SQLite state layer with
+a startup migration runner, an event bus + transcript store, a scheduler loop,
+launchd integration, and the `inspect` CLI), the daemon now runs the **vertical
+slice**: a localhost HTTP server exposing a typed MCP tool surface, a pass runner
+that spawns a headless `claude -p` pass and streams it to the event bus, the
+carousell.ai rail wrapped behind a tool, and the harness-config seam. The
+remaining engines, channel, and browser layer land in later workstreams.
 
 ## Where the plans live
 
@@ -45,35 +46,55 @@ make test-3.9        # the suite on a 3.9 interpreter (skips with a note if abse
 make lint            # ruff check + ruff format --check
 make fmt             # ruff format
 
-# run the daemon once in the foreground (lock -> migrate -> one tick -> stop)
-bin/selly-agent daemon run --once
+# run the daemon in the foreground (lock -> migrate -> serve MCP + run the pass lane)
+bin/selly-agent daemon run
+
+# provision the carousell.ai guest key (once), then publish an item via a headless pass
+bin/selly-agent provision carousell-ai --region SG
+bin/selly-agent pass run publish --item <item_id> --follow
+
+# point an attended Claude Code session at the same daemon MCP server
+bin/selly-agent harness config --attended --dir /path/to/session
 
 # tail the event store (works whether or not the daemon is running)
 bin/selly-agent inspect --follow
 ```
 
-Tests point `$XDG_*_HOME` at a tmpdir, so they never touch a real install.
+The daemon serves a localhost web tail at `http://127.0.0.1:<http_port>/tail?token=<attended-token>`
+(the token lives 0600 in the config dir). Tests point `$XDG_*_HOME` at a tmpdir, so they never
+touch a real install.
 
 ## Layout
 
 ```
 bin/selly-agent            single CLI launcher (resolves src/, dispatches argv)
 src/selly_agent/
-  cli.py                   argparse dispatch (daemon, inspect, version)
+  cli.py                   argparse dispatch (daemon, inspect, pass, harness, provision, …)
   paths.py                 the one path authority (XDG; only module touching home/XDG)
   platform/                OS seam (macOS launchd; Windows is a later port)
   config.py                read-only config.json loader (+ installer-side writer)
+  secrets.py               config-dir secret files (0600): MCP token, carousell.ai key
   db.py                    SQLite: WAL, one write connection per DB, readers
   migrations/              forward-only numbered SQL migrations + the runner
+  store.py                 typed accessors over selly.db (items, floors, pass queue)
   events.py                event bus + transcript store (the observability record)
   retention.py             daily prune task
+  http_server.py           localhost HTTP: MCP endpoint + web tail + pass control
+  mcp_proxy.py             stdio<->HTTP MCP shim for stdio-only harnesses
+  tools/                   the typed MCP tool registry + the tool implementations
+  rail/                    the carousell.ai rail client + guest-key provisioning
+  harness/                 the harness seam: PassSpec + claude/codex emitters
+  passes.py                the pass runner (claim -> spawn -> babysit -> classify)
+  pass_stream.py           stream-json -> common event schema
+  proc_tree.py             process-group kill + stray-pass reaper
+  pass_cli.py              pass run / harness config / provision CLI verbs
   lock.py                  PID-aware single-instance lock
   heartbeat.py             liveness heartbeat file
   scheduler.py             the loop: due tasks -> executor, backoff, task events
   daemon.py                wires it together; the daemon process
   supervisor.py            launchd install/start/stop/status/uninstall
   inspect_cli.py           the event tail
-tests/                     plain pytest
+tests/                     plain pytest (tests/conformance/ = MCP SDK interop, 3.10+)
 ```
 
 ## Filesystem locations (XDG)

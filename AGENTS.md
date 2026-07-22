@@ -13,6 +13,15 @@ walks every import under `src/` and fails on any third-party module (and on
 network imports outside an explicit allowlist). Dev/test dependencies (pytest,
 ruff) live in the `[dev]` extra and never appear under `src/`.
 
+## Network access is allowlisted
+
+Most of `src/` does no network I/O. A module that imports a network stdlib
+package (`socket`, `ssl`, `urllib`, `http`, `asyncio`, …) must be added by its
+src-relative path to `NETWORK_ALLOWLIST` in
+`tests/guard/test_stdlib_only.py`, or the guard fails. Adding an entry is a
+deliberate act: it grants that module the capability to open sockets, and a
+reviewer should treat it as such. Everything else stays network-free.
+
 ## Python 3.9 floor
 
 The runtime floor is Python 3.9 (macOS Command Line Tools). The suite must pass

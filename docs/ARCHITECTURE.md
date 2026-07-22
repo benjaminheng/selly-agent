@@ -47,6 +47,10 @@ State — two SQLite databases, kept apart:
 - **`data/selly.db`** is business data (migrated, snapshotted).
   **`state/events.db`** is the event/transcript store (prunable; recreated from
   migrations if deleted). The two are never joined.
+- **`store.py`** — typed accessors over `selly.db` (items, floors, the pass
+  queue), the one writer for business state. The floor lives in its own table and
+  is never returned by a read an LLM-facing tool can call; the pass queue is
+  claimed single-flight.
 
 Observability:
 
@@ -54,9 +58,28 @@ Observability:
   journal clock at write; that timestamp is the sole ordering key. Subscribers
   may register (the seam a web tail plugs into later).
 - **`retention.py`** — the daily prune (events past a window, snapshots to a
-  keep count, logs to a size cap).
+  keep count, logs to a size cap). Kept kinds (`pass.end`) survive the age prune.
 - **`inspect_cli.py`** — `selly-agent inspect`, a read-only tail of the event
   store; works whether or not the daemon is running (`--follow` polls).
+
+The tool surface and pass runner — how the LLM touches state and how it runs.
+Detail in [`tool-surface-and-passes.md`](tool-surface-and-passes.md):
+
+- **`http_server.py`** — the one localhost HTTP server: the MCP endpoint, the
+  web tail, and the pass-control route, on `127.0.0.1` with Host/Origin and
+  bearer-token checks.
+- **`tools/`** — the typed MCP tool registry: one dispatch path with input
+  validation, secret-param masking, and per-session tier filtering.
+- **`mcp_proxy.py`** — a stdio↔HTTP shim so stdio-only harnesses reach the same
+  server.
+- **`rail/`** — the carousell.ai rail (a stdlib MCP client + guest-key
+  provisioning) wrapped behind our tools, off the LLM surface.
+- **`harness/`** — the harness seam: one internal `PassSpec`, pure per-provider
+  emitters (claude live, codex stub) with round-trip validators.
+- **`passes.py`** — claims a queued pass single-flight, spawns and babysits a
+  headless harness pass, and ledgers its outcome; **`pass_stream.py`** parses the
+  harness output stream and **`proc_tree.py`** owns the process-group kill and
+  stray-pass reaper.
 
 Lifecycle:
 
@@ -77,8 +100,12 @@ Lifecycle:
 3. Apply pending migrations (snapshot the business database first if any are
    pending); a failure aborts startup.
 4. Open the event bus; emit `daemon.start` and one `migration.applied` each.
-5. Register tasks and run the scheduler, writing the heartbeat each tick.
-6. On SIGTERM/SIGINT: drain, emit `daemon.stop`, clear the lock, exit 0.
+5. Ensure the attended MCP token; start the localhost HTTP server (a bind
+   failure is fatal — fail loud so launchd's throttle paces respawns).
+6. Register tasks (retention, the pass lane, the stray reaper) and run the
+   scheduler, writing the heartbeat each tick.
+7. On SIGTERM/SIGINT: drain, stop the HTTP server, emit `daemon.stop`, clear the
+   lock, exit 0.
 
 `daemon run --once` runs a single tick and stops — the deterministic test seam.
 
@@ -88,18 +115,25 @@ Resolved by `paths.py` from the XDG base directories:
 
 ```
 ~/.local/share/selly-agent/   versions/, current -> …, data/selly.db (business data)
-~/.local/state/selly-agent/   events.db, backups/, logs/, heartbeat, lock (prunable)
-~/.config/selly-agent/        config.json (0700)
+~/.local/state/selly-agent/   events.db, backups/, logs/, passes/, heartbeat, lock (prunable)
+~/.config/selly-agent/        config.json + secret files (0700 dir, 0600 secrets)
 ~/.cache/selly-agent/         downloaded release artifacts
 ```
 
-Tests point the XDG variables at a temporary directory.
+Secrets (the attended MCP token, the carousell.ai guest key) are 0600 files in
+the config dir, never logged or evented. Per-pass workspaces live under
+`state/passes/<pass_id>/` and are swept on pass end. Tests point the XDG
+variables at a temporary directory.
 
 ## Conventions
 
-- Stdlib only at runtime; dev tools (pytest, ruff) live in the `[dev]` extra.
-- Python 3.9 is the floor; ruff is pinned to `py39`.
-- State changes go through typed code, one writer per store.
+- Stdlib only at runtime; dev tools (pytest, ruff, the MCP SDK conformance
+  client) live in the `[dev]` extra. A module under `src/` that imports a network
+  stdlib package must be added to the guard's network allowlist deliberately.
+- Python 3.9 is the floor; ruff is pinned to `py39`. The MCP conformance tests
+  need 3.10+ and skip on the floor.
+- State changes go through typed code, one writer per store; the LLM reaches
+  state only through the typed MCP tools (no Bash in headless passes).
 - Guard tests under `tests/guard/` enforce the load-bearing rules.
 
 See `AGENTS.md` for the contributor-facing version of these rules.
