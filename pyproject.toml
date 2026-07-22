@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "selly-agent"
+description = "Local single-tenant agent that sells/buys on P2P marketplaces from the user's own machine"
+requires-python = ">=3.9"
+dynamic = ["version"]
+# No runtime dependencies, ever: the user's own python3 is the runtime, and the
+# test suite mechanically rejects any non-stdlib import under src/.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "selly_agent.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+# py39 keeps ruff a mechanical enforcer of the 3.9 runtime floor: 3.10+ syntax
+# (match, runtime X | Y unions) is flagged at lint time.
+target-version = "py39"
+line-length = 100
+src = ["src", "tests"]
+extend-include = ["bin/selly-agent"]
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "UP", # pyupgrade (respects target-version)
+    "B",  # bugbear
+]

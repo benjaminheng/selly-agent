@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""selly-agent launcher — the single CLI front door.
+
+Resolves the package under src/ onto sys.path (following the current -> versions/<v>
+symlink so code always loads from the installed version), then dispatches argv to the
+package CLI. Kept dependency-free and tiny: launchd's ProgramArguments point straight at
+this file, and the ~/.local/bin shim is a symlink to it.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+_here = os.path.dirname(os.path.realpath(__file__))
+_src = os.path.join(os.path.dirname(_here), "src")
+if _src not in sys.path:
+    sys.path.insert(0, _src)
+
+from selly_agent.cli import main  # noqa: E402 — sys.path must be set first
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
