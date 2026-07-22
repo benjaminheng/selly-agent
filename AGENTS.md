@@ -75,6 +75,6 @@ The codebase must read on its own for someone who does not have the plans.
 
 ## Version control
 
-This repo uses jj. Commit in logical units, each building and passing tests on
+Commit in logical units, each building and passing tests on
 its own; order commits so a reviewer never sees code that calls something
 introduced later. Isolate generated/mechanical churn from hand-written diffs.
