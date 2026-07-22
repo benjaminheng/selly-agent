@@ -22,3 +22,37 @@ class Platform(ABC):
     @abstractmethod
     def launch_agents_dir(self, home: Path) -> Path:
         """The per-user auto-start directory the supervisor reads at login."""
+
+    # --- supervisor (keep-alive job) ------------------------------------------------------
+
+    @abstractmethod
+    def default_label(self) -> str:
+        """The default supervisor job label."""
+
+    @abstractmethod
+    def supervisor_filename(self, label: str) -> str:
+        """The on-disk filename for a job config with this label."""
+
+    @abstractmethod
+    def render_supervisor(
+        self,
+        *,
+        label: str,
+        program_args: list[str],
+        stdout_path: Path,
+        stderr_path: Path,
+        marker: str,
+    ) -> str:
+        """Render the job definition (carries the marker so ours-vs-foreign is decidable)."""
+
+    @abstractmethod
+    def register(self, config_path: Path) -> None:
+        """Register + start the job from its config file (crash keep-alive active thereafter)."""
+
+    @abstractmethod
+    def unregister(self, label: str) -> None:
+        """Unregister the job; it stays stopped until re-registered."""
+
+    @abstractmethod
+    def is_registered(self, label: str) -> bool:
+        """True if the supervisor currently has the job loaded."""

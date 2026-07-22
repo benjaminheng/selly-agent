@@ -19,6 +19,7 @@ from . import paths
 log = logging.getLogger(__name__)
 
 _VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
+_VALID_DAEMON_MODES = {"login-start", "manual"}
 
 
 class ConfigError(Exception):
@@ -31,6 +32,9 @@ class Config:
     tick_interval_sec: float = 5.0
     retention_days: int = 14
     backups_keep: int = 5
+    # Recorded by the installer, read by daemon status. Not consumed by the daemon loop.
+    daemon_mode: str = "manual"
+    daemon_label: str | None = None
 
 
 def _is_real_number(value: object) -> bool:
@@ -76,6 +80,20 @@ def _validate(raw: dict) -> Config:
             raise ConfigError(f"backups_keep must be an integer >= 0, got {keep!r}")
         values["backups_keep"] = keep
 
+    if "daemon_mode" in raw:
+        mode = raw["daemon_mode"]
+        if mode not in _VALID_DAEMON_MODES:
+            raise ConfigError(
+                f"daemon_mode must be one of {sorted(_VALID_DAEMON_MODES)}, got {mode!r}"
+            )
+        values["daemon_mode"] = mode
+
+    if "daemon_label" in raw:
+        label = raw["daemon_label"]
+        if label is not None and not isinstance(label, str):
+            raise ConfigError(f"daemon_label must be a string or null, got {label!r}")
+        values["daemon_label"] = label
+
     return Config(**values)
 
 
@@ -93,3 +111,20 @@ def load(path: Path | None = None) -> Config:
     if not isinstance(raw, dict):
         raise ConfigError(f"{target} must contain a JSON object, got {type(raw).__name__}")
     return _validate(raw)
+
+
+def merge_into_file(updates: dict, path: Path | None = None) -> None:
+    """Merge keys into config.json, preserving the rest. For the installer and tools — NOT the
+    daemon, which only ever reads config. Values are validated on the next load()."""
+    target = path if path is not None else paths.config_path()
+    paths.ensure_config_dir()
+    try:
+        raw = json.loads(target.read_text())
+        if not isinstance(raw, dict):
+            raw = {}
+    except FileNotFoundError:
+        raw = {}
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"{target} is not valid JSON: {exc}") from exc
+    raw.update(updates)
+    target.write_text(json.dumps(raw, indent=2) + "\n")

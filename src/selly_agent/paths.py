@@ -108,10 +108,12 @@ def config_path() -> Path:
 # --- platform-owned -----------------------------------------------------------------------
 
 
-def launch_agents_dir() -> Path:
+def launch_agents_dir(platform=None) -> Path:
     """The per-user auto-start directory, composed here from the platform's OS-specific rule
-    (step-8 install must never compose this itself)."""
-    return get_platform().launch_agents_dir(_home())
+    (callers must never compose this themselves). A platform may be injected (tests); otherwise
+    the host platform is used. home is resolved here so the platform layer never touches it."""
+    resolved = platform if platform is not None else get_platform()
+    return resolved.launch_agents_dir(_home())
 
 
 # --- ensure helpers ------------------------------------------------------------------------
