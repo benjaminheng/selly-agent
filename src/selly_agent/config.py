@@ -35,6 +35,15 @@ class Config:
     # Recorded by the installer, read by daemon status. Not consumed by the daemon loop.
     daemon_mode: str = "manual"
     daemon_label: str | None = None
+    # A fixed port keeps generated harness configs stable across daemon restarts.
+    http_port: int = 7355
+    pass_deadline_sec: float = 900.0
+    pass_model: str = "sonnet"
+    # Explicit path to the harness CLI; null means resolve from PATH (plus the
+    # conventional user install locations) at spawn time.
+    claude_bin: str | None = None
+    carousell_ai_api_base: str = "https://api.carousell.ai"
+    carousell_ai_web_base_url: str = "https://www.carousell.ai"
 
 
 def _is_real_number(value: object) -> bool:
@@ -93,6 +102,41 @@ def _validate(raw: dict) -> Config:
         if label is not None and not isinstance(label, str):
             raise ConfigError(f"daemon_label must be a string or null, got {label!r}")
         values["daemon_label"] = label
+
+    if "http_port" in raw:
+        port = raw["http_port"]
+        if not _is_real_int(port) or not (1024 <= port <= 65535):
+            raise ConfigError(f"http_port must be an integer in 1024..65535, got {port!r}")
+        values["http_port"] = port
+
+    if "pass_deadline_sec" in raw:
+        deadline = raw["pass_deadline_sec"]
+        if not _is_real_number(deadline) or deadline <= 0:
+            raise ConfigError(f"pass_deadline_sec must be a positive number, got {deadline!r}")
+        values["pass_deadline_sec"] = float(deadline)
+
+    if "pass_model" in raw:
+        model = raw["pass_model"]
+        if not isinstance(model, str) or not model.strip():
+            raise ConfigError(f"pass_model must be a non-empty string, got {model!r}")
+        values["pass_model"] = model.strip()
+
+    if "claude_bin" in raw:
+        claude_bin = raw["claude_bin"]
+        if claude_bin is not None and (not isinstance(claude_bin, str) or not claude_bin.strip()):
+            raise ConfigError(f"claude_bin must be a non-empty string or null, got {claude_bin!r}")
+        values["claude_bin"] = claude_bin
+
+    for key in ("carousell_ai_api_base", "carousell_ai_web_base_url"):
+        if key in raw:
+            base = raw[key]
+            if (
+                not isinstance(base, str)
+                or not base.startswith(("http://", "https://"))
+                or base != base.strip()
+            ):
+                raise ConfigError(f"{key} must be an http(s) URL, got {base!r}")
+            values[key] = base.rstrip("/")
 
     return Config(**values)
 

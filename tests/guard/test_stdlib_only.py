@@ -21,9 +21,16 @@ SRC = ROOT / "src"
 OWN_TOP_LEVEL = "selly_agent"
 
 # Network / async modules a runtime module may not import unless its src-relative path is
-# listed here. Empty in the core skeleton: no network I/O anywhere yet.
+# listed here. Every entry is a deliberate decision: adding a module here means it is allowed
+# to open sockets, and a review should treat that as a real capability grant.
 NETWORK_MODULES = {"socket", "ssl", "urllib", "http", "asyncio", "ftplib", "smtplib", "telnetlib"}
-NETWORK_ALLOWLIST: set[str] = set()
+NETWORK_ALLOWLIST: set[str] = {
+    "selly_agent/http_server.py",  # the daemon's localhost HTTP server (MCP + tail + control)
+    "selly_agent/mcp_proxy.py",  # stdio shim forwarding JSON-RPC to the daemon over HTTP
+    "selly_agent/pass_cli.py",  # `pass run` posts to the daemon's control route
+    "selly_agent/rail/client.py",  # carousell.ai MCP client + live listing verify
+    "selly_agent/rail/provision.py",  # carousell.ai guest-key provisioning
+}
 
 
 def _stdlib_dirs() -> tuple[str, ...]:

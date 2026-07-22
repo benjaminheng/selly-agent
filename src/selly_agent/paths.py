@@ -94,6 +94,19 @@ def heartbeat_path() -> Path:
     return state_dir() / "daemon.heartbeat.json"
 
 
+def passes_dir() -> Path:
+    """Ephemeral per-pass workspaces (generated harness config only; swept on pass end)."""
+    return state_dir() / "passes"
+
+
+def pass_workspace_dir(pass_id: str) -> Path:
+    return passes_dir() / pass_id
+
+
+def pass_stderr_log(pass_id: str) -> Path:
+    return logs_dir() / f"pass-{pass_id}.stderr.log"
+
+
 def lock_path() -> Path:
     return state_dir() / "daemon.lock"
 
@@ -103,6 +116,16 @@ def lock_path() -> Path:
 
 def config_path() -> Path:
     return config_dir() / "config.json"
+
+
+def mcp_token_path() -> Path:
+    """The persistent attended-session bearer token (a 0600 secret file)."""
+    return config_dir() / "mcp_token"
+
+
+def carousell_ai_api_key_path() -> Path:
+    """The provisioned carousell.ai guest API key (a 0600 secret file)."""
+    return config_dir() / "carousell_ai_api_key"
 
 
 # --- platform-owned -----------------------------------------------------------------------
