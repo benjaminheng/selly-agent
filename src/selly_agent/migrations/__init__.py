@@ -112,11 +112,13 @@ def _snapshot(db_path: Path, pre_version: int, backups_dir: Path, backups_keep: 
             dst.close()
     finally:
         src.close()
-    _prune_backups(backups_dir, backups_keep)
+    prune_backups(backups_dir, backups_keep)
     return dest
 
 
-def _prune_backups(backups_dir: Path, backups_keep: int) -> None:
+def prune_backups(backups_dir: Path, backups_keep: int) -> None:
+    """Keep the newest `backups_keep` selly.db snapshots; remove the rest. Shared by the
+    snapshot step here and the retention task, so the retention policy has one source."""
     backups = sorted(
         backups_dir.glob("selly-*.db"),
         key=lambda p: (p.stat().st_mtime, p.name),

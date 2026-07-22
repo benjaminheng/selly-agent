@@ -135,7 +135,7 @@ def test_snapshot_pruning_keeps_newest(tmp_path) -> None:
     for i in range(1, 6):
         f = backups_dir / f"selly-100000000{i}-pre-{i:04d}.db"
         f.write_bytes(b"x")
-    migrations._prune_backups(backups_dir, backups_keep=2)
+    migrations.prune_backups(backups_dir, backups_keep=2)
     remaining = {p.name for p in backups_dir.glob("selly-*.db")}
     assert remaining == {
         "selly-1000000005-pre-0005.db",
