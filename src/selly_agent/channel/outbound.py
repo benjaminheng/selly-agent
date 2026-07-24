@@ -10,6 +10,11 @@ once and every provider reuses it.
 from __future__ import annotations
 
 import logging
+import time
+from datetime import datetime
+
+from selly_agent import settings
+from selly_agent.engines import pacing
 
 log = logging.getLogger(__name__)
 
@@ -23,24 +28,37 @@ _NOTICE_DRAIN_BATCH = 10
 FAILED_PASS_NOTICE = "I couldn't process your last message — please send it again."
 
 
-def drain_notices(*, store, bus, deliver, limit: int = _NOTICE_DRAIN_BATCH) -> None:
+def drain_notices(*, store, bus, deliver, limit: int = _NOTICE_DRAIN_BATCH, now=None) -> None:
     """Deliver queued notices to the bound chat, FIFO, via the provider's `deliver`. No-op while
-    paused or unbound (catchup delivers then). A delivery failure bumps the notice's attempts (the
-    row stays queued — visible in catchup, never dropped) and re-raises so the scheduler backs
-    the lane off."""
+    paused or unbound (catchup delivers then). During quiet hours only *proactive* notices are held
+    — seller-facing ones (channel-pass replies, settings approvals, escalation pushes) deliver at
+    any hour, so seller-initiated chat is never gated. A delivery failure bumps the notice's
+    attempts (the row stays queued — visible in catchup, never dropped) and re-raises so the
+    scheduler backs the lane off."""
     if store.is_paused():
         return
     ch = store.get_channel()
     if ch["chat_id"] is None:
         return
-    for notice in store.claim_queued_notices(limit):
+    in_quiet = _in_quiet_hours(store, now)
+    for notice in store.claim_queued_notices(limit, in_quiet=in_quiet):
         try:
-            deliver(ch["chat_id"], notice["text"])
+            deliver(ch["chat_id"], notice["text"], notice["controls"])
         except Exception:
             store.bump_notice_attempts(notice["id"])
             raise
         store.mark_notice_delivered(notice["id"], "channel")
         bus.publish("message.delivered", {"notice_id": notice["id"], "ref": notice["ref"]})
+
+
+def _in_quiet_hours(store, now) -> bool:
+    """Whether the quiet-hours setting's window (minutes since midnight) covers the current
+    daemon-local time. Evaluated per tick against the wall clock (the one-clock rule) — a DST shift
+    moves the window with it, which is exactly right for 'don't buzz me at night'."""
+    start_min, end_min = settings.quiet_window_minutes(store)
+    now = time.time() if now is None else now
+    dt = datetime.fromtimestamp(now)
+    return pacing.in_quiet_window(dt.hour * 60 + dt.minute, start_min, end_min)
 
 
 def pulse_typing(*, store, typing) -> None:
@@ -83,6 +101,10 @@ def escalation_notifier(store):
         esc = store.get_escalation(event.payload.get("id"))
         if esc is None:  # resolved/pruned between publish and here — catchup covers it
             return
+        # An escalation is a decision the seller must make; it is not holdable, so it delivers at
+        # any hour (a meetup confirmation shouldn't wait until morning — the seller can mute
+        # Telegram themselves if they want silence). holdable defaults to False, so this is just a
+        # plain queue_notice — spelled out here because the non-hold is a deliberate policy.
         store.queue_notice(f"Needs your call: {esc['open_question']}", ref=esc["thread_id"])
 
     return _on
