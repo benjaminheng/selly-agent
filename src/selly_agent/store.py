@@ -2424,6 +2424,42 @@ class Store:
             )
             return cur.rowcount
 
+    def fold_settled_inbox(self, failure_notice: str) -> list[dict]:
+        """Fold `claimed` inbox rows whose pass has already settled — handled when the pass
+        finished ok, else failed plus one queued failure notice — all in one transaction.
+
+        Everything derives from durable rows: a settled pass that still has claimed rows IS the
+        signal, however the pass settled (a normal finish, a stale-swept crash, a kill between
+        finishing and folding). No event delivery is required, so no crash shape can leave a
+        seller's messages claimed forever. Idempotent: folded rows leave the claimed set, so a
+        failed pass queues exactly one notice. Returns [{pass_id, status, rows}] per fold."""
+        folded: list[dict] = []
+        terminal = ",".join("?" for _ in _PASS_TERMINAL)
+        with self._db.transaction() as conn:
+            settled = conn.execute(
+                "SELECT ci.pass_id, p.status AS pass_status, COUNT(*) AS n "
+                "FROM channel_inbox ci JOIN passes p ON p.pass_id = ci.pass_id "
+                f"WHERE ci.status = 'claimed' AND p.status IN ({terminal}) "
+                "GROUP BY ci.pass_id, p.status",
+                _PASS_TERMINAL,
+            ).fetchall()
+            now = _now()
+            for row in settled:
+                status = "handled" if row["pass_status"] == "done" else "failed"
+                conn.execute(
+                    "UPDATE channel_inbox SET status = ?, updated_ts = ? "
+                    "WHERE pass_id = ? AND status = 'claimed'",
+                    (status, now, row["pass_id"]),
+                )
+                if status == "failed":
+                    conn.execute(
+                        "INSERT INTO notices (text, ref, created_ts, status, attempts, pass_id) "
+                        "VALUES (?, NULL, ?, 'queued', 0, ?)",
+                        (failure_notice, now, row["pass_id"]),
+                    )
+                folded.append({"pass_id": row["pass_id"], "status": status, "rows": row["n"]})
+        return folded
+
     def count_pending_inbox(self) -> int:
         rows = self._db.query("SELECT COUNT(*) AS n FROM channel_inbox WHERE status = 'pending'")
         return rows[0]["n"]

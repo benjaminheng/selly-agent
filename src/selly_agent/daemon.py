@@ -114,11 +114,11 @@ def run_daemon(*, once: bool) -> int:
     started_ts = time.time()
     attended_token = secrets.ensure_mcp_token()
 
-    # Core needs-me wiring — always on, provider-independent (A15: the queue works with no channel
-    # bound). Push every new escalation to a queued notice, and fold a channel pass's rows when it
-    # ends. Subscribed before work starts so nothing is missed.
+    # Core needs-me wiring — always on, provider-independent (the queue works with no channel
+    # bound). Push every new escalation to a queued notice; subscribed before work starts so
+    # nothing is missed (a miss still surfaces via catchup). The channel-pass inbox fold is NOT
+    # a subscriber — it runs as a scheduler lane off durable rows (registered below).
     bus.subscribe(outbound.escalation_notifier(store))
-    bus.subscribe(outbound.channel_pass_folder(store))
 
     def rail_factory():
         key = secrets.read_carousell_ai_api_key()
@@ -229,6 +229,16 @@ def run_daemon(*, once: bool) -> int:
             name="stale_intent_sweep",
             interval_sec=_INTENT_SWEEP_INTERVAL_SEC,
             func=lambda: intent_sweep.run_stale_intent_sweep(bus=bus, store=store),
+        )
+    )
+    # Fold settled channel passes' claimed inbox rows from durable state (not a pass.end
+    # subscriber), so a crash at any point — including a stale-swept pass — still folds the
+    # seller's messages and queues the failure notice. Always on, channel-provider-independent.
+    scheduler.register(
+        Task(
+            name="inbox_fold",
+            interval_sec=outbound.INBOX_FOLD_INTERVAL_SEC,
+            func=lambda: outbound.fold_settled_passes(store=store),
         )
     )
 

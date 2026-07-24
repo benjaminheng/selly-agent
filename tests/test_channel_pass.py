@@ -1,10 +1,12 @@
 """The channel pass: prompt building with the transcript window, coalesced routing, the fold on
-end (handled / failed + notice, no auto-refire), and the typing pulse.
+settle (handled / failed + notice, no auto-refire — off durable rows, so a stale-swept crash
+folds too), and the typing pulse.
 """
 
 from __future__ import annotations
 
 import threading
+import time
 
 from fake_telegram_api import CHAT_ID, FAKE_TOKEN, FakeTelegramAPI
 from selly_agent import passes, secrets
@@ -121,22 +123,16 @@ def test_channel_pass_prompt_and_tier(store, bus, xdg_tmp) -> None:
     assert {"create_item", "set_floor", "send_message", "escalate"} <= names
 
 
-# --- fold on end ----------------------------------------------------------------------------
+# --- fold on settle ---------------------------------------------------------------------------
 
 
 def test_fold_handled_on_ok(store, bus, xdg_tmp) -> None:
     _bound(store)
     store.ingest_updates([_ev(1, text="hi")], update_offset=2)
     pass_id = store.enqueue_channel_pass()
-    fold = outbound.channel_pass_folder(store)
-
-    class _E:
-        kind = "pass.end"
-        payload = {"type": "channel", "class": "ok"}
-
-    e = _E()
-    e.pass_id = pass_id
-    fold(e)
+    store.claim_queued_pass()
+    store.finish_pass(pass_id, status="done", cls="ok")
+    outbound.fold_settled_passes(store=store)
     rows = store.inbox_for_pass(pass_id)
     assert rows[0]["status"] == "handled"
     assert store.count_queued_notices() == 0  # no notice on success
@@ -146,20 +142,45 @@ def test_fold_failed_queues_one_notice_no_refire(store, bus, xdg_tmp) -> None:
     _bound(store)
     store.ingest_updates([_ev(1, text="hi")], update_offset=2)
     pass_id = store.enqueue_channel_pass()
-    fold = outbound.channel_pass_folder(store)
-
-    class _E:
-        kind = "pass.end"
-        payload = {"type": "channel", "class": "error"}
-
-    e = _E()
-    e.pass_id = pass_id
-    fold(e)
+    store.claim_queued_pass()
+    store.finish_pass(pass_id, status="error", cls="error")
+    outbound.fold_settled_passes(store=store)
     rows = store.inbox_for_pass(pass_id)
     assert rows[0]["status"] == "failed"  # terminal, never re-claimed
-    assert store.count_queued_notices() == 1  # one loud notice
+    notices = store.list_queued_notices()
+    assert len(notices) == 1  # one loud notice, traceable to the pass
+    assert notices[0]["pass_id"] == pass_id
+    # idempotent: another lane tick folds nothing and queues no second notice
+    outbound.fold_settled_passes(store=store)
+    assert store.count_queued_notices() == 1
     # a failed row is never picked up by a new pass
     assert store.enqueue_channel_pass() is None
+
+
+def test_fold_leaves_a_running_pass_alone(store, bus, xdg_tmp) -> None:
+    _bound(store)
+    store.ingest_updates([_ev(1, text="hi")], update_offset=2)
+    pass_id = store.enqueue_channel_pass()
+    store.claim_queued_pass()  # running, not settled
+    outbound.fold_settled_passes(store=store)
+    assert store.inbox_for_pass(pass_id)[0]["status"] == "claimed"
+    assert store.count_queued_notices() == 0
+
+
+def test_stale_swept_pass_still_folds_failed(store, bus, xdg_tmp) -> None:
+    """The crash shape: the daemon dies mid-channel-pass, restarts, and the stale-running sweep
+    fails the row. The fold lane must still fold the claimed messages and queue the failure
+    notice — this used to ride a pass.end event the sweep never emitted in the right shape,
+    leaving the seller's messages claimed forever."""
+    _bound(store)
+    store.ingest_updates([_ev(1, text="hi")], update_offset=2)
+    pass_id = store.enqueue_channel_pass()
+    store.claim_queued_pass()  # running — then the daemon "dies"
+    assert store.fail_stale_running(0, now=time.time() + 10_000) == [pass_id]
+    outbound.fold_settled_passes(store=store)
+    rows = store.inbox_for_pass(pass_id)
+    assert rows[0]["status"] == "failed"
+    assert store.count_queued_notices() == 1
 
 
 # --- typing pulse ---------------------------------------------------------------------------

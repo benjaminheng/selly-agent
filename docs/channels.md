@@ -20,9 +20,9 @@ a guard test enforces that the core imports no provider.
     **control spec** (a list of `(label, token)` buttons).
   - `routing` — after a batch is ingested: the `channel.in` event and coalesced
     routing of pending free text to a channel pass.
-  - `outbound` — the delivery *policy* (notice drain, typing pulse) plus two
-    pure-store bus subscribers (fold a channel pass's rows; push each escalation
-    as a notice).
+  - `outbound` — the delivery *policy* (notice drain, typing pulse), the
+    settled-pass inbox fold (a scheduler lane off durable rows), and the
+    escalation-push bus subscriber.
   - `prompt` — the channel pass's prompt with its capped transcript window.
 - **Provider** (`channel/telegram/`):
   - `transport` — the Bot API client (the one network module; allowlisted) and
@@ -112,8 +112,11 @@ A phone conversation is state, not a running LLM — so free text spawns a short
   kept separate from the messages to handle now.
 - **Coalesced**: at most one channel pass is queued or running; a batch arriving
   mid-pass waits for the next.
-- On end: handled on success; on failure the rows are folded failed and one
-  notice is queued — never auto-refired.
+- On settle: handled on success; on failure the rows are folded failed and one
+  notice is queued — never auto-refired. The fold is a scheduler lane deriving
+  from durable rows (a settled pass that still has claimed rows), not a
+  `pass.end` subscriber — so any crash shape, including a pass failed by the
+  stale-running sweep, still folds and notifies.
 
 ## Pause
 

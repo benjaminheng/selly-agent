@@ -155,7 +155,6 @@ def test_unbound_escalation_surfaces_and_send_queues(bus, store, xdg_tmp) -> Non
 
 def test_bind_then_conversation_end_to_end(bus, store, xdg_tmp, tmp_path) -> None:
     paths.ensure_state_dirs()
-    bus.subscribe(outbound.channel_pass_folder(store))
     with FakeTelegramAPI() as api:
         cfg = Config(quiet_hours=(0, 0), reply_delay_sec=(0, 0), telegram_api_base=api.base_url)
         server = _server(bus, store, cfg)
@@ -184,6 +183,7 @@ def test_bind_then_conversation_end_to_end(bus, store, xdg_tmp, tmp_path) -> Non
                 argv_builder=lambda spec: [sys.executable, str(script)],
             )
             passes.pass_lane(deps)  # claims + runs the channel pass
+            outbound.fold_settled_passes(store=store)  # the fold lane's next tick
             outbound.drain_notices(store=store, bus=bus, deliver=_deliver(api))
 
             # the pass acted and its reply reached the phone

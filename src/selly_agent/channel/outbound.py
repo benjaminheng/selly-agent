@@ -1,5 +1,5 @@
-"""Provider-agnostic outbound policy: the notice-drain and typing-pulse *decisions*, plus the two
-pure-store bus subscribers (fold a channel pass's rows, push escalations as notices).
+"""Provider-agnostic outbound policy: the notice-drain and typing-pulse *decisions*, the
+settled-pass inbox fold, and the escalation-push bus subscriber.
 
 The mechanism — how a message or typing action actually reaches the seller — is the provider's:
 `drain_notices` and `pulse_typing` take an injected `deliver(chat_id, text)` / `typing(chat_id)`
@@ -14,10 +14,13 @@ import logging
 log = logging.getLogger(__name__)
 
 NOTICE_DRAIN_INTERVAL_SEC = 2.0
+INBOX_FOLD_INTERVAL_SEC = 2.0
 # Telegram's typing indicator lasts ~5s; a pulse a little under that keeps it alive while a
 # channel pass is in flight. Providers without a typing action simply pass a no-op.
 TYPING_PULSE_INTERVAL_SEC = 4.0
 _NOTICE_DRAIN_BATCH = 10
+
+FAILED_PASS_NOTICE = "I couldn't process your last message — please send it again."
 
 
 def drain_notices(*, store, bus, deliver, limit: int = _NOTICE_DRAIN_BATCH) -> None:
@@ -55,21 +58,18 @@ def pulse_typing(*, store, typing) -> None:
         log.debug("typing pulse failed (ignored): %s", exc)
 
 
-def channel_pass_folder(store):
-    """A bus subscriber: fold a channel pass's claimed rows when it ends. On ok they are handled;
-    on any failure (error/timeout/paused) they are folded failed and one notice is queued — never
-    auto-refired (failed rows are terminal; the seller repeating themselves is the recovery)."""
+def fold_settled_passes(*, store) -> None:
+    """Fold a channel pass's claimed rows once the pass settles: handled on success; on any
+    failure (error/timeout/paused, or a crash the stale sweep failed) folded failed with one
+    notice queued — never auto-refired (failed rows are terminal; the seller repeating
+    themselves is the recovery).
 
-    def _on(event) -> None:
-        if event.kind != "pass.end" or event.payload.get("type") != "channel":
-            return
-        if event.payload.get("class") == "ok":
-            store.fold_inbox(event.pass_id, "handled")
-            return
-        if store.fold_inbox(event.pass_id, "failed"):
-            store.queue_notice("I couldn't process your last message — please send it again.")
-
-    return _on
+    A scheduler lane, deliberately not a pass.end subscriber: it derives entirely from durable
+    rows (a settled pass that still has claimed rows), so it heals every crash shape where an
+    in-process event would have been lost or mis-shaped. The cost is at most one lane interval
+    of latency, which nothing downstream notices — delivery itself runs on a lane of the same
+    cadence."""
+    store.fold_settled_inbox(FAILED_PASS_NOTICE)
 
 
 def escalation_notifier(store):
