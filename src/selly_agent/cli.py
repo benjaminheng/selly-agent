@@ -76,6 +76,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="emit NDJSON (one event object per line) instead of the human format",
     )
+    inspect.add_argument(
+        "--all",
+        action="store_true",
+        help="include routine (heartbeat) events, hidden by default",
+    )
 
     pass_cmd = sub.add_parser("pass", help="pass lifecycle")
     psub = pass_cmd.add_subparsers(dest="pass_command", required=True)

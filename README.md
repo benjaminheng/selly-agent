@@ -71,6 +71,9 @@ bin/selly-agent inspect --follow
 
 # or NDJSON — one event object per line, pipeable to jq
 bin/selly-agent inspect --follow --json | jq .
+
+# routine heartbeat events (task.start/task.ok) are hidden by default; --all shows them
+bin/selly-agent inspect --all
 ```
 
 Once bound, the phone is the async channel: buyer escalations push to it, and

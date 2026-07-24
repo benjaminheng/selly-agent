@@ -16,9 +16,10 @@ from datetime import datetime
 
 from selly_agent import paths
 from selly_agent.db import connect_reader
-from selly_agent.events import Event, event_to_wire, query_events
+from selly_agent.events import LEVEL_ORDER, Event, event_to_wire, level_for, query_events
 
 _POLL_INTERVAL_SEC = 1.0
+_LEVEL_RANK = {name: i for i, name in enumerate(LEVEL_ORDER)}
 _DURATION_RE = re.compile(r"^(\d+)([smhd])$")
 _DURATION_UNIT_SEC = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
@@ -56,14 +57,18 @@ def run(args: argparse.Namespace) -> int:
         return 2
 
     fmt = _format_ndjson if args.json else _format
+    # By default hide the routine heartbeat; --all lifts the floor, and an explicit --kind is
+    # itself an intentional request, so it shows whatever it asks for regardless of level.
+    floor = _LEVEL_RANK["routine"] if (args.all or args.kinds) else _LEVEL_RANK["info"]
     filters = {"since_ts": since_ts, "pass_id": args.pass_id, "kinds": args.kinds}
     conn = connect_reader(db_path)
     try:
         last_seq = 0
         for event in query_events(conn, **filters):
-            # flush per line so a piped --follow surfaces events as they land, not in blocks
-            print(fmt(event), flush=True)
-            last_seq = event.seq
+            last_seq = event.seq  # advance even when filtered, else --follow re-queries it
+            if _LEVEL_RANK[level_for(event.kind)] >= floor:
+                # flush per line so a piped --follow surfaces events as they land, not in blocks
+                print(fmt(event), flush=True)
 
         if not args.follow:
             return 0
@@ -71,8 +76,9 @@ def run(args: argparse.Namespace) -> int:
         while True:
             time.sleep(_POLL_INTERVAL_SEC)
             for event in query_events(conn, after_seq=last_seq, **filters):
-                print(fmt(event), flush=True)
                 last_seq = event.seq
+                if _LEVEL_RANK[level_for(event.kind)] >= floor:
+                    print(fmt(event), flush=True)
     except KeyboardInterrupt:
         return 0
     finally:

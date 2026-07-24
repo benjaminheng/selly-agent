@@ -14,15 +14,23 @@ from types import SimpleNamespace
 
 import pytest
 
-from selly_agent import daemon, inspect_cli
-from selly_agent.events import Event
+from selly_agent import daemon, inspect_cli, migrations, paths
+from selly_agent.db import Database
+from selly_agent.events import Event, EventStore, level_for
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = REPO_ROOT / "bin" / "selly-agent"
 
 
 def _args(**overrides) -> SimpleNamespace:
-    base = {"follow": False, "pass_id": None, "since": None, "kinds": None, "json": False}
+    base = {
+        "follow": False,
+        "pass_id": None,
+        "since": None,
+        "kinds": None,
+        "json": False,
+        "all": False,
+    }
     base.update(overrides)
     return SimpleNamespace(**base)
 
@@ -48,10 +56,52 @@ def test_format_line_shape() -> None:
     assert '{"pid":7}' in line
 
 
+def test_level_for_classification() -> None:
+    assert level_for("task.ok") == "routine"
+    assert level_for("task.start") == "routine"
+    assert level_for("task.error") == "warn"
+    assert level_for("daemon.start") == "info"  # unlisted kinds default to info
+
+
+def _seed(*kinds: str) -> None:
+    paths.ensure_runtime_dirs()
+    events_db = Database(paths.events_db())
+    migrations.run_startup_migrations(
+        data_db=Database(paths.selly_db()),
+        events_db=events_db,
+        backups_dir=paths.backups_dir(),
+        backups_keep=5,
+    )
+    store = EventStore(events_db)
+    for kind in kinds:
+        store.record(kind, {"task": "pass_lane"})
+
+
+def test_default_hides_routine(xdg_tmp, capsys) -> None:
+    _seed("task.ok", "daemon.start")
+    inspect_cli.run(_args())
+    out = capsys.readouterr().out
+    assert "daemon.start" in out
+    assert "task.ok" not in out
+
+
+def test_all_shows_routine(xdg_tmp, capsys) -> None:
+    _seed("task.ok")
+    inspect_cli.run(_args(all=True))
+    assert "task.ok" in capsys.readouterr().out
+
+
+def test_explicit_kind_overrides_routine_floor(xdg_tmp, capsys) -> None:
+    _seed("task.ok")
+    inspect_cli.run(_args(kinds=["task.ok"]))
+    assert "task.ok" in capsys.readouterr().out
+
+
 def test_format_ndjson_shape() -> None:
     ev = Event(seq=1, ts=0.0, pass_id=None, kind="daemon.start", payload={"pid": 7})
     obj = json.loads(inspect_cli._format_ndjson(ev))
     assert next(iter(obj)) == "@ts"  # @ts leads the wire form
+    assert obj["level"] == "info"  # derived from kind
     assert obj["seq"] == 1
     assert obj["ts"] == 0.0  # raw epoch retained alongside @ts
     assert obj["pass_id"] is None

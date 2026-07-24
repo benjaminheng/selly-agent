@@ -91,7 +91,8 @@ Observability:
 - **`inspect_cli.py`** — `selly-agent inspect`, a read-only tail of the event
   store; works whether or not the daemon is running (`--follow` polls). `--json`
   emits NDJSON via the same `events.event_to_wire` serializer the web tail's
-  `/events.json` uses.
+  `/events.json` uses. Each event carries a derived `level` (`events.level_for`);
+  the tail hides the `routine` heartbeat by default, `--all` shows it.
 
 The tool surface and pass runner — how the LLM touches state and how it runs.
 Detail in [`tool-surface-and-passes.md`](tool-surface-and-passes.md):

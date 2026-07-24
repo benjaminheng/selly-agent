@@ -41,13 +41,34 @@ def _row_to_event(row) -> Event:
     )
 
 
+# Notability, low → high. A consumer's default view hides the bottom rung.
+LEVEL_ORDER = ("routine", "info", "warn")
+
+# Level is derived from kind at output time, never supplied by the emitter — publishing an
+# event stays a one-line publish(kind, payload). List only the kinds that differ from the
+# "info" default: demote the per-tick scheduler heartbeat, raise failures. An unlisted kind
+# is "info" (shown), so a newly added event is visible until someone deliberately demotes it.
+_KIND_LEVELS = {
+    "task.start": "routine",
+    "task.ok": "routine",
+    "task.error": "warn",
+    "task.backoff": "warn",
+}
+
+
+def level_for(kind: str) -> str:
+    return _KIND_LEVELS.get(kind, "info")
+
+
 def event_to_wire(event: Event) -> dict:
     """Canonical JSON shape of an event: the `inspect --json` NDJSON line and the web tail's
     /events.json rows share this exactly. `@ts` is a system-local RFC3339 render of `ts`,
-    emitted first for legibility; `ts` stays as the raw epoch (the faithful ordering value).
-    The field order here is the wire order — serialize without sort_keys to preserve it."""
+    emitted first for legibility; `ts` stays as the raw epoch (the faithful ordering value);
+    `level` is derived from kind. The field order here is the wire order — serialize without
+    sort_keys to preserve it."""
     return {
         "@ts": datetime.fromtimestamp(event.ts).astimezone().isoformat(),
+        "level": level_for(event.kind),
         "seq": event.seq,
         "ts": event.ts,
         "pass_id": event.pass_id,
