@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from selly_agent import paths, settings
+from selly_agent import paths, settings, skills
 from selly_agent.channel import prompt as channel_prompt_mod
 from selly_agent.harness import claude
 from selly_agent.harness.model import PassSpec
@@ -53,9 +53,10 @@ class PassPayloadError(Exception):
 def publish_prompt(item_id: str) -> str:
     return (
         f"{PASS_PROMPT_MARKER}\n"
-        f"You are a headless selly-agent pass. Publish item {item_id} to carousell.ai using ONLY "
-        f"your MCP tools: read the item with get_item, then call carousell_ai_publish_listing. "
-        f"Do not attempt any other tool. When the listing is published, stop."
+        f"Publish item {item_id} to carousell.ai, following the listing flow's publish step.\n"
+        f"Read the item with get_item. It has already been confirmed with the seller, so do not "
+        f"re-confirm and do not change its title, price, or description — publish what is there.\n"
+        f"Report the live listing URL when it is up, or say what failed."
     )
 
 
@@ -76,18 +77,65 @@ def _channel_prompt(payload: dict, store, pass_id: str) -> str:
     )
 
 
+def _channel_media_paths(payload: dict, store, pass_id: str) -> tuple:
+    """Exactly the media paths this pass's prompt shows it — the rows claimed into it, plus any
+    still in the conversational window.
+
+    The window half is what lets a listing flow span passes: the photo arrives in one pass, the
+    price is agreed in the next, and the publish happens in a third. Scoping the grant to the
+    claimed rows alone would leave the later passes able to see a path they cannot open.
+    """
+    claimed = store.inbox_for_pass(pass_id)
+    transcript = store.recent_transcript(channel_prompt_mod.TRANSCRIPT_WINDOW_LIMIT)
+    paths_seen = {path: None for row in claimed for path in (row.get("media_paths") or [])}
+    for path in channel_prompt_mod.transcript_media_paths(transcript):
+        paths_seen[path] = None
+    return tuple(paths_seen)
+
+
+def _no_media_paths(payload: dict, store, pass_id: str) -> tuple:
+    return ()
+
+
 @dataclass(frozen=True)
 class PassType:
-    """A pass type's spec: the tier its token carries (which tools it may call) and how its prompt
-    is built from the queued payload. New types register here rather than forking run_pass."""
+    """A pass type's spec: the tier its token carries (which tools it may call), the skills that
+    make up its system prompt, whether it may research on the web, how its task prompt is built
+    from the queued payload, and which media files it may read (a model views an image by reading
+    the file, so a photo-handling type grants its claimed media — file access stays denied
+    otherwise). New types register here rather than forking run_pass.
+
+    Skills are per-type and minimal. A pass carrying a rulebook it never acts on pays for it on
+    every run, and a rule stated to a flow that cannot follow it is noise.
+    """
 
     tier: str
     build_prompt: Callable[[dict, object, str], str]
+    skills: tuple = ()
+    web_tools: bool = False
+    build_media_paths: Callable[[dict, object, str], tuple] = _no_media_paths
 
 
 PASS_TYPES = {
-    "publish": PassType(tier=TIER_PASS_PUBLISH, build_prompt=_publish_prompt),
-    "channel": PassType(tier=TIER_PASS_CHANNEL, build_prompt=_channel_prompt),
+    # Publish is a narrow, already-decided job: the seller signed off on the numbers in the
+    # conversation that produced the draft, so this pass needs the flow's publish discipline and
+    # nothing about voice — it talks to no one, and the photo upload is daemon-side, so it never
+    # needs to see an image either.
+    "publish": PassType(
+        tier=TIER_PASS_PUBLISH,
+        build_prompt=_publish_prompt,
+        skills=("selly-conventions", "listing-flow"),
+    ),
+    # The channel pass is the seller conversation: it writes to a human, so it needs voice and the
+    # escalation copy, and it runs the listing flow end to end — including the comps research the
+    # flow's pricing step calls for, and eyes on the photos the seller sent.
+    "channel": PassType(
+        tier=TIER_PASS_CHANNEL,
+        build_prompt=_channel_prompt,
+        skills=("selly-conventions", "voice-and-style", "seller-comms", "listing-flow"),
+        web_tools=True,
+        build_media_paths=_channel_media_paths,
+    ),
 }
 
 
@@ -132,14 +180,41 @@ class PassDeps:
     now: Callable[[], float] = time.time
 
 
-def build_spec(prompt: str, endpoint: str, token: str, model: str, tier: str) -> PassSpec:
+def _contained_media_paths(raw_paths) -> tuple:
+    """Resolve and containment-check media paths before they become a Read grant.
+
+    The store already refuses to persist a path outside the media store, so anything failing here
+    is a bug, not input — it raises rather than silently narrowing the grant (a pass that can't
+    see a photo the prompt promises it would just burn turns discovering that).
+    """
+    root = paths.media_dir().resolve()
+    out = []
+    for raw in raw_paths:
+        resolved = Path(raw).resolve()
+        if root != resolved and root not in resolved.parents:
+            raise ValueError(f"media path escapes the media store: {raw!r}")
+        out.append(str(resolved))
+    return tuple(out)
+
+
+def build_spec(
+    prompt: str,
+    endpoint: str,
+    token: str,
+    model: str,
+    pass_type: PassType,
+    media_paths: tuple = (),
+) -> PassSpec:
     return PassSpec(
         prompt=prompt,
         model=model,
         mcp_endpoint=endpoint,
         mcp_token=token,
-        allowed_tools=allowed_tools_for(tier),
+        allowed_tools=allowed_tools_for(pass_type.tier),
         max_turns=PASS_MAX_TURNS,
+        append_system_prompt=skills.compose_system_prompt(pass_type.skills) or None,
+        web_tools=pass_type.web_tools,
+        readable_paths=_contained_media_paths(media_paths),
     )
 
 
@@ -218,6 +293,7 @@ def run_pass(deps: PassDeps, claimed) -> str:
         return _spawn_error(deps, claimed, pass_id, f"unknown pass type {claimed.type!r}")
     try:
         prompt = pass_type.build_prompt(claimed.payload or {}, deps.store, pass_id)
+        media_paths = pass_type.build_media_paths(claimed.payload or {}, deps.store, pass_id)
     except PassPayloadError as exc:
         return _spawn_error(deps, claimed, pass_id, str(exc))
 
@@ -230,7 +306,14 @@ def run_pass(deps: PassDeps, claimed) -> str:
     proc = None
     pgid = None
     try:
-        spec = build_spec(prompt, deps.http_endpoint, token, deps.config.pass_model, pass_type.tier)
+        spec = build_spec(
+            prompt,
+            deps.http_endpoint,
+            token,
+            deps.config.pass_model,
+            pass_type,
+            media_paths=media_paths,
+        )
         _write_workspace(workspace, spec)
         try:
             argv = deps.argv_builder(spec)

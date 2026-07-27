@@ -69,27 +69,76 @@ sanitize):
 - **claude** (live) renders the `claude -p` argv plus the workspace's
   `.mcp.json` and `.claude/settings.json`. The no-Bash posture is by
   construction: `--strict-mcp-config` with only our server, and `--allowedTools`
-  listing exactly the tier's `mcp__<server>__*` names (last, since the flag
-  greedily consumes what follows). Stream-json output requires `--verbose` with
-  `-p` (a hard CLI requirement).
+  listing exactly the pass's rules (last, since the flag greedily consumes what
+  follows). Stream-json output requires `--verbose` with `-p` (a hard CLI
+  requirement). The spec's composed system prompt rides
+  `--append-system-prompt`. `readable_paths` renders as one `Read(//abs/path)`
+  rule per file; the bare `Read` deny is emitted only when nothing is granted,
+  because a deny overrides any allow. Unmatched reads still fail — a headless
+  session rejects unmatched tools by default.
+
+**Web posture.** `WebSearch`/`WebFetch` are denied by default and allowed only
+for a pass whose type sets `PassSpec.web_tools` — the emitter moves the two names
+between the allow and deny lists, so the posture goes through the round-trip
+validators rather than being hand-written into a config. Two validators cover it:
+a pass without web tools must deny them *explicitly* (silence is not a posture),
+and no tool may appear in both lists. Bash and the file-access tools are denied
+whatever the flag says.
+
+**File posture.** A model can only *see* an image by reading the file, so a
+photo-handling pass needs eyes on its photos without gaining file access in
+general. `PassSpec.readable_paths` lists exactly the media files claimed into
+the pass (containment-checked against the media store at spec build); nothing
+else on the filesystem is readable. How that is enforced is each emitter's
+business, but its validators must pin both directions — no grants → file reads
+impossible; grants → those files and nothing wider — so a harness that can't
+express a per-file grant fails at render rather than shipping a looser posture.
 - **codex** (stub) renders `config.toml` pointing at `mcp-proxy`; there is no
   spawn path yet. Keeping a second real emitter forces the internal representation
   to stay genuinely common.
 
 ## Pass types
 
-`passes.PASS_TYPES` maps a pass type to its tier and a prompt builder, so a new
-type registers there rather than forking the runner:
+`passes.PASS_TYPES` maps a pass type to its tier, its skills, its web posture,
+and a prompt builder, so a new type registers there rather than forking the
+runner:
 
-- **`publish`** (`pass:publish`) — the vertical-slice type: publish one item.
-- **`channel`** (`pass:channel`) — the phone-driven sell conversation. It runs
-  **full-scope** (the counterpart is the trusted seller, not a buyer), so its
-  tier is a broad set (items, floors, threads, negotiate, escalations,
-  `send_message`, …). Its prompt embeds a **recent-transcript window** — inbox
-  rows interleaved with the agent's own notices, capped by count and chars — so a
-  follow-up like "yes, do that" resolves, clearly separated from the messages to
-  handle now. The interim prompt is throwaway; the skills rewrite replaces it and
-  finalizes tier membership.
+| type | tier | skills | web |
+|---|---|---|---|
+| `publish` | `pass:publish` — `get_item`, `carousell_ai_upload_photos`, `carousell_ai_publish_listing`, `send_message` | conventions, listing-flow | no |
+| `channel` | `pass:channel` — the broad seller-conversation set (items, photos, floors, threads, negotiate, checkout, escalations, settings, `send_message`, …) | conventions, voice-and-style, seller-comms, listing-flow | yes |
+
+Both tiers are pinned by a golden (`tests/golden/pass_tiers.json`), so widening
+one is a deliberate diff. Membership follows what the skills instruct: a tool no
+skill tells a pass to use is surface with no user, and a tool a skill needs but
+the tier omits is a flow that dead-ends mid-conversation. A third tier,
+`pass:reply`, exists in the registry so entity-scope enforcement is testable, but
+no reply pass type exists yet and its membership is not pinned.
+
+- **`publish`** publishes one already-confirmed item — it talks to no one, so it
+  gets no voice rulebook and no web.
+- **`channel`** is the phone-driven sell conversation. It runs **full-scope** (the
+  counterpart is the trusted seller, not a buyer). Its prompt embeds a
+  **recent-transcript window** — inbox rows interleaved with the agent's own
+  notices, capped by count and chars — so a follow-up like "yes, do that"
+  resolves, clearly separated from the messages to handle now. Photo rows carry
+  their stored media paths inline, so the listing flow can attach them directly.
+
+## Prompt composition
+
+A pass's prompt is split in two, along the axis of what changes:
+
+- The **system prompt** is the standing rulebook — the skills the pass type
+  declares, concatenated in order with their frontmatter stripped. It is
+  identical across every pass of that type, so a harness can cache it.
+- The **user prompt** is the task: what to do this time, the claimed rows, the
+  conversation window. It also carries the marker `proc_tree` greps for when
+  reaping strays, which is why the marker stays out of the system half.
+
+Skills live as package data under `skills/` and load `__file__`-relative, so a
+versioned install serves them from its own tree. The loader caps the composed
+size: every skill added to a pass type is paid on every pass of that type, and
+that should fail a test rather than quietly inflate the bill.
 
 `send_message` and `get_catchup` are the channel's tool seam. `send_message`
 inserts a durable notice and returns `{queued: true, notice_id}` — it never forks

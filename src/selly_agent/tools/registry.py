@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from dataclasses import dataclass
 from typing import Callable
 
 from selly_agent.tools.schema import ValidationError, validate
+
+log = logging.getLogger(__name__)
 
 _MASK = "***"
 _RESULT_EVENT_CAP = 4096  # chars of a result's JSON kept in the event payload (not the return)
@@ -156,6 +159,9 @@ def dispatch(name: str, params: dict, ctx: ToolContext) -> dict:
         )
         raise
     except Exception as exc:  # a handler bug must not leak internals to the caller
+        # The caller only ever sees "internal error" (never leak internals over MCP), so the
+        # traceback has to land somewhere or the failure is undiagnosable — this is that somewhere.
+        log.exception("tool handler raised for %s", name)
         ctx.bus.publish(
             "tool.error", {"tool": name, "error": "internal error"}, pass_id=ctx.session.pass_id
         )
@@ -168,13 +174,19 @@ def dispatch(name: str, params: dict, ctx: ToolContext) -> dict:
 
 
 # Tier labels. Open strings; later plans add tiers without registry surgery.
+#
+# Membership follows what the skills instruct: a tool no skill tells a pass to use is surface with
+# no user, and a tool a skill needs but the tier omits is a flow that dead-ends mid-conversation.
+# The two live tiers below are pinned by golden tests, so a change to either is a deliberate diff.
 TIER_ATTENDED = "attended"
+# The publish pass: one already-decided job, no counterpart to talk to. Read the item, ship its
+# photos, publish, report — nothing else.
 TIER_PASS_PUBLISH = "pass:publish"
 # Provisional: the reply-loop tool subset carries this tier so entity-scope enforcement is
-# exercisable end to end by tests. No reply pass *type* exists yet — the skills rewrite finalizes
-# pass-tier membership; this label only makes the scoped-token path testable now.
+# exercisable end to end by tests. No reply pass *type* exists yet — membership is finalized by
+# the browser layer, which lands the reply pass beside the marketplace inbound that feeds it.
 TIER_PASS_REPLY = "pass:reply"
-# The provisional channel-pass tier — the tools a phone-driven sell conversation needs. The channel
-# pass runs full-scope (the counterpart is the trusted seller), so this is a broad set; the skills
-# rewrite finalizes membership.
+# The channel pass: the seller conversation, and so the broadest tier — it runs the whole listing
+# flow and answers anything the seller asks. It runs full-scope because the counterpart is the
+# trusted seller, not a buyer.
 TIER_PASS_CHANNEL = "pass:channel"

@@ -29,9 +29,10 @@ import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TypedDict
 
-from selly_agent import marketplaces
+from selly_agent import marketplaces, paths
 from selly_agent.db import Database
 from selly_agent.engines import buyer_negotiate as buyer_engine
 from selly_agent.engines import negotiate as negotiate_engine
@@ -48,8 +49,12 @@ _ITEM_WRITABLE = (
     "currency",
     "status",
     "size_bucket",
+    "photos",
 )
 _ITEM_STATUSES = ("draft", "ready")
+# Photos are capped per item — the marketplace shows a handful, and an unbounded list would make
+# the upload bracket (mint URL, POST, repeat) run for minutes.
+MAX_PHOTOS = 12
 
 _FLOOR_SOURCES = ("seller", "default")
 
@@ -136,6 +141,7 @@ class ItemRecord(TypedDict):
     status: str
     size_bucket: str | None
     listing_urls: dict[str, str]
+    photos: list
     created_ts: float
     updated_ts: float
 
@@ -363,6 +369,7 @@ class TranscriptEntry(TypedDict):
     direction: str
     kind: str
     text: str
+    media_paths: list
     ts: float
 
 
@@ -378,9 +385,51 @@ def _item_from_row(row: sqlite3.Row) -> ItemRecord:
         "status": row["status"],
         "size_bucket": row["size_bucket"],
         "listing_urls": json.loads(row["listing_urls"]),
+        "photos": json.loads(row["photos"]),
         "created_ts": row["created_ts"],
         "updated_ts": row["updated_ts"],
     }
+
+
+def validate_photos(value: object) -> list:
+    """Canonicalize an item's photo list, refusing anything outside the media store.
+
+    A photo entry is {path, uploaded_url?}; a bare string path is accepted as shorthand. The gate
+    is a *containment* check on the fully resolved path — a `..` segment or a symlink pointing
+    somewhere else resolves out of the media store and is refused, so a stored path can never
+    address a file the agent was not handed.
+    """
+    if not isinstance(value, (list, tuple)):
+        raise StoreError("photos must be a list of {path, uploaded_url?} entries")
+    if len(value) > MAX_PHOTOS:
+        raise StoreError(f"at most {MAX_PHOTOS} photos per item")
+    root = paths.media_dir().resolve()
+    out: list = []
+    for entry in value:
+        if isinstance(entry, str):
+            entry = {"path": entry}
+        if not isinstance(entry, dict):
+            raise StoreError("each photo must be a path string or a {path, uploaded_url?} object")
+        unknown = sorted(set(entry) - {"path", "uploaded_url"})
+        if unknown:
+            raise StoreError(f"unknown photo field(s): {', '.join(unknown)}")
+        raw = entry.get("path")
+        if not isinstance(raw, str) or not raw.strip():
+            raise StoreError("each photo needs a non-empty path")
+        resolved = Path(raw).resolve()
+        if root != resolved and root not in resolved.parents:
+            raise StoreError(
+                "photo paths must be inside the media store — import the file first with "
+                "import_photos"
+            )
+        photo: dict = {"path": str(resolved)}
+        uploaded = entry.get("uploaded_url")
+        if uploaded is not None:
+            if not isinstance(uploaded, str) or not uploaded.strip():
+                raise StoreError("uploaded_url must be a non-empty string when present")
+            photo["uploaded_url"] = uploaded
+        out.append(photo)
+    return out
 
 
 _THREAD_FIELDS = (
@@ -642,17 +691,19 @@ class Store:
         currency: str | None = None,
         description: str = "",
         condition: str | None = None,
+        photos: list | None = None,
     ) -> ItemRecord:
         if not title or not title.strip():
             raise StoreError("title must be non-empty")
+        stored_photos = validate_photos(photos or [])
         item_id = _new_id("item")
         ts = _now()
         with self._db.transaction() as conn:
             conn.execute(
                 "INSERT INTO items "
                 "(id, title, description, condition, list_price, currency, status, "
-                " listing_urls, created_ts, updated_ts) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'draft', '{}', ?, ?)",
+                " listing_urls, photos, created_ts, updated_ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'draft', '{}', ?, ?, ?)",
                 (
                     item_id,
                     title.strip(),
@@ -660,6 +711,7 @@ class Store:
                     condition,
                     list_price,
                     currency,
+                    json.dumps(stored_photos),
                     ts,
                     ts,
                 ),
@@ -685,6 +737,8 @@ class Store:
             )
         if not fields:
             raise StoreError("no fields to update")
+        if "photos" in fields:
+            fields = dict(fields, photos=json.dumps(validate_photos(fields["photos"])))
 
         assignments = ", ".join(f"{name} = ?" for name in fields)
         values = [fields[name] for name in fields]
@@ -695,6 +749,30 @@ class Store:
             conn.execute(
                 f"UPDATE items SET {assignments}, updated_ts = ? WHERE id = ?",
                 (*values, _now(), item_id),
+            )
+        return self.get_item(item_id)  # type: ignore[return-value]
+
+    def set_photo_uploads(self, item_id: str, uploaded_urls: list) -> ItemRecord:
+        """Stamp the uploaded media reference onto every photo of an item, in display order.
+
+        All-or-nothing by shape: the caller passes one reference per photo and the whole set is
+        written in one transaction. A partially-stamped set is the bug this guards against — the
+        marketplace replaces an item's photo set wholesale, so publishing a half set ships the
+        wrong cover.
+        """
+        with self._db.transaction() as conn:
+            row = conn.execute("SELECT photos FROM items WHERE id = ?", (item_id,)).fetchone()
+            if not row:
+                raise ItemNotFound(f"no item with id {item_id!r}")
+            photos = json.loads(row["photos"])
+            if len(uploaded_urls) != len(photos):
+                raise StoreError(
+                    f"expected one uploaded url per photo ({len(photos)}), got {len(uploaded_urls)}"
+                )
+            stamped = [dict(photo, uploaded_url=url) for photo, url in zip(photos, uploaded_urls)]
+            conn.execute(
+                "UPDATE items SET photos = ?, updated_ts = ? WHERE id = ?",
+                (json.dumps(stamped), _now(), item_id),
             )
         return self.get_item(item_id)  # type: ignore[return-value]
 
@@ -1330,7 +1408,14 @@ class Store:
         return item["list_price"], item["currency"]
 
     def negotiate_offer(
-        self, item_id: str, thread_id: str, handle: str, offer: float, *, config
+        self,
+        item_id: str,
+        thread_id: str,
+        handle: str,
+        offer: float,
+        *,
+        config,
+        firmness: str | None = None,
     ) -> dict:
         """One offer, decided and persisted in a single transaction — the serialization that makes
         FCFS single-inventory hold. Floorless orchestration lives here (not the engine): at/above
@@ -1362,7 +1447,7 @@ class Store:
                 "auto_counter_step": floor_row["auto_counter_step"],
                 "auto_counter_rounds": floor_row["auto_counter_rounds"],
             }
-            knobs = negotiate_engine.resolve_knobs(config, floor_record)
+            knobs = negotiate_engine.resolve_knobs(config, floor_record, firmness)
 
             led = self._load_negotiation(conn, item_id)
             buyer = led["buyers"].get(thread_id) or negotiate_engine.blank_buyer(handle)
@@ -2566,9 +2651,14 @@ class Store:
         """The recent conversational window: inbound inbox rows (any status) interleaved with the
         agent's own outbound notices, ordered by the local clock, the most-recent `limit` entries
         oldest-first. A pure read of two already-durable tables — no new state — so a follow-up
-        like "yes, do that" has the prior turn to resolve against."""
+        like "yes, do that" has the prior turn to resolve against.
+
+        Inbound rows carry their media paths, not just their text. A photo's path would otherwise
+        be reachable only by the single pass that claimed its row, so a listing flow spanning more
+        than one pass — research here, confirm there — would lose the photo it was sent.
+        """
         inbox_rows = self._db.query(
-            "SELECT text, kind, received_ts FROM channel_inbox "
+            "SELECT text, kind, media_paths, received_ts FROM channel_inbox "
             "ORDER BY received_ts DESC, id DESC LIMIT ?",
             (limit,),
         )
@@ -2580,11 +2670,23 @@ class Store:
         for r in inbox_rows:
             text = r["text"] or ("[photo]" if r["kind"] == "photo" else "")
             entries.append(
-                {"direction": "in", "kind": r["kind"], "text": text, "ts": r["received_ts"]}
+                {
+                    "direction": "in",
+                    "kind": r["kind"],
+                    "text": text,
+                    "media_paths": json.loads(r["media_paths"]) if r["media_paths"] else [],
+                    "ts": r["received_ts"],
+                }
             )
         for r in notice_rows:
             entries.append(
-                {"direction": "out", "kind": "notice", "text": r["text"], "ts": r["created_ts"]}
+                {
+                    "direction": "out",
+                    "kind": "notice",
+                    "text": r["text"],
+                    "media_paths": [],
+                    "ts": r["created_ts"],
+                }
             )
         entries.sort(key=lambda e: e["ts"])
         return entries[-limit:]
@@ -2938,6 +3040,7 @@ class Scope:
 # (name -> ((param, kind), ...)); later plans extend it as engine/mutation accessors land.
 _SCOPE_GUARDED = {
     "get_item": (("item_id", "item"),),
+    "set_photo_uploads": (("item_id", "item"),),
     "get_thread": (("thread_id", "thread"),),
     "get_thread_messages": (("thread_id", "thread"),),
     "append_thread_message": (("thread_id", "thread"),),
@@ -2971,6 +3074,7 @@ _SCOPE_GUARDED = {
 _SCOPE_MISS_NONE = frozenset({"get_item", "get_thread", "get_want"})
 _SCOPE_MISS_EMPTY = frozenset({"get_thread_messages"})
 _SCOPE_MISS_NOTFOUND = {
+    "set_photo_uploads": ("item", ItemNotFound),
     "append_thread_message": ("thread", ThreadNotFound),
     "update_thread": ("thread", ThreadNotFound),
     "hold_thread": ("thread", ThreadNotFound),

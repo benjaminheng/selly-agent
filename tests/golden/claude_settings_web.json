@@ -3,15 +3,15 @@
     "allow": [
       "mcp__selly__get_item",
       "mcp__selly__carousell_ai_publish_listing",
-      "mcp__selly__send_message"
+      "mcp__selly__send_message",
+      "WebSearch",
+      "WebFetch"
     ],
     "deny": [
       "Bash",
       "Edit",
       "Write",
       "NotebookEdit",
-      "WebSearch",
-      "WebFetch",
       "Read"
     ]
   }
