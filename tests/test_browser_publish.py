@@ -217,8 +217,7 @@ def test_the_rail_prompt_says_nothing_about_a_working_directory(store, xdg_tmp) 
 
 
 def test_the_recipe_does_not_send_the_pass_to_a_media_store_path() -> None:
-    """The one sentence whose wrongness cost a live publish attempt: the recipe used to say the
-    photos were "already on disk at the paths it gives you", and the browser cannot read those."""
+    """The recipe used to send the pass to `get_item`'s paths, which the browser cannot read."""
     recipe = skills.load("listing-flow-carousell")
     assert "working directory" in recipe
     assert "already on disk at the paths it gives you" not in recipe
@@ -253,8 +252,7 @@ def test_a_market_with_no_recorded_composer_gets_no_url_rather_than_a_guess(stor
 
 
 def test_a_publish_gets_a_longer_leash_than_a_reply() -> None:
-    """The cap is a runaway backstop sized to the flow. A shared 30 cut a live publish off two turns
-    from a finished listing, having spent ~40 calls on the composer."""
+    """The cap is a runaway backstop, sized to the flow rather than shared across them."""
     assert passes.PASS_TYPES["publish"].max_turns == passes.PUBLISH_MAX_TURNS
     assert passes.PASS_TYPES["reply"].max_turns == passes.PASS_MAX_TURNS
     assert passes.PUBLISH_MAX_TURNS > passes.PASS_MAX_TURNS
@@ -268,7 +266,7 @@ def test_the_cap_reaches_the_harness_argv() -> None:
 
 
 def test_the_recipe_batches_the_field_read_back() -> None:
-    """Three separate reads cost three turns of a budget that ran out."""
+    """One read for three fields, not three reads."""
     recipe = skills.load("listing-flow-carousell")
     assert "ONE `browser_evaluate`" in recipe
 

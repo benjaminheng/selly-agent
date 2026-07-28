@@ -369,14 +369,26 @@ def test_a_thread_that_had_messages_cannot_suddenly_read_as_empty(store, bus, se
 
 
 def test_a_genuinely_new_empty_thread_is_not_blind(store, bus, seeded) -> None:
-    """With nothing recorded yet, an empty tail is simply a conversation we have read nothing from —
-    no claim is being made about vanished history."""
+    """A conversation the list reports with no message of its own, reading as empty, agrees with
+    itself. Nothing is being claimed about vanished history."""
     _thread(store, seeded)
-    client = StubClient(conversations=[_conv()], tails={"99": []})
+    client = StubClient(conversations=[_conv(last_message="")], tails={"99": []})
     deps = _deps(store, bus, client, browser_blind_after=1, inbox_full_sweep_every=1)
     inbox.inbox_lane(deps)
     assert "carousell" not in deps.blind
     assert store.count_queued_notices() == 0
+
+
+def test_a_tail_that_disagrees_with_the_conversation_list_is_blind(store, bus, seeded) -> None:
+    """The list said this conversation's latest message is some text and the page showed none. We
+    cannot see what we were just told is there, which is the definition of blind — and reading it as
+    "the buyer said nothing" is how a live thread went unanswered with no signal at all."""
+    _thread(store, seeded)
+    client = StubClient(conversations=[_conv(last_message="Any defects?")], tails={"99": []})
+    deps = _deps(store, bus, client, browser_blind_after=1, inbox_full_sweep_every=1)
+    inbox.inbox_lane(deps)
+    assert deps.blind.get("carousell") == 1
+    assert store.count_queued_notices() == 1
 
 
 # --- login and availability ---------------------------------------------------------------------

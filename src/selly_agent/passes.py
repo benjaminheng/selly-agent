@@ -39,12 +39,7 @@ from selly_agent.tools import (
 log = logging.getLogger(__name__)
 
 PASS_MAX_TURNS = 30
-# Filling a marketplace composer is a long flow even when it is efficient: the photo upload alone
-# costs several calls because its dropzone and its edit dialog both sit behind overlays, and then
-# come the category wait, the batch fill, a read-back of every field, the meet-up toggle with its
-# own read-back, the publish click, a post-publish tour and two upsells to decline, and reading the
-# permalink back off the listings grid. A clean live run took 53 calls; the shared cap of 30 cut an
-# earlier one off two turns from a finished listing, so this is sized well clear of measured.
+# Filling a marketplace composer takes many more calls than answering a buyer.
 PUBLISH_MAX_TURNS = 80
 # The ephemeral token (and the reaper's age gate) outlive the deadline by this slack, so a pass
 # in its final teardown is never de-authed or reaped out from under itself.
@@ -131,14 +126,9 @@ def publish_market(payload: dict) -> str:
 def staged_photo_names(item_id: str, market: str, store) -> tuple:
     """The filenames an item's photos are staged under in a browser publish's workspace.
 
-    Derived rather than reported back by the copy, because the prompt is built before the workspace
-    exists — one helper answers for both, so the names in the prompt cannot drift from the files on
-    disk. Numbered rather than carried across, so two photos of the same name cannot collide and a
-    camera's own filename never travels.
-
-    Empty for the rail, whose upload runs in the daemon and reads the media store directly. Empty
-    too for an item that has gone missing: the pass's own get_item reports that far better than a
-    prompt builder failing for a reason of its own.
+    Derived rather than returned by the copy, because the prompt is built before the workspace
+    exists; one helper answers for both so the names cannot drift from the files. Empty for the
+    rail, whose upload runs in the daemon and reads the media store directly.
     """
     if market == DEFAULT_PUBLISH_MARKET:
         return ()
@@ -286,9 +276,7 @@ class PassType:
     # Set when the skill set depends on the payload (which marketplace's recipe a publish needs);
     # otherwise `skills` is the declaration and stays readable at a glance.
     build_skills: Callable[[dict, object, str], tuple] | None = None
-    # A runaway backstop, not a budget, so it is sized to the flow: answering a buyer takes a
-    # handful of calls, filling a marketplace composer dozens. One number for both cut a publish
-    # off two turns from a finished listing.
+    # A runaway backstop, not a budget, so it is sized to the flow rather than shared across them.
     max_turns: int = PASS_MAX_TURNS
 
     def skills_for(self, payload: dict, store=None, pass_id: str = "") -> tuple:
@@ -459,13 +447,12 @@ def _write_workspace(workspace: Path, spec: PassSpec) -> None:
 def _stage_photos(workspace: Path, payload: dict, store) -> tuple:
     """Copy a browser publish's photos into its workspace, and answer with what was staged.
 
-    The browser's file upload can only read the directories the Playwright server treats as its
-    workspace roots, and the media store is not one of them — so a photo has to be put in front of
-    it deliberately. Copying into the pass workspace keeps that grant as narrow as the flow: the
-    photos of the one item being published, for the life of one pass, swept with the directory.
+    The browser's file upload reads only the directories the Playwright server treats as workspace
+    roots, and the media store is not one — so a photo has to be put in front of it deliberately.
+    The pass workspace keeps that grant as narrow as the flow, and is swept with the pass.
 
-    A missing source file is skipped rather than fatal. The recipe verifies what it uploaded and
-    reports a shortfall, which beats refusing to publish at all because one photo went astray.
+    A missing source file is skipped rather than fatal: the recipe verifies what it uploaded and
+    reports a shortfall, which beats refusing to publish because one photo went astray.
     """
     item_id = payload.get("item_id")
     if not item_id:

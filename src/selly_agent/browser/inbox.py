@@ -185,7 +185,7 @@ def _read_market(deps: InboxDeps, client, adapter, region: str | None) -> None:
         if not full_sweep and _can_skip(deps.store, thread, row):
             continue
         opened += 1
-        fresh = _read_thread(deps, client, adapter, thread, region)
+        fresh = _read_thread(deps, client, adapter, thread, region, row)
         if fresh is None:
             unreadable += 1
         else:
@@ -281,10 +281,22 @@ def _adopt(deps: InboxDeps, market: str, adapter, thread_id: str, row: dict, han
     return True
 
 
-def _read_thread(deps: InboxDeps, client, adapter, thread: dict, region: str | None) -> int | None:
+def _read_thread(
+    deps: InboxDeps,
+    client,
+    adapter,
+    thread: dict,
+    region: str | None,
+    row: dict | None = None,
+) -> int | None:
     """Open one thread and reconcile its tail. Returns how many rows were new, or None when the
     conversation could not be read at all — which the caller counts as being blind on this market,
-    never as the buyer having said nothing."""
+    never as the buyer having said nothing.
+
+    `row` is the conversation as the list reported it, which makes one failure detectable: if the
+    list says the conversation has a latest message and the page shows none, the two disagree and we
+    cannot see what we were told is there.
+    """
     market = thread["market"]
     native = thread["thread_id"].split(":", 1)[1] if ":" in thread["thread_id"] else ""
     url = marketplaces.market_url(market, "thread", region, thread_id=native)
@@ -301,9 +313,12 @@ def _read_thread(deps: InboxDeps, client, adapter, thread: dict, region: str | N
     stored = deps.store.get_thread_messages(thread["thread_id"], limit=None)
     if not tail:
         # A thread exists because somebody wrote in it, so a conversation we have already recorded
-        # messages for cannot legitimately read as empty. If it does, the page changed shape under
-        # the reader — report that rather than let it pass for "the buyer said nothing new".
-        return None if stored else 0
+        # messages for cannot legitimately read as empty. Neither can one the list just told us has
+        # a latest message. Either way the page changed shape under the reader — report that rather
+        # than let it pass for "the buyer said nothing new".
+        if stored or (row or {}).get("last_message"):
+            return None
+        return 0
     fresh = reconcile.new_rows(tail, stored, now=deps.now())
     for entry in fresh:
         verdict = None

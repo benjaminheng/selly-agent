@@ -47,6 +47,10 @@ LISTING_ID_PATTERN = r"/p/(?:[^/]*-)?(\d+)/?$"
 # Returns `{conversations: [...]}` on a good read and `{error: …}` otherwise. The distinction is the
 # point: an empty list here genuinely means the seller has no conversations, whereas a failure says
 # so out loud instead of quietly looking like an empty inbox.
+#
+# The id comes from `legacy_offer_id`, not `id`. `id` is a 32-bit integer server-side and has
+# wrapped, so a new conversation reports a negative one, which in the chat URL is not that
+# conversation. `legacy_offer_id` is a string and carries the true value.
 CONVERSATIONS_JS = """async () => {
   try {
     const res = await fetch(
@@ -62,7 +66,7 @@ CONVERSATIONS_JS = """async () => {
         const user = o.user || {};
         const product = o.product || {};
         return {
-          thread_id: String(o.id || ''),
+          thread_id: String(o.legacy_offer_id || o.id || ''),
           handle: String(user.username || ''),
           product_id: product.id ? String(product.id) : null,
           title: String(product.title || ''),
