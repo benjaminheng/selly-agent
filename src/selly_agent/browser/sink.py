@@ -178,7 +178,7 @@ class BrowserReplySink:
         that silently cleared, or a chat that ignored the key because it thought the box was empty
         all look like success from the outside. Only our own words in an outbound bubble count.
         """
-        tail = reconcile.classify_tail(self._client.evaluate(adapter.tail_js) or [])
+        tail = reconcile.classify_tail(self._client.evaluate(adapter.conversation_tail_js) or [])
         wanted = reconcile.normalize(text)
         return any(
             bubble["side"] == "out" and reconcile.normalize(bubble["text"]) == wanted

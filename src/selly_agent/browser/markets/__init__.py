@@ -35,10 +35,11 @@ class MarketAdapter:
     """One marketplace's browser contract."""
 
     market: str
-    # JS artifacts, each a function expression for browser_evaluate. `conversations_js` answers
-    # `{conversations: [...]}` or `{error: …}`; `tail_js` answers a bubble list or null to abstain.
-    conversations_js: str
-    tail_js: str
+    # JS artifacts, each a function expression for browser_evaluate. `conversations_list_js` answers
+    # `{conversations: [...]}` or `{error: …}`; `conversation_tail_js` answers the trailing bubbles
+    # of the open conversation, or null to abstain.
+    conversations_list_js: str
+    conversation_tail_js: str
     login_js: str
     # How the composed buyer-chat message is submitted, as a function taking the composer element.
     # Answers `{sent: bool, …}` — false means the page did not accept it and nothing was delivered,
@@ -68,8 +69,8 @@ class MarketAdapter:
 
 CAROUSELL = MarketAdapter(
     market="carousell",
-    conversations_js=carousell.CONVERSATIONS_JS,
-    tail_js=carousell.TAIL_JS,
+    conversations_list_js=carousell.CONVERSATIONS_LIST_JS,
+    conversation_tail_js=carousell.CONVERSATION_TAIL_JS,
     login_js=carousell.LOGIN_JS,
     chat_message_submit_js=carousell.CHAT_MESSAGE_SUBMIT_JS,
     listing_id_pattern=carousell.LISTING_ID_PATTERN,

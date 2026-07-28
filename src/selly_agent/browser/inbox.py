@@ -149,7 +149,7 @@ def _read_market(deps: InboxDeps, client, adapter, region: str | None) -> None:
         return
     _clear_notice(deps, f"logged_out:{market}")
 
-    answer = client.evaluate(adapter.conversations_js)
+    answer = client.evaluate(adapter.conversations_list_js)
     if not isinstance(answer, dict) or not isinstance(answer.get("conversations"), list):
         # The list came back as a failure rather than as content. Unlike a DOM read that finds
         # nothing, this cannot be mistaken for an empty inbox, so it is reported as what it is.
@@ -304,7 +304,7 @@ def _read_thread(
         log.warning("no recorded thread URL template for %s", market)
         return None
     client.navigate(url)
-    raw = client.evaluate(adapter.tail_js)
+    raw = client.evaluate(adapter.conversation_tail_js)
     if raw is None:
         # The reader could not find the message list. An empty tail would claim the conversation is
         # over; this says we could not see it.

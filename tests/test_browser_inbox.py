@@ -56,11 +56,11 @@ class StubClient:
         # case rather than as a substring match landing on the wrong branch.
         if function == carousell_market.LOGIN_JS:
             return {"state": self.login}
-        if function == carousell_market.CONVERSATIONS_JS:
+        if function == carousell_market.CONVERSATIONS_LIST_JS:
             if self.error is not None:
                 return {"error": self.error}
             return {"conversations": list(self.conversations)}
-        if function == carousell_market.TAIL_JS:
+        if function == carousell_market.CONVERSATION_TAIL_JS:
             native = self.url.rstrip("/").rsplit("/", 1)[-1]
             tail = self.tails.get(native, [])
             # None is the artifact's abstain signal ("I could not find the message list") and has

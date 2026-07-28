@@ -58,12 +58,12 @@ class SlowClient:
             if self.typed is not None:
                 self.bubbles.append({"text": self.typed, "side": "out", "y": 9})
             return {"sent": True, "cleared": True}
-        if function == carousell_market.TAIL_JS:
+        if function == carousell_market.CONVERSATION_TAIL_JS:
             self._record(("tail", None))
             return list(self.bubbles)
         if function == carousell_market.LOGIN_JS:
             return {"state": "logged_in"}
-        if function == carousell_market.CONVERSATIONS_JS:
+        if function == carousell_market.CONVERSATIONS_LIST_JS:
             self._record(("conversations", None))
             return {
                 "conversations": [

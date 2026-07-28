@@ -82,7 +82,7 @@ class StubClient:
         return "ok"
 
     def evaluate(self, function, **kwargs):
-        if function == carousell_market.TAIL_JS:
+        if function == carousell_market.CONVERSATION_TAIL_JS:
             return list(self.bubbles)
         if function == carousell_market.CHAT_MESSAGE_SUBMIT_JS:
             self.calls.append(("submit", kwargs.get("target")))

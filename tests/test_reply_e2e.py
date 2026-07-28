@@ -140,7 +140,7 @@ class StubBrowser:
 
         if function == market.LOGIN_JS:
             return {"state": "logged_in"}
-        if function == market.CONVERSATIONS_JS:
+        if function == market.CONVERSATIONS_LIST_JS:
             return {
                 "conversations": [
                     {
@@ -153,7 +153,7 @@ class StubBrowser:
                     }
                 ]
             }
-        if function == market.TAIL_JS:
+        if function == market.CONVERSATION_TAIL_JS:
             return [{"text": self.text, "side": "in", "y": 1}]
         raise AssertionError("unexpected evaluate")
 

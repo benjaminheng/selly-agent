@@ -51,7 +51,7 @@ LISTING_ID_PATTERN = r"/p/(?:[^/]*-)?(\d+)/?$"
 # The id comes from `legacy_offer_id`, not `id`. `id` is a 32-bit integer server-side and has
 # wrapped, so a new conversation reports a negative one, which in the chat URL is not that
 # conversation. `legacy_offer_id` is a string and carries the true value.
-CONVERSATIONS_JS = """async () => {
+CONVERSATIONS_LIST_JS = """async () => {
   try {
     const res = await fetch(
       '/ds/offer/1.0/me/?_path=%2F1.0%2Fme%2F&count=50&l=en&type=all',
@@ -101,7 +101,7 @@ CONVERSATIONS_JS = """async () => {
 #
 # Returns null when the message list cannot be identified — the caller must treat that as a failed
 # read, because an empty list would claim the conversation is over when we simply could not see it.
-TAIL_JS = """() => {
+CONVERSATION_TAIL_JS = """() => {
   const cut = window.innerWidth * 0.35;
   const panes = Array.from(document.querySelectorAll('div')).filter((el) => {
     if (!/auto|scroll/.test(getComputedStyle(el).overflowY)) return false;
