@@ -73,7 +73,9 @@ def fake_rail():
     server.uploads = []
     server.upload_status = 200
     server.upload_result = {"encrypted_url": "enc-abc"}
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    # a short accept-loop poll: shutdown() waits for the next wake, and the stdlib default of
+    # 0.5s would be paid by every test taking this fixture
+    thread = threading.Thread(target=server.serve_forever, args=(0.02,), daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:

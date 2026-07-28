@@ -36,7 +36,9 @@ def guests_server():
     server.response = {"user_id": "u1", "country": "SG", "api_key": "guest-abc"}
     server.hits = 0
     server.last_country = None
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # a short accept-loop poll: shutdown() waits for the next wake, and the stdlib default of
+    # 0.5s would be paid by every test taking this fixture
+    threading.Thread(target=server.serve_forever, args=(0.02,), daemon=True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
         yield server, base

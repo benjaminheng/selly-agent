@@ -40,6 +40,11 @@ _TAIL_PAGE = PACKAGE_DATA_DIR / "tail.html"
 _LOCALHOST_NAMES = frozenset({"127.0.0.1", "localhost", "::1"})
 _DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
+# How often the accept loop wakes to notice a shutdown request. stop() cannot return until it does,
+# so this is the floor on shutdown latency — the stdlib default of 0.5s is half a second of idling
+# on every daemon stop.
+_SHUTDOWN_POLL_SEC = 0.02
+
 # JSON-RPC error codes we use.
 _PARSE_ERROR = -32700
 _INVALID_REQUEST = -32600
@@ -119,7 +124,10 @@ class HttpServer:
 
     def start(self) -> None:
         self._thread = threading.Thread(
-            target=self._httpd.serve_forever, name="http-server", daemon=True
+            target=self._httpd.serve_forever,
+            args=(_SHUTDOWN_POLL_SEC,),
+            name="http-server",
+            daemon=True,
         )
         self._thread.start()
         log.info("http server listening on 127.0.0.1:%s", self.port)
