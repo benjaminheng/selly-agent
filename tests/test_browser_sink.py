@@ -26,16 +26,21 @@ class StubClient:
     """A browser whose composer is present or absent per the test, and whose page remembers what was
     typed so a verify read-back can be real rather than asserted."""
 
-    def __init__(self, *, matches=None, sent_bubbles=None, fail_on=None, echo_on_click=True):
-        self.matches = {"textarea": 1, 'button[aria-label="Send"], button[type="submit"]': 1}
+    def __init__(self, *, matches=None, sent_bubbles=None, fail_on=None, echo_on_send=True):
+        self.matches = {"textarea": 1}
         if matches is not None:
             self.matches = matches
         self.bubbles = list(sent_bubbles or [])
         self.fail_on = fail_on
-        self.echo_on_click = echo_on_click
+        self.echo_on_send = echo_on_send
         self.calls: list = []
         self.typed: str | None = None
         self.url = ""
+
+    def ensure_frontmost(self, url):
+        self.calls.append(("ensure_frontmost", url))
+        if self.fail_on == "ensure_frontmost":
+            raise BrowserToolError("could not bring our own tab forward")
 
     class _Exclusive:
         def __init__(self, client):
@@ -62,7 +67,7 @@ class StubClient:
             raise BrowserToolError(f"{name} refused")
         if name == "browser_type":
             self.typed = arguments["text"]
-        if name == "browser_click" and self.echo_on_click and self.typed is not None:
+        if name == "browser_press_key" and self.echo_on_send and self.typed is not None:
             self.bubbles.append({"text": self.typed, "side": "out", "y": 99})
         return "ok"
 
@@ -122,16 +127,30 @@ def _events(bus, kind):
 # --- the send -----------------------------------------------------------------------------------
 
 
-def test_a_send_types_clicks_and_verifies_on_the_recorded_thread_url(store, bus, thread) -> None:
+def test_a_send_types_presses_enter_and_verifies_on_the_recorded_thread_url(
+    store, bus, thread
+) -> None:
     client = StubClient()
     intent = _reserve(store)
     _sink(store, bus, client).send(thread, "yes, still available!", "reply", intent)
 
     names = [call[0] for call in client.calls]
     assert names[0] == "navigate" and client.calls[0][1] == _THREAD_URL
-    assert "browser_type" in names and "browser_click" in names
-    assert names.index("browser_type") < names.index("browser_click")
+    assert names.index("browser_type") < names.index("browser_press_key")
     assert [e.payload["outcome"] for e in _events(bus, "browser.send")] == ["sent"]
+
+
+def test_the_send_key_is_enter_pressed_into_the_focused_box(store, bus, thread) -> None:
+    """The chat has no addressable send control, so the box's own key handler is the send. Typing
+    fills in one go and leaves focus there, which is what makes a bare key press land."""
+    client = StubClient()
+    _sink(store, bus, client).send(thread, "yes, still available!", "reply", _reserve(store))
+
+    typed = next(args for name, args in client.calls if name == "browser_type")
+    assert typed["target"] == "textarea"
+    assert "slowly" not in typed  # a filled newline must not send half a message
+    pressed = next(args for name, args in client.calls if name == "browser_press_key")
+    assert pressed == {"key": "Enter"}
 
 
 def test_the_send_leaves_the_intent_for_the_tool_to_commit(store, bus, thread) -> None:
@@ -153,7 +172,8 @@ def test_a_composer_miss_fails_before_anything_is_typed(store, bus, thread) -> N
     intent = _reserve(store)
     with pytest.raises(sink.SendNotAttempted, match="message_box"):
         _sink(store, bus, client).send(thread, "hi", "reply", intent)
-    assert [name for name, _ in client.calls] == ["navigate"]  # nothing typed, nothing clicked
+    # the tab is brought forward first, but nothing is typed and nothing is sent
+    assert [name for name, _ in client.calls] == ["navigate", "ensure_frontmost"]
     assert _intent_status(store, intent) == "pending"  # retry-safe
 
 
@@ -164,17 +184,36 @@ def test_several_matches_is_a_miss_not_a_pick(store, bus, thread) -> None:
         _sink(store, bus, client).send(thread, "hi", "reply", _reserve(store))
 
 
-def test_a_missing_send_button_stops_the_send_after_locating_the_box(store, bus, thread) -> None:
-    client = StubClient(matches={"textarea": 1})
+def test_a_browser_failure_while_typing_leaves_the_intent_pending(store, bus, thread) -> None:
+    client = StubClient(fail_on="browser_type")
     intent = _reserve(store)
-    with pytest.raises(sink.SendNotAttempted, match="send_button"):
+    with pytest.raises(sink.SendNotAttempted):
+        _sink(store, bus, client).send(thread, "hi", "reply", intent)
+    assert _intent_status(store, intent) == "pending"
+
+
+def test_a_tab_that_will_not_come_forward_stops_before_anything_is_typed(store, bus, thread):
+    """Keys never reach a background tab, so a send there would fill the box and quietly drop the
+    message. Refusing while nothing has been typed keeps the intent retryable."""
+    client = StubClient(fail_on="ensure_frontmost")
+    intent = _reserve(store)
+    with pytest.raises(sink.SendNotAttempted):
         _sink(store, bus, client).send(thread, "hi", "reply", intent)
     assert "browser_type" not in [name for name, _ in client.calls]
     assert _intent_status(store, intent) == "pending"
 
 
-def test_a_browser_failure_while_typing_leaves_the_intent_pending(store, bus, thread) -> None:
-    client = StubClient(fail_on="browser_type")
+def test_the_tab_is_brought_forward_before_the_composer_is_touched(store, bus, thread) -> None:
+    client = StubClient()
+    _sink(store, bus, client).send(thread, "yes, still available!", "reply", _reserve(store))
+    names = [name for name, _ in client.calls]
+    assert names.index("ensure_frontmost") < names.index("browser_type")
+
+
+def test_a_browser_failure_pressing_send_leaves_the_intent_pending(store, bus, thread) -> None:
+    """Text sitting unsent in the composer is not a delivered message, so this stays retryable —
+    the next attempt navigates afresh and refills the box."""
+    client = StubClient(fail_on="browser_press_key")
     intent = _reserve(store)
     with pytest.raises(sink.SendNotAttempted):
         _sink(store, bus, client).send(thread, "hi", "reply", intent)
@@ -197,20 +236,20 @@ def test_an_unknown_market_is_refused_before_any_navigation(store, bus) -> None:
 
 def test_a_send_we_cannot_confirm_stays_sent_unverified_and_is_never_resent(store, bus, thread):
     """The one thing worse than an unconfirmed message is the same message twice, so this hands the
-    thread to the sweep rather than clicking send again."""
-    client = StubClient(echo_on_click=False)  # the click appeared to work but nothing landed
+    thread to the sweep rather than pressing send again."""
+    client = StubClient(echo_on_send=False)  # the key press appeared to work, nothing landed
     intent = _reserve(store)
     with pytest.raises(sink.SendUnverified):
         _sink(store, bus, client).send(thread, "yes, still available!", "reply", intent)
     assert _intent_status(store, intent) == "sent_unverified"
-    assert [name for name, _ in client.calls].count("browser_click") == 1
+    assert [name for name, _ in client.calls].count("browser_press_key") == 1
     assert [e.payload["outcome"] for e in _events(bus, "browser.send")] == ["unverified"]
 
 
 def test_the_sweep_escalates_an_unverified_send_without_resending(store, bus, thread) -> None:
     from selly_agent import intent_sweep
 
-    client = StubClient(echo_on_click=False)
+    client = StubClient(echo_on_send=False)
     intent = _reserve(store)
     with pytest.raises(sink.SendUnverified):
         _sink(store, bus, client).send(thread, "hi", "reply", intent)
@@ -222,7 +261,7 @@ def test_the_sweep_escalates_an_unverified_send_without_resending(store, bus, th
 
 def test_an_inbound_bubble_with_our_text_does_not_count_as_verification(store, bus, thread):
     client = StubClient(
-        echo_on_click=False, sent_bubbles=[{"text": "same words", "side": "in", "y": 1}]
+        echo_on_send=False, sent_bubbles=[{"text": "same words", "side": "in", "y": 1}]
     )
     with pytest.raises(sink.SendUnverified):
         _sink(store, bus, client).send(thread, "same words", "reply", _reserve(store))

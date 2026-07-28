@@ -2,14 +2,27 @@
 
 The legacy version of this was five CLI steps restated across five prompt files, with the model
 holding the bracket together across turns. Here the whole thing is one call the daemon makes:
-navigate the recorded thread URL, locate the composer, type, click send, stamp the intent, and
+navigate the recorded thread URL, locate the composer, type, press Enter, stamp the intent, and
 confirm by reading our own message back off the page.
+
+Enter is the send, not a button. The chat's send icon is a plain undecorated element — no role, no
+label, nothing to address it by that would survive a restyle — while the message box itself handles
+the key, so a marketplace's own keyboard shortcut is both the more addressable control and real key
+input rather than a synthetic click on an anonymous div.
+
+Real key input is the point and it has a price: Chrome only delivers keys to a visible tab, so a
+send brings the agent's tab forward, where a read never has to. The alternative — dispatching the
+key from page context — works on a hidden tab, but it is the one thing a marketplace can trivially
+tell apart from a person (`isTrusted` is false on every event a script makes, and cannot be forged),
+and it would put that flag on the single action that commits a message. Input driven through the
+browser's own pipeline is indistinguishable from a person at the event level; a dispatched event is
+not, and it is the seller's account that would carry the signal.
 
 Two failure modes are deliberately different, because the safe response to each is opposite:
 
   * Nothing was sent (the composer could not be located, the page was wrong). The intent stays
-    `pending` and the whole thing is safe to retry, so this fails closed *before* the click.
-  * Send was clicked and we could not confirm it. The intent stays `sent_unverified` and is never
+    `pending` and the whole thing is safe to retry, so this fails closed *before* the key press.
+  * Enter was pressed and we could not confirm it. The intent stays `sent_unverified` and is never
     re-driven — the sweep escalates it for a human to look at, because the one thing worse than an
     unconfirmed message is the same message twice.
 """
@@ -26,7 +39,9 @@ from selly_agent.browser.client import BrowserError
 log = logging.getLogger(__name__)
 
 _MESSAGE_BOX = "message_box"
-_SEND_BUTTON = "send_button"
+
+# The key that sends, pressed into the focused message box.
+_SEND_KEY = "Enter"
 
 
 class SinkError(Exception):
@@ -64,21 +79,22 @@ class BrowserReplySink:
         try:
             with self._client.exclusive():
                 self._client.navigate(url)
+                # A background tab would take the text and drop the key that sends it.
+                self._client.ensure_frontmost(url)
                 box = self._locate(market, adapter, _MESSAGE_BOX)
-                button = self._locate(market, adapter, _SEND_BUTTON)
+                # Filled in one go rather than typed character by character, so a reply containing a
+                # newline cannot press Enter part-way through itself and send half a message.
                 self._client.call_tool(
                     "browser_type",
                     {"target": box.target, "element": "the reply message box", "text": text},
                 )
-                self._client.call_tool(
-                    "browser_click",
-                    {"target": button.target, "element": "the send button"},
-                )
-                # Past this line the buyer may already have the message, so nothing below may retry.
+                # Typing leaves the box focused, and the press is what sends. Past this line the
+                # buyer may already have the message, so nothing below may retry.
+                self._client.call_tool("browser_press_key", {"key": _SEND_KEY})
                 self._store.mark_intent_sent_unverified(intent_id)
                 verified = self._verify(adapter, text)
         except BrowserError as exc:
-            # A browser failure before the click leaves nothing sent; the type/click calls are the
+            # A browser failure before the press leaves nothing sent; the type/press calls are the
             # only ones that could have delivered anything, and a failure in them means the action
             # did not complete. Either way the intent's status decides what happens next.
             self._publish(market, thread, "browser_error", str(exc))
@@ -142,9 +158,9 @@ class BrowserReplySink:
     def _verify(self, adapter, text: str) -> bool:
         """Confirm the message is on the page as one of ours.
 
-        "No error from the click" is not success — a validation the page refused, a composer that
-        silently cleared, or an overlay that swallowed the click all look like success from the
-        outside. Only our own words in an outbound bubble count.
+        "No error from the key press" is not success — a validation the page refused, a composer
+        that silently cleared, or a chat that ignored the key because it thought the box was empty
+        all look like success from the outside. Only our own words in an outbound bubble count.
         """
         tail = reconcile.classify_tail(self._client.evaluate(adapter.tail_js) or [])
         wanted = reconcile.normalize(text)

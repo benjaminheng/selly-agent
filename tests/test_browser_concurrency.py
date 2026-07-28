@@ -43,11 +43,14 @@ class SlowClient:
         self.url = url
         self.gate.wait(timeout=5)
 
+    def ensure_frontmost(self, url):
+        self._record(("ensure_frontmost", url))
+
     def call_tool(self, name, arguments):
         self._record((name, arguments.get("target") or arguments.get("action")))
         if name == "browser_type":
             self.typed = arguments["text"]
-        if name == "browser_click" and self.typed is not None:
+        if name == "browser_press_key" and self.typed is not None:
             self.bubbles.append({"text": self.typed, "side": "out", "y": 9})
         return "ok"
 

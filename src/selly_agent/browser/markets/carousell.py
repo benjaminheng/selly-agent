@@ -156,22 +156,19 @@ LOGIN_JS = """() => {
   }
 }"""
 
-# The reply composer, as shipped defaults under the heal cache. A chat page has one message box and
-# one send control, so these stay class-agnostic; when Carousell moves either, the resolve finds
-# nothing, the send fails closed before any click, and the healed selector is what the cache learns.
+# The reply composer, as shipped defaults under the heal cache. A chat page has exactly one message
+# box, so this stays class-agnostic; when Carousell moves it, the resolve finds nothing, the send
+# fails closed before anything is typed, and the healed selector is what the cache learns.
+#
+# There is no send-button entry because there is nothing addressable to click: the send icon's
+# ancestors are undecorated elements with no role, no label and no cursor change, while the message
+# box handles Enter itself. Enter is the send.
 COMPOSER_DEFAULTS = (
     {
         "step": "message_box",
         "strategy": "css",
         "query": "textarea",
         "action_kind": "type",
-        "page_url_pattern": "/inbox/",
-    },
-    {
-        "step": "send_button",
-        "strategy": "css",
-        "query": 'button[aria-label="Send"], button[type="submit"]',
-        "action_kind": "click",
         "page_url_pattern": "/inbox/",
     },
 )
