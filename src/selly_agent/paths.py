@@ -128,7 +128,12 @@ def browser_output_dir() -> Path:
 
 
 def passes_dir() -> Path:
-    """Ephemeral per-pass workspaces (generated harness config only; swept on pass end)."""
+    """Ephemeral per-pass workspaces, swept on pass end.
+
+    Generated harness config, plus whatever a pass has to be handed as a real file — a browser
+    publish stages the item's photos here, because the browser's upload reads only its own
+    workspace roots.
+    """
     return state_dir() / "passes"
 
 
@@ -200,6 +205,15 @@ def launch_agents_dir(platform=None) -> Path:
 # --- ensure helpers ------------------------------------------------------------------------
 
 
+def ensure_private_dir(path: Path) -> Path:
+    """Create a directory only its owner can read, from creation.
+
+    For a directory made outside startup — a per-pass workspace, which holds the seller's photos
+    while a browser publish runs.
+    """
+    return _ensure(path, 0o700)
+
+
 def _ensure(path: Path, mode: int) -> Path:
     """Create a directory with an exact mode, from creation (umask neutralized so a sensitive
     mode like 0700 is never widened, and never applied via a post-creation chmod window)."""
@@ -225,7 +239,9 @@ def ensure_state_dirs() -> None:
     _ensure(state_dir(), 0o755)
     _ensure(backups_dir(), 0o755)
     _ensure(logs_dir(), 0o755)
-    _ensure(passes_dir(), 0o755)
+    # 0700: a browser publish stages the item's photographs into its pass workspace, because the
+    # browser's file upload can only read its own workspace roots.
+    _ensure(passes_dir(), 0o700)
     # 0700: page snapshots can carry the seller's own address off a composer page.
     _ensure(browser_output_dir(), 0o700)
 

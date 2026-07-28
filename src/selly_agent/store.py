@@ -2247,6 +2247,16 @@ class Store:
         rows = self._db.query("SELECT value FROM seller_config WHERE section = ?", (section,))
         return json.loads(rows[0]["value"]) if rows else None
 
+    def seller_region(self) -> str | None:
+        """Which regional site of a marketplace this seller posts on, or None if not recorded.
+
+        Every URL the agent composes and every one it verifies is pinned to this: without it a host
+        check falls back to matching the marketplace's name anywhere in the domain, which a
+        lookalike satisfies. So it is read from here rather than accepted from a caller.
+        """
+        region = (self.get_seller_config_section("basics") or {}).get("region")
+        return str(region) if region else None
+
     def get_seller_config_public(self) -> dict:
         """Every section except the private origin address — the buyer-safe view a read tool may
         return."""

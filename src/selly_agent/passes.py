@@ -39,6 +39,13 @@ from selly_agent.tools import (
 log = logging.getLogger(__name__)
 
 PASS_MAX_TURNS = 30
+# Filling a marketplace composer is a long flow even when it is efficient: the photo upload alone
+# costs several calls because its dropzone and its edit dialog both sit behind overlays, and then
+# come the category wait, the batch fill, a read-back of every field, the meet-up toggle with its
+# own read-back, the publish click, a post-publish tour and two upsells to decline, and reading the
+# permalink back off the listings grid. A clean live run took 53 calls; the shared cap of 30 cut an
+# earlier one off two turns from a finished listing, so this is sized well clear of measured.
+PUBLISH_MAX_TURNS = 80
 # The ephemeral token (and the reaper's age gate) outlive the deadline by this slack, so a pass
 # in its final teardown is never de-authed or reaped out from under itself.
 TOKEN_SLACK_SEC = 60.0
@@ -88,17 +95,29 @@ PUBLISH_BROWSER_TOOLS = (
 BROWSER_SERVER_NAME = "playwright"
 
 
-def publish_prompt(item_id: str, market: str = DEFAULT_PUBLISH_MARKET) -> str:
+def publish_prompt(
+    item_id: str,
+    market: str = DEFAULT_PUBLISH_MARKET,
+    *,
+    photos: tuple = (),
+    composer_url: str | None = None,
+) -> str:
     where = (
         "to carousell.ai, following the listing flow's publish step"
         if market == DEFAULT_PUBLISH_MARKET
         else f"to {marketplaces.display_name(market)} in the browser, following its listing recipe"
     )
+    # The browser reads only its own workspace roots, so the photos are staged there and the prompt
+    # names them; the recipe never types a marketplace URL, so the composer arrives here too.
+    staged = f"Its photos are in your working directory: {', '.join(photos)}\n" if photos else ""
+    composer = f"The composer is at {composer_url}\n" if composer_url else ""
     return (
         f"{PASS_PROMPT_MARKER}\n"
         f"Publish item {item_id} {where}.\n"
         f"Read the item with get_item. It has already been confirmed with the seller, so do not "
         f"re-confirm and do not change its title, price, or description — publish what is there.\n"
+        f"{composer}"
+        f"{staged}"
         f"Report the live listing URL when it is up, or say what failed."
     )
 
@@ -109,11 +128,41 @@ def publish_market(payload: dict) -> str:
     return str(payload.get("market") or DEFAULT_PUBLISH_MARKET)
 
 
+def staged_photo_names(item_id: str, market: str, store) -> tuple:
+    """The filenames an item's photos are staged under in a browser publish's workspace.
+
+    Derived rather than reported back by the copy, because the prompt is built before the workspace
+    exists — one helper answers for both, so the names in the prompt cannot drift from the files on
+    disk. Numbered rather than carried across, so two photos of the same name cannot collide and a
+    camera's own filename never travels.
+
+    Empty for the rail, whose upload runs in the daemon and reads the media store directly. Empty
+    too for an item that has gone missing: the pass's own get_item reports that far better than a
+    prompt builder failing for a reason of its own.
+    """
+    if market == DEFAULT_PUBLISH_MARKET:
+        return ()
+    item = store.get_item(item_id)
+    if item is None:
+        return ()
+    return tuple(
+        f"{index:02d}{Path(entry['path']).suffix.lower()}"
+        for index, entry in enumerate(item.get("photos") or [], start=1)
+        if entry.get("path")
+    )
+
+
 def _publish_prompt(payload: dict, store, pass_id: str) -> str:
     item_id = payload.get("item_id")
     if not item_id:
         raise PassPayloadError("no item_id in payload")
-    return publish_prompt(item_id, publish_market(payload))
+    market = publish_market(payload)
+    return publish_prompt(
+        item_id,
+        market,
+        photos=staged_photo_names(item_id, market, store),
+        composer_url=marketplaces.market_url(market, "sell", store.seller_region()),
+    )
 
 
 def _publish_skills(payload: dict, store, pass_id: str) -> tuple:
@@ -237,6 +286,10 @@ class PassType:
     # Set when the skill set depends on the payload (which marketplace's recipe a publish needs);
     # otherwise `skills` is the declaration and stays readable at a glance.
     build_skills: Callable[[dict, object, str], tuple] | None = None
+    # A runaway backstop, not a budget, so it is sized to the flow: answering a buyer takes a
+    # handful of calls, filling a marketplace composer dozens. One number for both cut a publish
+    # off two turns from a finished listing.
+    max_turns: int = PASS_MAX_TURNS
 
     def skills_for(self, payload: dict, store=None, pass_id: str = "") -> tuple:
         if self.build_skills is None:
@@ -257,6 +310,7 @@ PASS_TYPES = {
         build_prompt=_publish_prompt,
         build_skills=_publish_skills,
         build_browser_tools=_publish_browser_tools,
+        max_turns=PUBLISH_MAX_TURNS,
     ),
     # The reply pass answers buyers. It is the one flow acting on words a stranger wrote, so it is
     # the most constrained: an entity scope covering only its own threads, no web research, and no
@@ -383,7 +437,7 @@ def build_spec(
         mcp_endpoint=endpoint,
         mcp_token=token,
         allowed_tools=allowed_tools_for(pass_type.tier),
-        max_turns=PASS_MAX_TURNS,
+        max_turns=pass_type.max_turns,
         append_system_prompt=skills.compose_system_prompt(pass_type.skills_for(payload or {}))
         or None,
         web_tools=pass_type.web_tools,
@@ -393,10 +447,43 @@ def build_spec(
 
 
 def _write_workspace(workspace: Path, spec: PassSpec) -> None:
+    # 0700 at creation: a browser publish stages the item's photographs in here, and the mode has to
+    # be right before anything is written rather than chmodded afterwards.
+    paths.ensure_private_dir(workspace)
     for rel, content in claude.render_workspace(spec).items():
         path = workspace / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
+
+
+def _stage_photos(workspace: Path, payload: dict, store) -> tuple:
+    """Copy a browser publish's photos into its workspace, and answer with what was staged.
+
+    The browser's file upload can only read the directories the Playwright server treats as its
+    workspace roots, and the media store is not one of them — so a photo has to be put in front of
+    it deliberately. Copying into the pass workspace keeps that grant as narrow as the flow: the
+    photos of the one item being published, for the life of one pass, swept with the directory.
+
+    A missing source file is skipped rather than fatal. The recipe verifies what it uploaded and
+    reports a shortfall, which beats refusing to publish at all because one photo went astray.
+    """
+    item_id = payload.get("item_id")
+    if not item_id:
+        return ()
+    names = staged_photo_names(item_id, publish_market(payload), store)
+    if not names:
+        return ()
+    item = store.get_item(item_id)
+    staged = []
+    for name, entry in zip(names, item.get("photos") or []):
+        source = Path(entry["path"])
+        if not source.is_file():
+            log.warning("photo %s for %s is missing; not staged", source, item_id)
+            continue
+        workspace.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, workspace / name)
+        staged.append(name)
+    return tuple(staged)
 
 
 def _cleanup_workspace(workspace: Path) -> None:
@@ -507,6 +594,8 @@ def run_pass(deps: PassDeps, claimed) -> str:
             )
             return "spawn_error"
         _write_workspace(workspace, spec)
+        if claimed.type == "publish":
+            _stage_photos(workspace, payload, deps.store)
         try:
             argv = deps.argv_builder(spec)
         except SpawnError as exc:

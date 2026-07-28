@@ -71,7 +71,8 @@
       "urls": {
         "inbox": "/inbox/",
         "thread": "/inbox/{thread_id}/",
-        "my_listings": "/manage-listings/"
+        "my_listings": "/manage-listings/",
+        "sell": "/sell"
       }
     },
     {

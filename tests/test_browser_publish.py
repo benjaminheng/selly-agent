@@ -8,11 +8,14 @@ stays browser-free.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from selly_agent import marketplaces, passes
+from selly_agent import marketplaces, passes, paths, skills
 from selly_agent.config import Config
 from selly_agent.harness import claude
+from selly_agent.tools.registry import ToolError, dispatch
 
 _ENDPOINT = "http://127.0.0.1:7355/mcp"
 
@@ -141,3 +144,170 @@ def test_the_market_survives_the_queue_to_the_pass_type(store) -> None:
     assert passes.publish_market(claimed.payload) == "carousell"
     build = passes.PASS_TYPES["publish"].build_browser_tools
     assert build(claimed.payload, store, pass_id) == passes.PUBLISH_BROWSER_TOOLS
+
+
+# --- the photos the browser is allowed to see ----------------------------------------------------
+#
+# The browser's file upload reads only the directories the Playwright server treats as its workspace
+# roots, and the media store is not one of them. So a browser publish is handed copies, and the
+# prompt and the recipe both have to point at those rather than at what get_item reports.
+
+
+def _item_with_photos(store, count=2, suffix=".jpg"):
+    media = paths.media_dir()
+    media.mkdir(parents=True, exist_ok=True)
+    photos = []
+    for index in range(1, count + 1):
+        src = media / f"shot-{index}{suffix}"
+        src.write_bytes(b"\xff\xd8\xff\xd9")  # smallest thing that is recognisably a file
+        photos.append({"path": str(src)})
+    return store.create_item(title="Lamp", list_price=40.0, currency="SGD", photos=photos)
+
+
+def test_a_browser_publish_stages_its_photos_into_the_workspace(store, xdg_tmp, tmp_path) -> None:
+    item = _item_with_photos(store)
+    workspace = tmp_path / "ws"
+    staged = passes._stage_photos(  # noqa: SLF001 — the staging is the unit under test
+        workspace, {"item_id": item["id"], "market": "carousell"}, store
+    )
+    assert staged == ("01.jpg", "02.jpg")
+    assert sorted(p.name for p in workspace.iterdir()) == ["01.jpg", "02.jpg"]
+
+
+def test_a_rail_publish_stages_nothing(store, xdg_tmp, tmp_path) -> None:
+    """Its upload runs in the daemon and reads the media store directly — a copy would be waste."""
+    item = _item_with_photos(store)
+    workspace = tmp_path / "ws"
+    assert passes._stage_photos(workspace, {"item_id": item["id"]}, store) == ()  # noqa: SLF001
+    assert not workspace.exists()
+
+
+def test_an_item_with_no_photos_stages_nothing(store, xdg_tmp, tmp_path) -> None:
+    item = store.create_item(title="Lamp", list_price=40.0, currency="SGD")
+    workspace = tmp_path / "ws"
+    payload = {"item_id": item["id"], "market": "carousell"}
+    assert passes._stage_photos(workspace, payload, store) == ()  # noqa: SLF001
+
+
+def test_a_photo_that_has_gone_missing_is_skipped_not_fatal(store, xdg_tmp, tmp_path) -> None:
+    """The recipe verifies what it uploaded and reports a shortfall; refusing to publish at all
+    because one file went astray is the worse failure."""
+    item = _item_with_photos(store, count=2)
+    Path(item["photos"][0]["path"]).unlink()
+    workspace = tmp_path / "ws"
+    staged = passes._stage_photos(  # noqa: SLF001
+        workspace, {"item_id": item["id"], "market": "carousell"}, store
+    )
+    assert staged == ("02.jpg",)
+
+
+def test_the_prompt_names_the_staged_files_for_a_browser_market(store, xdg_tmp) -> None:
+    item = _item_with_photos(store)
+    names = passes.staged_photo_names(item["id"], "carousell", store)
+    assert names == ("01.jpg", "02.jpg")
+    prompt = passes.publish_prompt(item["id"], "carousell", photos=names)
+    assert "01.jpg, 02.jpg" in prompt
+    assert "working directory" in prompt
+
+
+def test_the_rail_prompt_says_nothing_about_a_working_directory(store, xdg_tmp) -> None:
+    item = _item_with_photos(store)
+    assert passes.staged_photo_names(item["id"], passes.DEFAULT_PUBLISH_MARKET, store) == ()
+    assert "working directory" not in passes.publish_prompt(item["id"])
+
+
+def test_the_recipe_does_not_send_the_pass_to_a_media_store_path() -> None:
+    """The one sentence whose wrongness cost a live publish attempt: the recipe used to say the
+    photos were "already on disk at the paths it gives you", and the browser cannot read those."""
+    recipe = skills.load("listing-flow-carousell")
+    assert "working directory" in recipe
+    assert "already on disk at the paths it gives you" not in recipe
+
+
+def test_the_prompt_carries_the_composer_url_from_the_registry(store, xdg_tmp) -> None:
+    """The recipe forbids typing a marketplace URL from memory, so the one it needs has to arrive in
+    the prompt. A live publish stalled on exactly this: the recipe said "the verified URLs you were
+    given" and nothing gave any."""
+    store.set_seller_config_section("basics", {"region": "SG"})
+    item = _item_with_photos(store, count=1)
+    prompt = passes._publish_prompt(  # noqa: SLF001
+        {"item_id": item["id"], "market": "carousell"}, store, "pass_1"
+    )
+    assert "https://www.carousell.sg/sell" in prompt
+
+
+def test_the_composer_url_is_the_sellers_own_region(store, xdg_tmp) -> None:
+    store.set_seller_config_section("basics", {"region": "MY"})
+    item = _item_with_photos(store, count=1)
+    prompt = passes._publish_prompt(  # noqa: SLF001
+        {"item_id": item["id"], "market": "carousell"}, store, "pass_1"
+    )
+    assert "https://www.carousell.com.my/sell" in prompt
+
+
+def test_a_market_with_no_recorded_composer_gets_no_url_rather_than_a_guess(store, xdg_tmp) -> None:
+    """market_url answers None for an unrecorded template, and the prompt stays silent — the recipe
+    then stops and reports instead of assembling something plausible."""
+    assert marketplaces.market_url("carousell-ai", "sell", "SG") is None
+    assert "composer is at" not in passes.publish_prompt("item_1")
+
+
+def test_a_publish_gets_a_longer_leash_than_a_reply() -> None:
+    """The cap is a runaway backstop sized to the flow. A shared 30 cut a live publish off two turns
+    from a finished listing, having spent ~40 calls on the composer."""
+    assert passes.PASS_TYPES["publish"].max_turns == passes.PUBLISH_MAX_TURNS
+    assert passes.PASS_TYPES["reply"].max_turns == passes.PASS_MAX_TURNS
+    assert passes.PUBLISH_MAX_TURNS > passes.PASS_MAX_TURNS
+
+
+def test_the_cap_reaches_the_harness_argv() -> None:
+    spec = _spec(market="carousell", browser_command=_browser_command())
+    assert spec.max_turns == passes.PUBLISH_MAX_TURNS
+    argv = claude.pass_argv(spec)
+    assert argv[argv.index("--max-turns") + 1] == str(passes.PUBLISH_MAX_TURNS)
+
+
+def test_the_recipe_batches_the_field_read_back() -> None:
+    """Three separate reads cost three turns of a budget that ran out."""
+    recipe = skills.load("listing-flow-carousell")
+    assert "ONE `browser_evaluate`" in recipe
+
+
+# --- recording where the listing went live -------------------------------------------------------
+
+
+def test_recording_a_published_url_joins_the_listing_to_the_item(store, make_ctx, xdg_tmp):
+    """The rail's publish tool records its own result; a browser publish is filled by the pass, so
+    this is the only way it comes back — and a buyer's conversation is joined to an item by exactly
+    this URL, so an unrecorded listing is one whose buyers are never answered."""
+    store.set_seller_config_section("basics", {"region": "SG"})
+    item = _item_with_photos(store, count=1)
+    ctx = make_ctx("pass:publish")
+    url = "https://www.carousell.sg/p/stanley-tape-measure-3-5m-1452470530/"
+    params = {"item_id": item["id"], "market": "carousell", "url": url}
+    out = dispatch("record_published_listing_url", params, ctx)
+    assert out["url"] == url
+    assert store.get_item(item["id"])["listing_urls"]["carousell"] == url
+
+
+@pytest.mark.parametrize(
+    ("url", "why"),
+    [
+        ("https://evilcarousell.com/p/x-1/", "a lookalike domain"),
+        ("https://www.carousell.sg/inbox/123/", "a page that is not a listing"),
+        ("https://www.carousell.com.my/p/x-1/", "the wrong region for this seller"),
+    ],
+)
+def test_a_url_that_is_not_this_sellers_listing_is_refused(store, make_ctx, xdg_tmp, url, why):
+    """A wrong URL is worse than none: it silently attaches the wrong item, or nothing, to everyone
+    who writes in. The region comes from the seller's own record, never from the caller."""
+    store.set_seller_config_section("basics", {"region": "SG"})
+    item = _item_with_photos(store, count=1)
+    ctx = make_ctx("pass:publish")
+    with pytest.raises(ToolError):
+        dispatch(
+            "record_published_listing_url",
+            {"item_id": item["id"], "market": "carousell", "url": url},
+            ctx,
+        )
+    assert store.get_item(item["id"])["listing_urls"] == {}, why

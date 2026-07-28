@@ -163,6 +163,7 @@ def test_tools_list_filtered_by_tier(server) -> None:
         "ui_cache_record",
         "ui_cache_invalidate",
         "probe_selector",
+        "record_published_listing_url",
     }
 
 

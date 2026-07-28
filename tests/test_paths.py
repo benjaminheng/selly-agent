@@ -55,6 +55,13 @@ def test_the_browser_dirs_are_0700_from_creation(xdg_tmp) -> None:
     assert os.stat(paths.browser_output_dir()).st_mode & 0o777 == 0o700
 
 
+def test_the_pass_workspaces_are_0700_from_creation(xdg_tmp) -> None:
+    """A browser publish stages the item's photographs here, because the browser's upload can only
+    read its own workspace roots. Generated config would not need this; photographs do."""
+    paths.ensure_state_dirs()
+    assert os.stat(paths.passes_dir()).st_mode & 0o777 == 0o700
+
+
 def test_ensure_runtime_dirs_creates_everything(xdg_tmp) -> None:
     paths.ensure_runtime_dirs()
     for d in (
@@ -69,3 +76,10 @@ def test_ensure_runtime_dirs_creates_everything(xdg_tmp) -> None:
         paths.config_dir(),
     ):
         assert d.is_dir()
+
+
+def test_a_pass_workspace_is_private_from_creation(xdg_tmp) -> None:
+    """It is created mid-run, not at startup, and a browser publish stages photographs into it."""
+    workspace = paths.pass_workspace_dir("pass_x")
+    paths.ensure_private_dir(workspace)
+    assert os.stat(workspace).st_mode & 0o777 == 0o700

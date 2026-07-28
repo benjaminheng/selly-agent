@@ -24,6 +24,7 @@ from selly_agent.tools.registry import (
     ToolSpec,
     register,
 )
+from selly_agent.tools.verify import verify_market_url
 
 _MARKET = "carousell-ai"
 # The rail's media-kind discriminator; it refuses an entry without one ("media type must be image").
@@ -128,5 +129,47 @@ register(
         },
         handler=_publish,
         tiers=frozenset({TIER_PASS_CHANNEL, TIER_ATTENDED, TIER_PASS_PUBLISH}),
+    )
+)
+
+
+def _record_published_listing_url(ctx: ToolContext, params: dict) -> dict:
+    """Record where an item went live in the browser.
+
+    The rail's publish tool does its own recording, because the daemon makes the call and sees the
+    result. A browser publish is filled by the pass, so nothing daemon-side knows the outcome and
+    this is how it comes back. Until it does, the item has no listing URL — and a buyer's
+    conversation is joined to an item by exactly that, so an unrecorded listing is one whose buyers
+    are never answered.
+    """
+    market, url = params["market"], params["url"]
+    verdict = verify_market_url(ctx, market, url, ctx.store.seller_region())
+    if not verdict.get("ok"):
+        raise ToolError(f"not a listing URL on {market}: {verdict.get('reason')}")
+    try:
+        item = ctx.store.record_listing_url(params["item_id"], market, url)
+    except StoreError as exc:
+        raise ToolError(str(exc)) from exc
+    return {"item_id": item["id"], "market": market, "url": url}
+
+
+register(
+    ToolSpec(
+        name="record_published_listing_url",
+        description="Record the permalink of a listing you published in the browser, after reading "
+        "it off the live page. This is what joins a buyer's conversation to the item, so a publish "
+        "is not finished until it is recorded. Refuses a URL that is not a listing on that market.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "string"},
+                "market": {"type": "string"},
+                "url": {"type": "string"},
+            },
+            "required": ["item_id", "market", "url"],
+            "additionalProperties": False,
+        },
+        handler=_record_published_listing_url,
+        tiers=frozenset({TIER_PASS_PUBLISH, TIER_ATTENDED}),
     )
 )

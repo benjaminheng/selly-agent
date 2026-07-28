@@ -73,9 +73,7 @@ class InboxDeps:
 
 
 def seller_region(store) -> str | None:
-    basics = store.get_seller_config_section("basics") or {}
-    region = basics.get("region")
-    return str(region) if region else None
+    return store.seller_region()
 
 
 def _notify_once(deps: InboxDeps, key: str, text: str) -> None:

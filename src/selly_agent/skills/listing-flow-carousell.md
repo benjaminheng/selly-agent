@@ -8,7 +8,8 @@ Publishing one already-confirmed item to Carousell by filling its real composer 
 logged-in Chrome. The numbers were agreed with the seller before this pass started: publish what the
 item record says, and change nothing.
 
-Read the item with `get_item`. Its photos are already on disk at the paths it gives you.
+Read the item with `get_item` for its title, price, description and condition. Its photos are in
+your working directory, named in your prompt — upload those, not the paths `get_item` reports.
 
 ## Before you touch the page
 
@@ -24,11 +25,11 @@ mid-flow for something else; never switch to one.
 
 ## Steps
 
-1. **Go to the composer.** `browser_navigate` to `https://<the seller's Carousell host>/sell` — the
-   bare `/sell` page. Get the host from the verified marketplace URLs you were given; never type a
-   Carousell URL from memory. (`/sell/new` is a 404.)
-2. **All photos in one upload.** One `browser_file_upload` with the item's whole photo list — never
-   one file per call, which is the slowest thing this flow can do. The "Select photos" dropzone and
+1. **Go to the composer.** `browser_navigate` to the composer URL your prompt gives you. Never type
+   a Carousell URL from memory; if the prompt has none, stop and report that.
+2. **All photos in one upload.** One `browser_file_upload` with every file from your working
+   directory — never one file per call, which is the slowest thing this flow can do. The "Select
+   photos" dropzone and
    the "Save & close" dialog sit behind overlays that swallow an ordinary click; click those through
    `browser_evaluate`. If a restored draft from a previous attempt is showing, clear it first.
 3. **Category.** Carousell usually detects one from the photos. Accept it when it fits the item;
@@ -37,10 +38,11 @@ mid-flow for something else; never switch to one.
    and is the right way to fill these three. Never set a field's value through `browser_evaluate`:
    that is synthetic input with no focus or keystroke cadence behind it, which is exactly the
    automation signature this whole approach exists to avoid.
-5. **Verify every field you filled.** Read each value back and confirm it is what you sent (compare
-   price on its digits — the page may reformat it). A field that did not take gets re-filled
-   individually; a selector that resolved to the wrong thing gets `ui_cache_invalidate`d, re-found by
-   looking at the page, and `ui_cache_record`ed once it works.
+5. **Verify every field you filled, in ONE `browser_evaluate`** that returns all three values —
+   never one read per field. Confirm each is what you sent (compare price on its digits — the page
+   may reformat it). A field that did not take gets re-filled individually; a selector that resolved
+   to the wrong thing gets `ui_cache_invalidate`d, re-found by looking at the page, and
+   `ui_cache_record`ed once it works.
 6. **Condition.** Set it from the item's condition.
 7. **Delivery on, meet-up OFF — on every listing, without exception.** Enable mail/courier delivery,
    then disable the meet-up deal method entirely and **read it back to confirm it is off**.
@@ -54,12 +56,13 @@ mid-flow for something else; never switch to one.
 9. **Publish.** Read the preview back, then click "List now" as an ordinary click. Never click it
    through `browser_evaluate`. If it appears to do nothing, the cause is almost always an unmet
    validation — check step 7 before clicking again.
-10. **Get the live URL from the page.** Dismiss the post-publish tour and survey if they appear. The
-    page does not reliably land on the listing, so read the permalink (`/p/<slug>-<id>/`) off the
-    seller's own listings grid, matching the item you just posted. **Only ever report a URL you read
-    off the page** — never one you assembled — and check it with `verify_listing_url` before
-    reporting it. No readable permalink means the publish failed: say so, rather than reporting a
-    listing as live.
+10. **Get the live URL from the page, then record it.** Dismiss the post-publish tour and survey if
+    they appear. The page does not reliably land on the listing, so read the permalink
+    (`/p/<slug>-<id>/`) off the seller's own listings grid, matching the item you just posted. **Only
+    ever report a URL you read off the page** — never one you assembled. Then call
+    `record_published_listing_url`: until you do, nobody who messages about this listing can be
+    answered, so the publish is not finished. No readable permalink means the publish failed: say so,
+    rather than reporting a listing as live.
 
 ## Never spend money
 

@@ -86,6 +86,8 @@ def test_tools_for_tier_partitions_the_surface() -> None:
         "ui_cache_record",
         "ui_cache_invalidate",
         "probe_selector",
+        # a browser publish fills the form itself, so this is how its result gets back
+        "record_published_listing_url",
     }
     assert "set_floor" not in publish
     assert "create_item" not in publish
