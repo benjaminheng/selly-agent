@@ -40,6 +40,15 @@ class MarketAdapter:
     conversations_js: str
     tail_js: str
     login_js: str
+    # How the composed buyer-chat message is submitted, as a function taking the composer element.
+    # Answers `{sent: bool, …}` — false means the page did not accept it and nothing was delivered,
+    # so the caller may retry.
+    #
+    # Empty is the safe default: submitting falls back to a real key event, indistinguishable from a
+    # person, which costs the seller their foreground. Supplying this trades that cost for a
+    # keystroke dispatched from the page, carrying `isTrusted: false` — a signal on the seller's own
+    # account, so it belongs to a market someone has decided that for.
+    chat_message_submit_js: str = ""
     # Where the listing id sits in a permalink, as a regex with one group — what joins a
     # conversation to one of our items.
     listing_id_pattern: str = ""
@@ -62,6 +71,7 @@ CAROUSELL = MarketAdapter(
     conversations_js=carousell.CONVERSATIONS_JS,
     tail_js=carousell.TAIL_JS,
     login_js=carousell.LOGIN_JS,
+    chat_message_submit_js=carousell.CHAT_MESSAGE_SUBMIT_JS,
     listing_id_pattern=carousell.LISTING_ID_PATTERN,
     composer=tuple(Selector(**row) for row in carousell.COMPOSER_DEFAULTS),
     publish_skill=carousell.PUBLISH_SKILL,

@@ -2,28 +2,25 @@
 
 The legacy version of this was five CLI steps restated across five prompt files, with the model
 holding the bracket together across turns. Here the whole thing is one call the daemon makes:
-navigate the recorded thread URL, locate the composer, type, press Enter, stamp the intent, and
-confirm by reading our own message back off the page.
+navigate the recorded thread URL, locate the composer, type, commit, stamp the intent, and confirm
+by reading our own message back off the page.
 
-Enter is the send, not a button. The chat's send icon is a plain undecorated element — no role, no
-label, nothing to address it by that would survive a restyle — while the message box itself handles
-the key, so a marketplace's own keyboard shortcut is both the more addressable control and real key
-input rather than a synthetic click on an anonymous div.
+The text is typed as real input; **how it is committed is the market's own decision**, carried on
+its adapter. Typing costs the seller nothing, but the ways to commit differ in what they give away:
 
-Real key input is the point and it has a price: Chrome only delivers keys to a visible tab, so a
-send brings the agent's tab forward, where a read never has to. The alternative — dispatching the
-key from page context — works on a hidden tab, but it is the one thing a marketplace can trivially
-tell apart from a person (`isTrusted` is false on every event a script makes, and cannot be forged),
-and it would put that flag on the single action that commits a message. Input driven through the
-browser's own pipeline is indistinguishable from a person at the event level; a dispatched event is
-not, and it is the seller's account that would carry the signal.
+  * A real key event reaches only the *active* tab, so it means selecting the agent's tab, and
+    selecting pulls the seller's window in front of whatever they were doing — every reply
+    interrupting them. This is the default, because it is indistinguishable from a person.
+  * A keystroke dispatched from the page interrupts nothing and carries `isTrusted: false`, which a
+    marketplace can read in one line. A market opts into that by supplying
+    `chat_message_submit_js`, and only where someone has decided the account can afford the signal.
 
 Two failure modes are deliberately different, because the safe response to each is opposite:
 
-  * Nothing was sent (the composer could not be located, the page was wrong). The intent stays
-    `pending` and the whole thing is safe to retry, so this fails closed *before* the key press.
-  * Enter was pressed and we could not confirm it. The intent stays `sent_unverified` and is never
-    re-driven — the sweep escalates it for a human to look at, because the one thing worse than an
+  * Nothing was sent (the composer could not be located, the page refused the commit). The intent
+    stays `pending` and the whole thing is safe to retry, so this fails closed *before* committing.
+  * The commit was accepted and we could not confirm it landed. The intent stays `sent_unverified`
+    and is never re-driven — the sweep escalates it for a human, because the one thing worse than an
     unconfirmed message is the same message twice.
 """
 
@@ -79,24 +76,29 @@ class BrowserReplySink:
         try:
             with self._client.exclusive():
                 self._client.navigate(url)
-                # A background tab would take the text and drop the key that sends it.
-                self._client.ensure_frontmost(url)
+                if not adapter.chat_message_submit_js:
+                    # A real key event lands only on the active tab, so this market's send needs the
+                    # agent's tab brought forward first.
+                    self._client.ensure_frontmost(url)
                 box = self._locate(market, adapter, _MESSAGE_BOX)
                 # Filled in one go rather than typed character by character, so a reply containing a
-                # newline cannot press Enter part-way through itself and send half a message.
+                # newline cannot commit part-way through itself and send half a message.
                 self._client.call_tool(
                     "browser_type",
                     {"target": box.target, "element": "the reply message box", "text": text},
                 )
-                # Typing leaves the box focused, and the press is what sends. Past this line the
-                # buyer may already have the message, so nothing below may retry.
-                self._client.call_tool("browser_press_key", {"key": _SEND_KEY})
+                if not self._commit(adapter, box):
+                    # The page did not take it, so nothing was delivered and this is still safe to
+                    # retry — the one case a key press could never tell us about.
+                    self._publish(market, thread, "refused", "the page did not accept the send")
+                    raise SendNotAttempted("the page did not accept the send")
+                # Past this line the buyer may already have the message, so nothing below may retry.
                 self._store.mark_intent_sent_unverified(intent_id)
                 verified = self._verify(adapter, text)
         except BrowserError as exc:
-            # A browser failure before the press leaves nothing sent; the type/press calls are the
-            # only ones that could have delivered anything, and a failure in them means the action
-            # did not complete. Either way the intent's status decides what happens next.
+            # A browser failure before the commit leaves nothing sent; the type and commit calls are
+            # the only ones that could have delivered anything, and a failure in them means the
+            # action did not complete. Either way the intent's status decides what happens next.
             self._publish(market, thread, "browser_error", str(exc))
             raise SendNotAttempted(str(exc)) from exc
 
@@ -106,6 +108,20 @@ class BrowserReplySink:
         self._publish(market, thread, "sent", None)
 
     # --- steps --------------------------------------------------------------------------------
+
+    def _commit(self, adapter, box) -> bool:
+        """Send what the composer holds, the way this market's adapter says to.
+
+        Answers whether the page accepted it. A market with its own commit reports that; a key press
+        cannot, so the trusted path assumes it landed and leaves the read-back to judge.
+        """
+        if not adapter.chat_message_submit_js:
+            self._client.call_tool("browser_press_key", {"key": _SEND_KEY})
+            return True
+        answer = self._client.evaluate(
+            adapter.chat_message_submit_js, target=box.target, element="the reply message box"
+        )
+        return bool((answer or {}).get("sent"))
 
     def _thread_url(self, thread: dict) -> str | None:
         thread_id = thread["thread_id"]

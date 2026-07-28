@@ -26,13 +26,23 @@ class StubClient:
     """A browser whose composer is present or absent per the test, and whose page remembers what was
     typed so a verify read-back can be real rather than asserted."""
 
-    def __init__(self, *, matches=None, sent_bubbles=None, fail_on=None, echo_on_send=True):
+    def __init__(
+        self,
+        *,
+        matches=None,
+        sent_bubbles=None,
+        fail_on=None,
+        echo_on_send=True,
+        page_accepts=True,
+    ):
         self.matches = {"textarea": 1}
         if matches is not None:
             self.matches = matches
         self.bubbles = list(sent_bubbles or [])
         self.fail_on = fail_on
         self.echo_on_send = echo_on_send
+        # Whether the page's own handler takes the message — what the submit reports back.
+        self.page_accepts = page_accepts
         self.calls: list = []
         self.typed: str | None = None
         self.url = ""
@@ -74,6 +84,13 @@ class StubClient:
     def evaluate(self, function, **kwargs):
         if function == carousell_market.TAIL_JS:
             return list(self.bubbles)
+        if function == carousell_market.CHAT_MESSAGE_SUBMIT_JS:
+            self.calls.append(("submit", kwargs.get("target")))
+            if self.fail_on == "submit":
+                raise BrowserToolError("evaluate refused")
+            if self.page_accepts and self.echo_on_send and self.typed is not None:
+                self.bubbles.append({"text": self.typed, "side": "out", "y": 99})
+            return {"sent": self.page_accepts, "cleared": self.page_accepts}
         # a locate probe: read the target back out of the probe's own source, so this stub answers
         # the selector the sink actually asked about
         found = re.search(r"querySelectorAll\((\".*?\")\)", function)
@@ -81,6 +98,18 @@ class StubClient:
             raise AssertionError(f"unexpected evaluate: {function}")
         target = json.loads(found.group(1))
         return {"matches": self.matches.get(target, 0), "url": self.url}
+
+
+@pytest.fixture
+def trusted_market(monkeypatch):
+    """Carousell's adapter with its own commit removed, standing in for a market that has not opted
+    into an untrusted send. That path is the default, so it needs covering even though the one live
+    market does not take it."""
+    import dataclasses
+
+    plain = dataclasses.replace(market_adapters.CAROUSELL, chat_message_submit_js="")
+    monkeypatch.setattr(market_adapters, "get_adapter", lambda market: plain)
+    return plain
 
 
 def _sink(store, bus, client):
@@ -127,30 +156,39 @@ def _events(bus, kind):
 # --- the send -----------------------------------------------------------------------------------
 
 
-def test_a_send_types_presses_enter_and_verifies_on_the_recorded_thread_url(
-    store, bus, thread
-) -> None:
+def test_a_send_types_commits_and_verifies_on_the_recorded_thread_url(store, bus, thread) -> None:
     client = StubClient()
     intent = _reserve(store)
     _sink(store, bus, client).send(thread, "yes, still available!", "reply", intent)
 
     names = [call[0] for call in client.calls]
     assert names[0] == "navigate" and client.calls[0][1] == _THREAD_URL
-    assert names.index("browser_type") < names.index("browser_press_key")
+    assert names.index("browser_type") < names.index("submit")
     assert [e.payload["outcome"] for e in _events(bus, "browser.send")] == ["sent"]
 
 
-def test_the_send_key_is_enter_pressed_into_the_focused_box(store, bus, thread) -> None:
-    """The chat has no addressable send control, so the box's own key handler is the send. Typing
-    fills in one go and leaves focus there, which is what makes a bare key press land."""
+def test_a_market_with_its_own_commit_never_takes_the_sellers_foreground(
+    store, bus, thread
+) -> None:
+    """Selecting the tab is the only thing that interrupts the seller, and it is only needed to
+    deliver a real key event. A market that commits from the page needs neither."""
+    client = StubClient()
+    _sink(store, bus, client).send(thread, "yes, still available!", "reply", _reserve(store))
+    names = [call[0] for call in client.calls]
+    assert "ensure_frontmost" not in names
+    assert "browser_press_key" not in names
+    assert "submit" in names
+
+
+def test_the_commit_is_dispatched_onto_the_located_composer(store, bus, thread) -> None:
     client = StubClient()
     _sink(store, bus, client).send(thread, "yes, still available!", "reply", _reserve(store))
 
     typed = next(args for name, args in client.calls if name == "browser_type")
     assert typed["target"] == "textarea"
-    assert "slowly" not in typed  # a filled newline must not send half a message
-    pressed = next(args for name, args in client.calls if name == "browser_press_key")
-    assert pressed == {"key": "Enter"}
+    assert "slowly" not in typed  # a filled newline must not commit half a message
+    # the same element the composer resolved to, rather than a selector repeated inside the JS
+    assert next(target for name, target in client.calls if name == "submit") == "textarea"
 
 
 def test_the_send_leaves_the_intent_for_the_tool_to_commit(store, bus, thread) -> None:
@@ -172,8 +210,7 @@ def test_a_composer_miss_fails_before_anything_is_typed(store, bus, thread) -> N
     intent = _reserve(store)
     with pytest.raises(sink.SendNotAttempted, match="message_box"):
         _sink(store, bus, client).send(thread, "hi", "reply", intent)
-    # the tab is brought forward first, but nothing is typed and nothing is sent
-    assert [name for name, _ in client.calls] == ["navigate", "ensure_frontmost"]
+    assert [name for name, _ in client.calls] == ["navigate"]  # nothing typed, nothing committed
     assert _intent_status(store, intent) == "pending"  # retry-safe
 
 
@@ -192,7 +229,46 @@ def test_a_browser_failure_while_typing_leaves_the_intent_pending(store, bus, th
     assert _intent_status(store, intent) == "pending"
 
 
-def test_a_tab_that_will_not_come_forward_stops_before_anything_is_typed(store, bus, thread):
+def test_a_page_that_refuses_the_commit_leaves_the_intent_pending(store, bus, thread) -> None:
+    """The page's own handler did not take it, so nothing was delivered and this is safe to retry —
+    the case a key press could never report, because pressing a key always "succeeds"."""
+    client = StubClient(page_accepts=False)
+    intent = _reserve(store)
+    with pytest.raises(sink.SendNotAttempted, match="did not accept"):
+        _sink(store, bus, client).send(thread, "hi", "reply", intent)
+    assert _intent_status(store, intent) == "pending"
+    assert [e.payload["outcome"] for e in _events(bus, "browser.send")] == ["refused"]
+
+
+def test_a_browser_failure_committing_leaves_the_intent_pending(store, bus, thread) -> None:
+    """Text sitting uncommitted in the composer is not a delivered message, so this stays
+    retryable — the next attempt navigates afresh and refills the box."""
+    client = StubClient(fail_on="submit")
+    intent = _reserve(store)
+    with pytest.raises(sink.SendNotAttempted):
+        _sink(store, bus, client).send(thread, "hi", "reply", intent)
+    assert _intent_status(store, intent) == "pending"
+
+
+# --- the market that has not opted into an untrusted send ----------------------------------------
+
+
+def test_the_default_commit_is_a_real_key_press_after_taking_the_tab(
+    store, bus, thread, trusted_market
+):
+    """No `chat_message_submit_js` means the market has not opted in, so the send stays a real key
+    event — at the cost of bringing the agent's tab forward to deliver it."""
+    client = StubClient()
+    _sink(store, bus, client).send(thread, "yes, still available!", "reply", _reserve(store))
+    names = [name for name, _ in client.calls]
+    assert names.index("ensure_frontmost") < names.index("browser_type")
+    assert names.index("browser_type") < names.index("browser_press_key")
+    assert "submit" not in names
+
+
+def test_a_tab_that_will_not_come_forward_stops_before_anything_is_typed(
+    store, bus, thread, trusted_market
+):
     """Keys never reach a background tab, so a send there would fill the box and quietly drop the
     message. Refusing while nothing has been typed keeps the intent retryable."""
     client = StubClient(fail_on="ensure_frontmost")
@@ -200,23 +276,6 @@ def test_a_tab_that_will_not_come_forward_stops_before_anything_is_typed(store, 
     with pytest.raises(sink.SendNotAttempted):
         _sink(store, bus, client).send(thread, "hi", "reply", intent)
     assert "browser_type" not in [name for name, _ in client.calls]
-    assert _intent_status(store, intent) == "pending"
-
-
-def test_the_tab_is_brought_forward_before_the_composer_is_touched(store, bus, thread) -> None:
-    client = StubClient()
-    _sink(store, bus, client).send(thread, "yes, still available!", "reply", _reserve(store))
-    names = [name for name, _ in client.calls]
-    assert names.index("ensure_frontmost") < names.index("browser_type")
-
-
-def test_a_browser_failure_pressing_send_leaves_the_intent_pending(store, bus, thread) -> None:
-    """Text sitting unsent in the composer is not a delivered message, so this stays retryable —
-    the next attempt navigates afresh and refills the box."""
-    client = StubClient(fail_on="browser_press_key")
-    intent = _reserve(store)
-    with pytest.raises(sink.SendNotAttempted):
-        _sink(store, bus, client).send(thread, "hi", "reply", intent)
     assert _intent_status(store, intent) == "pending"
 
 
@@ -236,13 +295,13 @@ def test_an_unknown_market_is_refused_before_any_navigation(store, bus) -> None:
 
 def test_a_send_we_cannot_confirm_stays_sent_unverified_and_is_never_resent(store, bus, thread):
     """The one thing worse than an unconfirmed message is the same message twice, so this hands the
-    thread to the sweep rather than pressing send again."""
-    client = StubClient(echo_on_send=False)  # the key press appeared to work, nothing landed
+    thread to the sweep rather than committing again."""
+    client = StubClient(echo_on_send=False)  # the page took it, nothing landed on the page
     intent = _reserve(store)
     with pytest.raises(sink.SendUnverified):
         _sink(store, bus, client).send(thread, "yes, still available!", "reply", intent)
     assert _intent_status(store, intent) == "sent_unverified"
-    assert [name for name, _ in client.calls].count("browser_press_key") == 1
+    assert [name for name, _ in client.calls].count("submit") == 1
     assert [e.payload["outcome"] for e in _events(bus, "browser.send")] == ["unverified"]
 
 

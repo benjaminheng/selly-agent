@@ -142,6 +142,31 @@ TAIL_JS = """() => {
   return out;
 }"""
 
+# Submit the composed message, by dispatching the key the box listens for.
+#
+# There is no send control to click — the icon sits inside undecorated elements with no role, no
+# label and no cursor change — so the only ways to submit are a real key event or this. A real one
+# reaches only the *active* tab, which means selecting the agent's tab, and selecting is what pulls
+# the seller's window in front of whatever they were doing. Every reply would interrupt them.
+#
+# So the keystroke is dispatched from the page instead. It carries `isTrusted: false`, which a
+# marketplace can read in one line, and that is a bot signal on the seller's own account — which is
+# why this lives here and not in the sink. It is allowed for Carousell because we know what the page
+# does with it: the box's handler tests the key, the trimmed length, a guard ref and Shift, and
+# nothing else. The message text still arrives as real input; only the submit is synthesised.
+#
+# `preventDefault` is called only inside that handler's send branch, so its having been called is
+# the page acknowledging the message. Reported back as `sent`, which is what lets a refusal stay
+# retryable instead of becoming a message nobody can account for.
+CHAT_MESSAGE_SUBMIT_JS = """(el) => {
+  const ev = new KeyboardEvent('keydown', {
+    key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+    bubbles: true, cancelable: true, composed: true,
+  });
+  el.dispatchEvent(ev);
+  return { sent: ev.defaultPrevented };
+}"""
+
 # Is the seller logged in? Three-state, and it must never answer logged_out on thin evidence: a
 # false logged_out tells a perfectly signed-in seller to re-authenticate and stops their market.
 # Only an auth-gated control present (inbox / sell) proves logged_in; only a login control with no

@@ -50,11 +50,14 @@ class SlowClient:
         self._record((name, arguments.get("target") or arguments.get("action")))
         if name == "browser_type":
             self.typed = arguments["text"]
-        if name == "browser_press_key" and self.typed is not None:
-            self.bubbles.append({"text": self.typed, "side": "out", "y": 9})
         return "ok"
 
     def evaluate(self, function, **kwargs):
+        if function == carousell_market.CHAT_MESSAGE_SUBMIT_JS:
+            self._record(("submit", None))
+            if self.typed is not None:
+                self.bubbles.append({"text": self.typed, "side": "out", "y": 9})
+            return {"sent": True, "cleared": True}
         if function == carousell_market.TAIL_JS:
             self._record(("tail", None))
             return list(self.bubbles)
