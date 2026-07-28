@@ -64,11 +64,17 @@ def launch_command(port: int, *, chrome_bin: str = _CHROME_MACOS) -> list:
 
     A dedicated profile is the point — the seller's everyday Chrome is never driven, and the
     marketplace sessions the agent uses persist here across restarts.
+
+    Without `--disable-backgrounding-occluded-windows`, a window the seller has covered with another
+    app counts as hidden, and a hidden tab is one a send has to bring to the front before its keys
+    will land. The flag does not stop a send raising the window — real key input does that on its
+    own — but it stops every send raising it a second time for a tab that was already active.
     """
     return [
         chrome_bin,
         f"--remote-debugging-port={port}",
         f"--user-data-dir={paths.browser_profile_dir()}",
+        "--disable-backgrounding-occluded-windows",
         "--no-first-run",
         "--no-default-browser-check",
         "--restore-last-session",

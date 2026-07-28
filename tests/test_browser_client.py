@@ -17,6 +17,7 @@ from selly_agent.browser.client import (
     BrowserUnavailable,
     default_command,
     evaluate_result,
+    same_page,
     sections,
 )
 
@@ -170,8 +171,9 @@ def test_the_client_never_retries_a_failed_call(make_client) -> None:
 
 
 def test_the_client_opens_its_own_tab_once(make_client) -> None:
-    """One tab, created by us and held for the client's lifetime — never selected by index, which
-    renumbers whenever any tab opens or closes."""
+    """One tab, created by us and held for the client's lifetime. Reading and navigating never
+    select by index — an index renumbers whenever any tab opens or closes — so only a send, which
+    needs the tab visible for keys to land, ever pays that cost."""
     client = make_client(
         {
             "tools": {
@@ -190,6 +192,133 @@ def test_the_client_opens_its_own_tab_once(make_client) -> None:
     assert "select" not in json.dumps(tool_calls(client))  # never re-selected by index
 
 
+# --- bringing our own tab forward ----------------------------------------------------------------
+
+_URL = "https://www.carousell.sg/inbox/12/"
+_TAB_LIST = {"text": "### Open tabs\n- 0: [a](x)\n- 1: (current) [b](y)"}
+
+
+def test_an_already_visible_tab_is_left_alone(make_client) -> None:
+    """The steady state on the agent's own Chrome. Selecting anyway would pull the window in front
+    of whatever the seller is doing, once per send, for nothing."""
+    client = make_client(
+        {"tools": {"browser_evaluate": {"result": {"visible": True, "url": _URL}}}}
+    )
+    client.ensure_frontmost(_URL)
+    assert [call["tool"] for call in tool_calls(client)] == ["browser_evaluate"]
+
+
+def test_a_hidden_tab_is_selected_and_then_confirmed(make_client) -> None:
+    """Chrome delivers keys only to a visible renderer, so a background tab takes the text and drops
+    the key that sends it — with no error anywhere."""
+    client = make_client(
+        {
+            "tools": {
+                "browser_evaluate": [
+                    {"result": {"visible": False, "url": _URL}},
+                    {"result": {"visible": True, "url": _URL}},
+                ],
+                "browser_tabs": [_TAB_LIST, {"text": "ok"}],
+            }
+        }
+    )
+    client.ensure_frontmost(_URL)
+    tabs = [call["arguments"] for call in tool_calls(client) if call["tool"] == "browser_tabs"]
+    assert tabs == [{"action": "list"}, {"action": "select", "index": 1}]
+
+
+def test_selecting_a_tab_that_is_not_ours_raises_and_gives_up_the_tab(make_client) -> None:
+    """Selecting repoints every later call at whatever index was chosen, and indices renumber as
+    tabs open and close. Landing on someone else's page must not become typing into it."""
+    client = make_client(
+        {
+            "tools": {
+                "browser_evaluate": [
+                    {"result": {"visible": False, "url": _URL}},
+                    {"result": {"visible": True, "url": "https://www.carousell.sg/sell/"}},
+                ],
+                "browser_tabs": [{"text": "ok"}, _TAB_LIST, {"text": "ok"}],
+                "browser_navigate": {"text": "ok"},
+            }
+        }
+    )
+    client.navigate(_URL)  # takes our own tab, so there is a handle to give up
+    with pytest.raises(BrowserToolError, match="landed on"):
+        client.ensure_frontmost(_URL)
+    assert client._tab_opened is False  # noqa: SLF001 — the handle is the thing under test
+
+
+def test_a_tab_that_stays_hidden_is_an_error_but_stays_ours(make_client) -> None:
+    """Still our tab, just not visible — so the handle is kept and only the send is refused. Giving
+    the tab up here would abandon a healthy one on every failure."""
+    client = make_client(
+        {
+            "tools": {
+                "browser_evaluate": {"result": {"visible": False, "url": _URL}},
+                "browser_tabs": [{"text": "ok"}, _TAB_LIST, {"text": "ok"}],
+                "browser_navigate": {"text": "ok"},
+            }
+        }
+    )
+    client.navigate(_URL)
+    with pytest.raises(BrowserToolError, match="still hidden"):
+        client.ensure_frontmost(_URL)
+    assert client._tab_opened is True  # noqa: SLF001 — the handle is the thing under test
+
+
+def test_the_visibility_read_after_selecting_waits_for_the_change(make_client) -> None:
+    """Chrome tells the renderer it became visible asynchronously, so reading the state straight
+    after selecting reports the old value and a healthy tab looks like it would not come forward."""
+    client = make_client(
+        {
+            "tools": {
+                "browser_evaluate": [
+                    {"result": {"visible": False, "url": _URL}},
+                    {"result": {"visible": True, "url": _URL}},
+                ],
+                "browser_tabs": [_TAB_LIST, {"text": "ok"}],
+            }
+        }
+    )
+    client.ensure_frontmost(_URL)
+    functions = [
+        call["arguments"]["function"]
+        for call in tool_calls(client)
+        if call["tool"] == "browser_evaluate"
+    ]
+    assert "visibilitychange" not in functions[0]  # the first look is immediate
+    assert "visibilitychange" in functions[1]  # the second waits on the event itself
+
+
+def test_a_server_that_names_no_current_tab_is_an_error_not_a_guess(make_client) -> None:
+    client = make_client(
+        {
+            "tools": {
+                "browser_evaluate": {"result": {"visible": False, "url": _URL}},
+                "browser_tabs": {"text": "### Open tabs\n- 0: [a](x)\n- 1: [b](y)"},
+            }
+        }
+    )
+    with pytest.raises(BrowserToolError, match="no current tab"):
+        client.ensure_frontmost(_URL)
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "same"),
+    [
+        (_URL, _URL, True),
+        (_URL, _URL.rstrip("/"), True),  # a navigation may drop or add the trailing slash
+        (_URL, _URL + "?from=inbox", True),
+        (_URL, _URL + "#top", True),
+        (_URL, "https://www.carousell.sg/inbox/13/", False),
+        (_URL, "https://www.carousell.sg/inbox/", False),
+        ("", _URL, False),
+    ],
+)
+def test_same_page_ignores_only_what_a_navigation_may_change(left, right, same) -> None:
+    assert same_page(left, right) is same
+
+
 # --- the Chrome bring-up -------------------------------------------------------------------------
 
 
@@ -205,6 +334,12 @@ def test_the_launch_command_uses_the_agents_own_profile(xdg_tmp) -> None:
     assert f"--user-data-dir={paths.browser_profile_dir()}" in argv
     assert "--remote-debugging-port=9222" in argv
     assert str(paths.browser_profile_dir()) != str(Path.home() / "Library")
+
+
+def test_the_launch_command_keeps_a_covered_window_out_of_the_hidden_state(xdg_tmp) -> None:
+    """A window the seller has covered with another app otherwise counts as hidden, and a hidden tab
+    is one a send has to raise before its keys will land."""
+    assert "--disable-backgrounding-occluded-windows" in chrome.launch_command(9222)
 
 
 def test_stale_singleton_locks_are_cleared(xdg_tmp) -> None:

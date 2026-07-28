@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import re
 import subprocess
 import threading
 from collections import deque
@@ -99,6 +100,42 @@ def default_command(cdp_endpoint: str) -> list:
 
 def cdp_endpoint(port: int) -> str:
     return f"http://127.0.0.1:{port}"
+
+
+# Whether this page can receive keyboard input, and what page it is. Chrome routes key events only
+# to a visible renderer, and a tab is visible when it is the active tab of its window — so a tab
+# opened in the background swallows every keystroke in silence. Filling a text box still works there
+# (that input is injected below the page), which is what makes the failure so quiet: the text lands,
+# the key that would commit it never arrives, and nothing reports an error.
+_PAGE_STATE_JS = "() => ({visible: document.visibilityState === 'visible', url: location.href})"
+
+# How long to give a tab we just brought forward to notice. Chrome tells the renderer it became
+# visible asynchronously, so reading the state straight after selecting reports the old value and a
+# healthy tab looks like it refused to come forward.
+VISIBILITY_WAIT_MS = 3000
+
+_AWAIT_VISIBLE_JS = f"""async () => {{
+  if (document.visibilityState !== 'visible') {{
+    await new Promise((resolve) => {{
+      document.addEventListener('visibilitychange', resolve, {{ once: true }});
+      setTimeout(resolve, {VISIBILITY_WAIT_MS});
+    }});
+  }}
+  return {{ visible: document.visibilityState === 'visible', url: location.href }};
+}}"""
+
+# A line of the server's tab listing, marking the tab our own calls act on: `- 2: (current) [t](u)`.
+_CURRENT_TAB_RE = re.compile(r"^-\s*(\d+):\s*\(current\)")
+
+
+def same_page(left: str, right: str) -> bool:
+    """Whether two URLs address the same page, ignoring a query string, a fragment and a trailing
+    slash — the differences a navigation may introduce on its own."""
+    return _page_key(left) == _page_key(right)
+
+
+def _page_key(url: str) -> str:
+    return str(url or "").split("?", 1)[0].split("#", 1)[0].rstrip("/")
 
 
 def result_text(payload: dict) -> str:
@@ -358,3 +395,38 @@ class BrowserClient:
                 return
             self.call_tool("browser_tabs", {"action": "new"})
             self._tab_opened = True
+
+    def ensure_frontmost(self, url: str) -> None:
+        """Make the tab this client drives the active tab of its window, so keys reach it.
+
+        Only what needs typing needs this: a scripted read runs fine on a background tab, which is
+        what keeps the read lane out of the seller's way. Nothing happens when the tab is already
+        active — the steady state on the agent's own Chrome — so its window comes forward at most
+        once rather than on every send.
+
+        Selecting is by index, and an index is a position that renumbers whenever any tab opens or
+        closes; worse, selecting repoints every later call at whatever was chosen. So the page is
+        read back afterwards: a tab that came forward and is not the page we navigated to belongs to
+        something else, and this abandons our own tab handle and raises rather than typing into it.
+        """
+        with self._lock:
+            self._start()
+            if (self.evaluate(_PAGE_STATE_JS) or {}).get("visible"):
+                return
+            self.call_tool("browser_tabs", {"action": "select", "index": self._current_tab_index()})
+            state = self.evaluate(_AWAIT_VISIBLE_JS) or {}
+            if not same_page(state.get("url") or "", url):
+                self._tab_opened = False  # not ours any more; the next call opens a fresh one
+                raise BrowserToolError(
+                    f"selecting our own tab landed on {state.get('url')!r}, not {url!r}"
+                )
+            if not state.get("visible"):
+                raise BrowserToolError(f"our tab would not come forward — {url!r} is still hidden")
+
+    def _current_tab_index(self) -> int:
+        """Where the server currently numbers the tab our calls act on."""
+        for line in self.call_tool("browser_tabs", {"action": "list"}).splitlines():
+            found = _CURRENT_TAB_RE.match(line.strip())
+            if found:
+                return int(found.group(1))
+        raise BrowserToolError("the browser server reports no current tab")
