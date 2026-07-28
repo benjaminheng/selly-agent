@@ -239,7 +239,8 @@ def test_a_buyer_message_becomes_a_scoped_reply_that_reaches_the_marketplace(
     # the bracket completed: an outbound row, the cursor advanced, the intent committed
     thread = store.get_thread("carousell:1")
     assert [m["dir"] for m in thread["messages"]] == ["in", "out"]
-    assert thread["cursor_last_msg_id"] == "in|m1"
+    # the stored row's own id — never whatever the pass claimed to have read
+    assert thread["cursor_last_msg_id"] == thread["messages"][0]["msg_id"]
     assert store.threads_with_unhandled_inbound() == []  # nothing left waiting
 
     # the pass carried no browser and no web tools

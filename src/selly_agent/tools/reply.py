@@ -109,6 +109,7 @@ def _send_reply(ctx: ToolContext, params: dict) -> dict:
         in_msg_id=params.get("in_msg_id"),
         text=params["text"],
         kind=kind,
+        pass_id=ctx.session.pass_id,
     )
     return {"status": "sent", "intent_id": intent_id, "msg_id": commit["msg_id"]}
 

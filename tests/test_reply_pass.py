@@ -243,7 +243,11 @@ def test_the_lane_spawns_one_pass_for_the_waiting_buyers(store, bus) -> None:
     assert [e.payload["type"] for e in queued] == ["reply"]
     claimed = store.claim_queued_pass()
     assert claimed.type == "reply"
-    assert claimed.payload == {"thread_ids": ["carousell:1"], "item_ids": [item["id"]]}
+    assert claimed.payload["thread_ids"] == ["carousell:1"]
+    assert claimed.payload["item_ids"] == [item["id"]]
+    # The watermark is the buyer's newest message as *stored*, and the cursor may go no further —
+    # so anything that arrives while this pass composes stays unhandled rather than being skipped.
+    assert claimed.payload["claimed_through"] == {"carousell:1": ["m1", 10.0]}
 
 
 def test_a_burst_of_buyers_becomes_one_pass(store, bus) -> None:

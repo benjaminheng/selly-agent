@@ -275,6 +275,65 @@ def test_terminal_held_and_buy_threads_are_excluded(store) -> None:
     assert [r["thread_id"] for r in store.threads_with_unhandled_inbound()] == ["carousell:live"]
 
 
+def _agent_reply(store, thread_id, *, ts, msg_id="out|intent_x") -> None:
+    with store._db.transaction() as conn:  # noqa: SLF001 — arranging what a send bracket writes
+        conn.execute(
+            "INSERT INTO thread_messages (thread_id, msg_id, dir, text, ts, source) "
+            "VALUES (?, ?, 'out', 'sure!', ?, 'agent')",
+            (thread_id, msg_id, ts),
+        )
+
+
+def _manual_reply(store, thread_id, *, ts, msg_id="out|abc123|1") -> None:
+    with store._db.transaction() as conn:  # noqa: SLF001 — arranging what a page read writes
+        conn.execute(
+            "INSERT INTO thread_messages (thread_id, msg_id, dir, text, ts, source) "
+            "VALUES (?, ?, 'out', 'i replied myself', ?, 'manual')",
+            (thread_id, msg_id, ts),
+        )
+
+
+# The four situations the eligibility rule has to tell apart. The third is the one that matters:
+# direction alone cannot distinguish it from the fourth, and reading it as "someone answered" leaves
+# a buyer who asked something mid-reply waiting forever.
+
+
+def test_a_buyer_waiting_on_us_is_eligible(store) -> None:
+    _waiting_thread(store, ts=100.0)
+    assert [r["thread_id"] for r in store.threads_with_unhandled_inbound()] == ["carousell:1"]
+
+
+def test_our_own_reply_with_nothing_new_since_is_not_eligible(store) -> None:
+    _waiting_thread(store, ts=100.0)
+    _agent_reply(store, "carousell:1", ts=110.0)
+    _advance_cursor(store, "carousell:1", 100.0)  # the send advanced it over what it answered
+    assert store.threads_with_unhandled_inbound() == []
+
+
+def test_a_buyer_who_wrote_again_after_our_reply_stays_eligible(store) -> None:
+    """The message arrived while the pass was composing, so the reply that went out never saw it.
+    Our own voice being last must not read as "answered" — nothing else will pick this up."""
+    _waiting_thread(store, ts=100.0)
+    store.record_inbound("carousell:1", msg_id="m2", text="how about $85?", ts=105.0)
+    _agent_reply(store, "carousell:1", ts=110.0)
+    _advance_cursor(store, "carousell:1", 100.0)  # only as far as the pass was given
+    assert [r["thread_id"] for r in store.threads_with_unhandled_inbound()] == ["carousell:1"]
+
+
+def test_a_reply_the_seller_typed_themselves_is_not_talked_over(store) -> None:
+    _waiting_thread(store, ts=100.0)
+    _manual_reply(store, "carousell:1", ts=110.0)
+    assert store.threads_with_unhandled_inbound() == []
+
+
+def test_a_buyer_writing_again_after_the_sellers_own_reply_is_eligible(store) -> None:
+    """The seller answered, then the buyer came back. That is a fresh question for us."""
+    _waiting_thread(store, ts=100.0)
+    _manual_reply(store, "carousell:1", ts=110.0)
+    store.record_inbound("carousell:1", msg_id="m2", text="and the charger?", ts=120.0)
+    assert [r["thread_id"] for r in store.threads_with_unhandled_inbound()] == ["carousell:1"]
+
+
 def test_an_open_escalation_excludes_the_thread(store) -> None:
     _waiting_thread(store)
     esc = store.escalate("carousell:1", open_question="what's your floor?")

@@ -137,18 +137,30 @@ def _like_escape(text: str) -> str:
 # Sell threads whose buyer is still waiting on us. Shared by the read accessor and the enqueue
 # transaction, which must run it on its own connection (the read helper takes the same DB lock).
 #
-# Two independent conditions have to hold, and they answer different questions. The cursor answers
-# "have we handled this message" — it advances only on a committed reply, so a crash between reading
-# a buyer's message and answering it leaves the thread eligible. The last-row direction answers "has
-# anyone answered since" — our own send and a reply the seller typed in the marketplace app both
-# land as an outbound row, so either one stops us from talking over them.
+# Two independent conditions have to hold, and they answer different questions.
+#
+# The cursor answers "have we handled this message". It advances only on a committed reply, and only
+# as far as the messages the answering pass was given — so a crash between reading a buyer's message
+# and answering it leaves the thread eligible, and so does a message that arrives mid-compose.
+#
+# The second answers "has the seller stepped in". A reply they typed in the marketplace app arrives
+# as an outbound row on the next read, and talking over them is worse than staying quiet. It tests
+# provenance rather than the last row's direction, because direction cannot tell that case from "we
+# replied and the buyer has since said more" — the common one, which must stay eligible.
 _UNHANDLED_INBOUND_SQL = (
-    "SELECT t.thread_id, t.item_id FROM threads t "
+    "SELECT t.thread_id, t.item_id, "
+    "  (SELECT mw.msg_id FROM thread_messages mw WHERE mw.thread_id = t.thread_id "
+    "     AND mw.dir = 'in' ORDER BY mw.ts DESC, mw.rowid DESC LIMIT 1) AS newest_in_msg_id, "
+    "  (SELECT MAX(mx.ts) FROM thread_messages mx WHERE mx.thread_id = t.thread_id "
+    "     AND mx.dir = 'in') AS newest_in_ts "
+    "FROM threads t "
     "WHERE t.side = 'sell' AND t.status IN ({statuses}) "
     "AND EXISTS (SELECT 1 FROM thread_messages m WHERE m.thread_id = t.thread_id "
     "  AND m.dir = 'in' AND (t.cursor_last_ts IS NULL OR m.ts > t.cursor_last_ts)) "
-    "AND (SELECT m2.dir FROM thread_messages m2 WHERE m2.thread_id = t.thread_id "
-    "  ORDER BY m2.ts DESC, m2.rowid DESC LIMIT 1) = 'in' "
+    "AND NOT EXISTS (SELECT 1 FROM thread_messages ms WHERE ms.thread_id = t.thread_id "
+    "  AND ms.dir = 'out' AND ms.source = 'manual' "
+    "  AND ms.ts > (SELECT MAX(mi.ts) FROM thread_messages mi "
+    "               WHERE mi.thread_id = t.thread_id AND mi.dir = 'in')) "
     "AND NOT EXISTS (SELECT 1 FROM escalations e WHERE e.thread_id = t.thread_id "
     "  AND e.status = 'open') "
     "ORDER BY t.thread_id ASC"
@@ -157,6 +169,20 @@ _UNHANDLED_INBOUND_SQL = (
 
 def _unhandled_inbound_rows(rows) -> list[dict]:
     return [{"thread_id": r["thread_id"], "item_id": r["item_id"]} for r in rows]
+
+
+def _claimed_through(rows) -> dict:
+    """The newest buyer message per thread at claim time — how far a pass may advance the cursor.
+
+    Recorded when the threads are claimed rather than read back at send time, because by then the
+    buyer may have written again: advancing over that message would mark it handled by a pass that
+    never saw it.
+    """
+    return {
+        row["thread_id"]: [row["newest_in_msg_id"], row["newest_in_ts"]]
+        for row in rows
+        if row["newest_in_msg_id"] is not None
+    }
 
 
 # --- record & ack shapes ---------------------------------------------------------------------
@@ -2295,11 +2321,17 @@ class Store:
         in_msg_id: str | None,
         text: str,
         kind: str,
+        pass_id: str | None = None,
         now: float | None = None,
     ) -> dict:
         """Transaction B: fold the outbound row (a deterministic msg_id from the intent id makes a
         retried commit a UNIQUE no-op), advance the cursor over the handled inbound, mark the intent
-        committed, and stamp follow-up state — all in one transaction."""
+        committed, and stamp follow-up state — all in one transaction.
+
+        The cursor lands on the newest message the *sender* was given, which for a pass is the
+        watermark its claim recorded and never what is newest now. Stamping the current time instead
+        would mark anything the buyer added mid-compose as handled by a reply that never saw it.
+        """
         now = now if now is not None else _now()
         out_msg_id = f"out|{intent_id}"
         with self._db.transaction() as conn:
@@ -2313,11 +2345,12 @@ class Store:
                 "WHERE intent_id = ?",
                 (now, now, intent_id),
             )
-            if in_msg_id is not None:
+            handled = self._cursor_target(conn, thread_id, in_msg_id, pass_id)
+            if handled is not None:
                 conn.execute(
                     "UPDATE threads SET cursor_last_msg_id = ?, cursor_last_ts = ?, "
                     "updated_ts = ? WHERE thread_id = ?",
-                    (in_msg_id, now, now, thread_id),
+                    (handled[0], handled[1], now, thread_id),
                 )
             if kind == "followup":
                 conn.execute(
@@ -2326,6 +2359,44 @@ class Store:
                     (now, now, thread_id),
                 )
         return {"msg_id": out_msg_id}
+
+    def _cursor_target(self, conn, thread_id: str, in_msg_id: str | None, pass_id: str | None):
+        """How far this reply may advance the thread's cursor, as `(msg_id, ts)` or None.
+
+        A pass's claim recorded the newest buyer message it was given, and that is the answer: it is
+        a fact the daemon wrote, not something the sender reports, so a caller cannot advance past a
+        message by claiming to have read it.
+
+        A sender with no claim behind it — the seller's own session, or the channel pass carrying
+        their words — names the message it answered, and falls back to the newest one on the thread.
+        That fallback is not cosmetic: leaving the cursor where it was would keep the buyer waiting
+        in the eligible set and earn them a second answer to the same question.
+        """
+        if pass_id is not None:
+            claimed = self._claim_watermark(conn, pass_id, thread_id)
+            if claimed is not None:
+                return claimed
+        if in_msg_id is not None:
+            row = conn.execute(
+                "SELECT ts FROM thread_messages WHERE thread_id = ? AND msg_id = ?",
+                (thread_id, in_msg_id),
+            ).fetchone()
+            if row:
+                return (in_msg_id, row["ts"])
+        newest = conn.execute(
+            "SELECT msg_id, ts FROM thread_messages WHERE thread_id = ? AND dir = 'in' "
+            "ORDER BY ts DESC, rowid DESC LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+        return (newest["msg_id"], newest["ts"]) if newest else None
+
+    def _claim_watermark(self, conn, pass_id: str, thread_id: str):
+        row = conn.execute("SELECT payload FROM passes WHERE pass_id = ?", (pass_id,)).fetchone()
+        if not row:
+            return None
+        claimed = (json.loads(row["payload"]) or {}).get("claimed_through") or {}
+        found = claimed.get(thread_id)
+        return (found[0], found[1]) if found else None
 
     def mark_intent_sent_unverified(self, intent_id: str) -> None:
         """Stamp an intent as clicked-but-not-yet-confirmed, between the send and its read-back.
@@ -2931,14 +3002,17 @@ class Store:
             ).fetchone()
             if active:
                 return None
-            pending = _unhandled_inbound_rows(
-                conn.execute(_UNHANDLED_INBOUND_SQL, _REPLY_THREAD_STATUSES).fetchall()
-            )
+            claimable = conn.execute(_UNHANDLED_INBOUND_SQL, _REPLY_THREAD_STATUSES).fetchall()
+            pending = _unhandled_inbound_rows(claimable)
             if not pending:
                 return None
             thread_ids = [row["thread_id"] for row in pending]
             item_ids = sorted({row["item_id"] for row in pending if row["item_id"]})
-            payload = {"thread_ids": thread_ids, "item_ids": item_ids}
+            payload = {
+                "thread_ids": thread_ids,
+                "item_ids": item_ids,
+                "claimed_through": _claimed_through(claimable),
+            }
             conn.execute(
                 "INSERT INTO passes (pass_id, type, payload, status, requested_ts) "
                 "VALUES (?, 'reply', ?, 'queued', ?)",

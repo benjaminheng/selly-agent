@@ -62,6 +62,7 @@ def test_no_sink_returns_no_send_path_recording_nothing(make_ctx, store) -> None
 
 def test_go_sends_commits_and_advances_cursor(make_ctx, store) -> None:
     _sell_thread(store)
+    store.record_inbound("fb:1", msg_id="m7", text="still there?", ts=100.0)
     sink = FakeSink()
     ctx = make_ctx("attended", reply_sink=sink, config=_FAST)
     res = dispatch(
@@ -72,9 +73,23 @@ def test_go_sends_commits_and_advances_cursor(make_ctx, store) -> None:
     assert len(sink.sends) == 1
     assert len(_pacing_rows(store)) == 1  # a pacing row was recorded at reserve
     thread = store.get_thread("fb:1")
-    assert [m["dir"] for m in thread["messages"]] == ["out"]
+    assert [m["dir"] for m in thread["messages"]] == ["in", "out"]
     assert thread["cursor_last_msg_id"] == "m7"  # cursor advanced over the handled inbound
+    # the message's own time, never the send's: stamping "now" would sweep up anything the buyer
+    # added while this reply was being written
+    assert thread["cursor_last_ts"] == 100.0
     assert _intents(store)[0]["status"] == "committed"
+
+
+def test_a_cursor_cannot_be_advanced_onto_a_message_that_does_not_exist(make_ctx, store) -> None:
+    """An id no row has cannot place the cursor in time. Rather than leaving it where it was — which
+    would leave the buyer waiting and earn them a second answer — it falls back to their newest."""
+    _sell_thread(store)
+    store.record_inbound("fb:1", msg_id="real", text="still there?", ts=100.0)
+    ctx = make_ctx("attended", reply_sink=FakeSink(), config=_FAST)
+    dispatch("send_reply", {"thread_id": "fb:1", "text": "yes!", "in_msg_id": "invented"}, ctx)
+    thread = store.get_thread("fb:1")
+    assert thread["cursor_last_msg_id"] == "real" and thread["cursor_last_ts"] == 100.0
 
 
 def test_followup_kind_stamps_thread(make_ctx, store) -> None:
