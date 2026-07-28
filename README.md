@@ -82,9 +82,12 @@ Once bound, the phone is the async channel: buyer escalations push to it, and
 `/pause` · `/resume` · `/status` · `/catchup` · `/selly` are answered instantly
 by the daemon (no LLM); anything else is a conversation with your selling agent.
 
-The daemon serves a localhost web tail at `http://127.0.0.1:<http_port>/tail?token=<attended-token>`
-(the token lives 0600 in the config dir); append `&json=true` for a raw-JSON view matching
-`inspect --json`. Tests point `$XDG_*_HOME` at a tmpdir, so they never touch a real install.
+The daemon also serves a localhost web tail at
+`http://127.0.0.1:<http_port>/tail?token=<attended-token>` (the token lives 0600 in the config
+dir) — a rendered, human-readable view of the same event log, where `inspect --json` is the
+machine form. Both are covered in [`docs/observability.md`](docs/observability.md).
+
+Tests point `$XDG_*_HOME` at a tmpdir, so they never touch a real install.
 
 ## Layout
 
@@ -119,6 +122,7 @@ src/selly_agent/
   daemon.py                wires it together; the daemon process
   supervisor.py            launchd install/start/stop/status/uninstall
   inspect_cli.py           the event tail
+  data/tail.html           the web tail's page: the rendered human view of the event log
 tests/                     plain pytest (tests/conformance/ = MCP SDK interop, 3.10+)
 ```
 

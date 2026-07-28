@@ -11,6 +11,7 @@ import pytest
 import selly_agent.tools  # noqa: F401  registration
 from selly_agent.config import Config
 from selly_agent.http_server import HttpServer
+from selly_agent.paths import PACKAGE_DATA_DIR
 from selly_agent.tools.registry import ToolContext
 
 
@@ -246,9 +247,32 @@ def test_events_json_returns_events(server, bus) -> None:
     assert all("@ts" in e for e in body["events"])  # rows share the inspect --json wire shape
 
 
-def test_tail_serves_html(server) -> None:
+def test_events_json_since_sec_windows_the_history(server, bus) -> None:
+    old = bus.publish("demo.old", {})
+    bus.publish("demo.recent", {})
+    # back-date the first event past the window; ts is the store's own ordering column
+    with bus.store.db.transaction() as conn:
+        conn.execute("UPDATE events SET ts = ts - 7200 WHERE seq = ?", (old.seq,))
+    status, body = _request(
+        server, "GET", "/events.json?token=attended-secret&after_seq=0&since_sec=3600"
+    )
+    assert status == 200
+    kinds = [e["kind"] for e in body["events"]]
+    assert "demo.recent" in kinds and "demo.old" not in kinds
+    # a garbage or non-positive window is simply no window at all
+    for raw in ("0", "-5", "nonsense"):
+        _, body = _request(
+            server, "GET", f"/events.json?token=attended-secret&after_seq=0&since_sec={raw}"
+        )
+        assert "demo.old" in [e["kind"] for e in body["events"]]
+
+
+def test_tail_serves_the_packaged_page(server) -> None:
     url = f"http://127.0.0.1:{server.port}/tail?token=attended-secret"
     with urllib.request.urlopen(url, timeout=5) as resp:
         assert resp.status == 200
         assert resp.headers["Content-Type"].startswith("text/html")
-        assert b"event tail" in resp.read()
+        served = resp.read()
+    assert b"event tail" in served
+    # the page is a packaged asset, not an inline string — pin that wiring
+    assert served == (PACKAGE_DATA_DIR / "tail.html").read_bytes()

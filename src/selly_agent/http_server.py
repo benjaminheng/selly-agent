@@ -29,9 +29,13 @@ from urllib.parse import parse_qs, urlparse
 from selly_agent import __version__
 from selly_agent.db import connect_reader
 from selly_agent.events import event_to_wire, query_events
+from selly_agent.paths import PACKAGE_DATA_DIR
 from selly_agent.tools.registry import Session, ToolError, UnknownTool, dispatch, tools_for_tier
 
 log = logging.getLogger(__name__)
+
+# The web tail's page: a packaged asset, not an inline string — it is a real HTML/CSS/JS document.
+_TAIL_PAGE = PACKAGE_DATA_DIR / "tail.html"
 
 _LOCALHOST_NAMES = frozenset({"127.0.0.1", "localhost", "::1"})
 _DEFAULT_PROTOCOL_VERSION = "2025-06-18"
@@ -406,9 +410,15 @@ class _Handler(BaseHTTPRequestHandler):
             return
         after_seq = _int_or_none(qs.get("after_seq", [None])[0])
         pass_id = qs.get("pass", [None])[0]
+        # A lookback window, so a page load starts near now instead of replaying the whole
+        # retained history. Nonsense or non-positive values simply mean "no window".
+        since_sec = _int_or_none(qs.get("since_sec", [None])[0])
+        since_ts = time.time() - since_sec if since_sec and since_sec > 0 else None
         conn = connect_reader(self._app.events_db_path)
         try:
-            events = query_events(conn, after_seq=after_seq, pass_id=pass_id, limit=500)
+            events = query_events(
+                conn, after_seq=after_seq, since_ts=since_ts, pass_id=pass_id, limit=500
+            )
         finally:
             conn.close()
         rows = [event_to_wire(e) for e in events]
@@ -416,7 +426,9 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"events": rows, "last_seq": last_seq})
 
     def _handle_tail(self) -> None:
-        page = _TAIL_HTML.encode("utf-8")
+        # Read per request rather than at import: the page is a packaged asset, and a versioned
+        # install is an unpacked source tree, so editing it and reloading is the whole dev loop.
+        page = _TAIL_PAGE.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(page)))
@@ -440,40 +452,3 @@ def _int_or_none(raw):
         return int(raw) if raw is not None else None
     except (TypeError, ValueError):
         return None
-
-
-# A single static page that polls events.json using the token from its own URL query.
-_TAIL_HTML = """<!doctype html>
-<html><head><meta charset="utf-8"><title>selly-agent tail</title>
-<style>body{font:13px/1.5 monospace;margin:1rem;background:#111;color:#ddd}
-.k{color:#7cf}.p{color:#888}pre{white-space:pre-wrap;word-break:break-all}</style></head>
-<body><h3>selly-agent event tail</h3><pre id="log"></pre>
-<script>
-const params = new URLSearchParams(location.search);
-const token = params.get("token") || "";
-const jsonMode = params.get("json") === "true";
-let after = 0;
-async function poll(){
-  try{
-    const r = await fetch(`events.json?token=${encodeURIComponent(token)}&after_seq=${after}`);
-    if(r.ok){
-      const d = await r.json();
-      for(const e of d.events){
-        const line = document.createElement("div");
-        if(jsonMode){
-          line.textContent = JSON.stringify(e);
-        }else{
-          line.innerHTML = `<span class=p>${new Date(e.ts*1000).toLocaleTimeString()}</span> `
-            + `<span class=k>${e.kind}</span> `
-            + `<span class=p>pass=${e.pass_id||"-"}</span> ${JSON.stringify(e.payload)}`;
-        }
-        document.getElementById("log").appendChild(line);
-      }
-      after = d.last_seq;
-    }
-  }catch(e){}
-  setTimeout(poll, 1000);
-}
-poll();
-</script></body></html>
-"""
