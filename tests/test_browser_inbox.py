@@ -259,19 +259,36 @@ def test_a_conversation_about_one_of_our_listings_becomes_a_thread(store, bus, s
 
 
 @pytest.mark.parametrize(
-    ("row", "reason"),
+    ("row", "expected", "reason"),
     [
-        (_conv(product_id="999999"), "a listing that is not ours"),
-        (_conv(product_id=None), "a conversation with no listing at all"),
-        (_conv(handle=""), "a counterpart we cannot name"),
-        (_conv(offer_type="made"), "an offer we made rather than received"),
+        (_conv(product_id="999999"), "unknown_listing", "a listing that is not ours"),
+        (_conv(product_id=None), "unknown_listing", "a conversation with no listing at all"),
+        (_conv(handle=""), "no_handle", "a counterpart we cannot name"),
+        (_conv(offer_type="made"), "we_offered", "an offer we made rather than received"),
     ],
 )
-def test_an_unrecognised_conversation_is_left_alone(store, bus, seeded, row, reason) -> None:
-    """A thread attached to the wrong item would negotiate against the wrong floor."""
+def test_an_unrecognised_conversation_is_left_alone(store, bus, seeded, row, expected, reason):
+    """A thread attached to the wrong item would negotiate against the wrong floor.
+
+    The reason is asserted, not just the refusal: this event is what answers "why is nobody
+    answering this buyer", so a single catch-all label would make the ordinary case (someone
+    else's listing) read like the alarming one.
+    """
     client = StubClient(conversations=[row])
     inbox.inbox_lane(_deps(store, bus, client))
     assert store.list_threads() == [], reason
+    assert [e.payload["reason"] for e in _kinds(bus, "browser.unmatched")] == [expected]
+
+
+def test_two_items_claiming_one_listing_is_reported_as_its_own_problem(store, bus, seeded) -> None:
+    """Not "someone else's listing" — our own records disagree, and only saying so gets it fixed."""
+    url = store.get_item(seeded["id"])["listing_urls"]["carousell"]
+    twin = store.create_item(title="Teak lamp (dupe)", list_price=80.0, currency="SGD")
+    store.record_listing_url(twin["id"], "carousell", url)
+    client = StubClient(conversations=[_conv()])
+    inbox.inbox_lane(_deps(store, bus, client))
+    assert store.list_threads() == []
+    assert [e.payload["reason"] for e in _kinds(bus, "browser.unmatched")] == ["two_items"]
 
 
 def test_a_platform_conversation_is_never_a_conversation_to_answer(store, bus, seeded) -> None:

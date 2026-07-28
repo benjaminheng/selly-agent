@@ -142,18 +142,18 @@ def new_rows(tail, recorded, *, now: float) -> list:
     return out
 
 
-def match_item(product_id: str | None, items, market: str, pattern: str) -> str | None:
+def matching_items(product_id: str | None, items, market: str, pattern: str) -> list:
     """Which of our items a conversation is about, by the marketplace's listing id.
 
-    Exactly one match or nothing. A thread attached to the wrong item would negotiate against the
-    wrong floor, so an id we do not recognise is left alone — that is a listing the seller made
-    outside the agent, not something to adopt onto a guess.
+    Returns every match rather than picking one, so the caller can tell "not a listing of ours" from
+    "two of our items claim the same listing" — the first is ordinary and the second is a data
+    problem worth naming. A thread attached to the wrong item would negotiate against the wrong
+    floor, so anything but a single match is left alone either way.
     """
     if not product_id:
-        return None
-    matched = [
+        return []
+    return [
         item["id"]
         for item in items
         if listing_id((item.get("listing_urls") or {}).get(market, ""), pattern) == product_id
     ]
-    return matched[0] if len(matched) == 1 else None

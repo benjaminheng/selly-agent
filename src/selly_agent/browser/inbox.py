@@ -234,6 +234,12 @@ def _can_skip(store, thread: dict, row: dict) -> bool:
     return reconcile.preview_matches(row.get("last_message") or "", messages[-1]["text"])
 
 
+def _unmatched(deps: InboxDeps, market: str, thread_id: str, reason: str) -> None:
+    deps.bus.publish(
+        "browser.unmatched", {"market": market, "thread_id": thread_id, "reason": reason}
+    )
+
+
 def _adopt(deps: InboxDeps, market: str, adapter, thread_id: str, row: dict, handle: str, items):
     """Create a thread for a buyer writing about one of our listings for the first time.
 
@@ -241,15 +247,24 @@ def _adopt(deps: InboxDeps, market: str, adapter, thread_id: str, row: dict, han
     conversation names a listing we recognise, and we know who they are. A thread attached to the
     wrong item would negotiate against the wrong floor, so anything less is left alone — most often
     it is simply a listing the seller made outside the agent.
+
+    Every refusal says which of those failed, because this event is what answers "why is nobody
+    answering this buyer". One label for all of them makes the ordinary case (a listing that is not
+    ours) read like the alarming one (two of our items claiming the same listing).
     """
     if row.get("offer_type") not in (None, "", "received"):
+        _unmatched(deps, market, thread_id, "we_offered")
         return False
-    item_id = reconcile.match_item(row.get("product_id"), items, market, adapter.listing_id_pattern)
-    if not item_id or not handle:
-        deps.bus.publish(
-            "browser.unmatched", {"market": market, "thread_id": thread_id, "reason": "ambiguous"}
-        )
+    matches = reconcile.matching_items(
+        row.get("product_id"), items, market, adapter.listing_id_pattern
+    )
+    if not handle:
+        _unmatched(deps, market, thread_id, "no_handle")
         return False
+    if len(matches) != 1:
+        _unmatched(deps, market, thread_id, "unknown_listing" if not matches else "two_items")
+        return False
+    item_id = matches[0]
     try:
         deps.store.create_thread(
             thread_id=thread_id,

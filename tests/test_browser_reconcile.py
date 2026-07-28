@@ -13,7 +13,7 @@ from selly_agent.browser.markets.carousell import LISTING_ID_PATTERN as PATTERN
 from selly_agent.browser.reconcile import (
     classify_tail,
     listing_id,
-    match_item,
+    matching_items,
     message_id,
     new_rows,
     normalize,
@@ -173,7 +173,14 @@ def _items(*ids):
 
 
 def test_a_conversation_is_matched_to_the_item_with_that_listing_id() -> None:
-    assert match_item("222", _items("111", "222"), "carousell", PATTERN) == "item_1"
+    assert matching_items("222", _items("111", "222"), "carousell", PATTERN) == ["item_1"]
+
+
+def test_two_items_claiming_one_listing_are_both_returned() -> None:
+    """Kept distinct from "no match" so the caller can name a data problem as one, rather than
+    reporting it as an ordinary listing of someone else's."""
+    both = _items("222", "222")
+    assert matching_items("222", both, "carousell", PATTERN) == ["item_0", "item_1"]
 
 
 @pytest.mark.parametrize(
@@ -186,4 +193,4 @@ def test_a_conversation_is_matched_to_the_item_with_that_listing_id() -> None:
 )
 def test_an_unrecognised_listing_matches_nothing(product_id, items, reason) -> None:
     """A thread on the wrong item would negotiate against the wrong floor."""
-    assert match_item(product_id, items, "carousell", PATTERN) is None, reason
+    assert matching_items(product_id, items, "carousell", PATTERN) == [], reason
