@@ -146,6 +146,58 @@ def test_sink_failure_leaves_pending_then_sweep_folds_unconfirmed(make_ctx, stor
     assert len(sink.sends) == 1  # the send was never retried
 
 
+class UnverifiedSink(FakeSink):
+    """A sink whose page took the message but whose read-back failed — the real sink's
+    sent-but-unconfirmed shape."""
+
+    def __init__(self, store):
+        super().__init__()
+        self.store = store
+
+    def send(self, thread, text, kind, intent_id):
+        self.sends.append((thread["thread_id"], text, kind, intent_id))
+        self.store.mark_intent_sent_unverified(intent_id)
+        raise RuntimeError("read-back failed")
+
+
+def test_an_unverified_send_reports_itself_and_blocks_the_thread(make_ctx, store) -> None:
+    """send_failed means retrying is safe; a send the page took but we could not confirm is the
+    opposite case, so it reports its own status — and a fresh send on the thread is refused at the
+    reserve, not left to the caller's judgement."""
+    _sell_thread(store)
+    sink = UnverifiedSink(store)
+    ctx = make_ctx("attended", reply_sink=sink, config=_FAST)
+    res = dispatch("send_reply", {"thread_id": "fb:1", "text": "hi"}, ctx)
+    assert res["status"] == "send_unverified"
+
+    again = dispatch("send_reply", {"thread_id": "fb:1", "text": "hi again"}, ctx)
+    assert again["status"] == "unverified_open"
+    assert len(sink.sends) == 1  # the second call never reached the sink
+    assert len(_intents(store)) == 1  # and minted no second intent
+    assert len(_pacing_rows(store)) == 1  # nor a second pacing row
+
+
+def test_the_reserve_guard_hands_over_to_the_escalation_it_bounds(make_ctx, store, bus) -> None:
+    """The guard keys on sent_unverified only. Once the sweep folds it and escalates, the thread's
+    own status is the gate — and resolving the escalation is the human's deliberate way back in,
+    after which sending works again."""
+    _sell_thread(store)
+    ctx = make_ctx("attended", reply_sink=UnverifiedSink(store), config=_FAST)
+    dispatch("send_reply", {"thread_id": "fb:1", "text": "hi"}, ctx)
+
+    intent_sweep.run_stale_intent_sweep(bus=bus, store=store, grace_sec=0)
+    assert _intents(store)[0]["status"] == "unconfirmed"  # the reserve guard no longer applies…
+    with pytest.raises(ToolError, match="escalated"):  # …the escalated thread is the gate now
+        dispatch("send_reply", {"thread_id": "fb:1", "text": "hi"}, ctx)
+
+    escalation = store.list_open_escalations()[0]
+    store.resolve_escalation(escalation["id"], "checked the app — it did not send")
+    store.update_thread("fb:1", {"status": "active"})
+    ctx2 = make_ctx("attended", reply_sink=FakeSink(), config=_FAST)
+    res = dispatch("send_reply", {"thread_id": "fb:1", "text": "hi again"}, ctx2)
+    assert res["status"] == "sent"
+
+
 def test_duplicate_commit_is_a_noop(store) -> None:
     _sell_thread(store)
     cfg = pacing.resolve(_FAST, quiet_hours=(0, 0))

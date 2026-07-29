@@ -2281,9 +2281,9 @@ class Store:
         interactive: bool = False,
     ) -> dict:
         """Transaction A of the send bracket: pacing reserve + (only on `go`) a durable intent, in
-        one transaction. A wait/quiet verdict records no pacing action and no intent — a blocked
-        reply leaves nothing behind for a sweep to re-drive. Returns the verdict and, on go, the
-        intent id; the caller performs the sink send outside this transaction."""
+        one transaction. A wait/quiet/unverified_open verdict records no pacing action and no
+        intent — a blocked reply leaves nothing behind for a sweep to re-drive. Returns the verdict
+        and, on go, the intent id; the caller performs the sink send outside this transaction."""
         now = now if now is not None else _now()
         with self._db.transaction() as conn:
             thread = conn.execute(
@@ -2291,6 +2291,18 @@ class Store:
             ).fetchone()
             if not thread:
                 raise ThreadNotFound(f"no thread with id {thread_id!r}")
+            # A send on this thread already ended unverified: the buyer may have that message, so
+            # nothing further may be sent until it is settled. Refused here rather than left to the
+            # caller, so no flow can talk past an unconfirmed send; the window is bounded — the
+            # sweep folds the intent to unconfirmed and opens the escalation whose resolution is
+            # the deliberate way back in.
+            unverified = conn.execute(
+                "SELECT 1 FROM send_intents WHERE thread_id = ? AND status = 'sent_unverified' "
+                "LIMIT 1",
+                (thread_id,),
+            ).fetchone()
+            if unverified:
+                return {"verdict": "unverified_open", "delay_sec": 0.0}
             marketplace = thread["market"]
             cutoff = now - pacing_engine.WINDOW_SECONDS
             rows = conn.execute(
@@ -2421,6 +2433,12 @@ class Store:
                 "WHERE intent_id = ? AND status = 'pending'",
                 (_now(), intent_id),
             )
+
+    def intent_status(self, intent_id: str) -> str | None:
+        """The send bracket's durable truth for one intent — what a caller consults after a sink
+        failure, because the exception cannot say whether the page took the message."""
+        rows = self._db.query("SELECT status FROM send_intents WHERE intent_id = ?", (intent_id,))
+        return rows[0]["status"] if rows else None
 
     def record_manual_reply(self, thread_id: str, text: str, *, handle: str | None = None) -> dict:
         """Journal a reply the seller sent themselves in the marketplace app: an outbound row,

@@ -97,10 +97,13 @@ def _send_reply(ctx: ToolContext, params: dict) -> dict:
     try:
         ctx.reply_sink.send(thread, params["text"], kind, intent_id)
     except Exception:
-        # The sink's own message never reaches here by design (it emits its own events). Whether the
-        # message may be retried is carried by the intent's status, not by this return: still
-        # `pending` means nothing was sent, `sent_unverified` means it was clicked and the sweep
-        # asks a human rather than sending it again.
+        # The sink's own message never reaches here by design (it emits its own events). Whether
+        # the message may be retried is the intent's durable status, and the return says which
+        # case this is: still `pending` means nothing was delivered and a retry is safe;
+        # `sent_unverified` means the page took it, and the sweep asks a human rather than
+        # anyone sending it again.
+        if ctx.store.intent_status(intent_id) == "sent_unverified":
+            return {"status": "send_unverified", "intent_id": intent_id}
         return {"status": "send_failed", "intent_id": intent_id}
 
     commit = ctx.store.commit_reply(
@@ -128,7 +131,10 @@ register(
         name="send_reply",
         description="Send a reply on a marketplace thread: pacing + durable intent + send + cursor "
         "advance, composed atomically. Blocked verdicts record nothing; kinds: "
-        "reply|holding|followup|nudge.",
+        "reply|holding|followup|nudge. Statuses: send_failed = nothing was delivered, retrying is "
+        "safe; send_unverified = the page took it but it could not be confirmed — never resend, an "
+        "escalation follows; unverified_open = an earlier send on this thread is still "
+        "unconfirmed, wait for its escalation to be resolved.",
         input_schema={
             "type": "object",
             "properties": {

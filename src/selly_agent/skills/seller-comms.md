@@ -53,6 +53,16 @@ resume / keep held. On "not a scam", release via `release_thread` (the prior sta
 automatically). Reporting the account on the marketplace is the seller's to do in the app — if they
 want the counterpart reported, say so plainly rather than promising to file it for them.
 
+**Unconfirmed send.** A reply was committed into a marketplace chat but could not be confirmed on
+the page. The thread is escalated and nothing more goes to that buyer until this is settled — and
+only the seller can settle it, by looking at the real chat: "⚠️ I replied to <buyer> on "<title>"
+but couldn't confirm it went through. Open the chat in your app — is my message there?" On "it's
+there": `resolve_escalation`, then `update_thread` (escalated → active); the transcript catches up
+on its own. On "nothing there": resolve and reactivate first (sends are refused while the thread
+is escalated), then send the reply again with `send_reply`. **Never resend before the seller has
+looked** — an unconfirmed message may still have arrived, and the one thing worse than an
+unconfirmed message is the same message twice.
+
 **Unknown buyer question.** If only the seller knows the answer, escalate it. Quote the question
 as the buyer's words and ask plainly: "❓ <buyer> asks on "<title>": "<question>" — how should I
 answer?" When the seller replies, send the answer to the buyer naturally, then **bank it with

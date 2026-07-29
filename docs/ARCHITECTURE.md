@@ -165,7 +165,8 @@ probe and the launch invocation, and is the layer's only network I/O.
   locate the composer, type, click, stamp, then confirm by reading our own words
   back. The two failure shapes are treated oppositely — nothing sent fails closed
   before the click and stays retryable, while sent-but-unconfirmed stays
-  `sent_unverified` and is escalated rather than ever re-driven.
+  `sent_unverified` and is escalated rather than ever re-driven; while one is open,
+  the reserve refuses any fresh send on that thread, so no caller can talk past it.
 - **`browser/selectors.py`** — shipped selector defaults with the `ui_cache` table
   as a heal overlay over them, so a fresh install pays no vision cost and a
   self-heal never waits on a release. A resolve must match exactly one visible
