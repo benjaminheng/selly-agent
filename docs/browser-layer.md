@@ -1,52 +1,30 @@
 # The browser layer
 
-Most marketplaces have no API for a third party, so the agent works them the way
-a person would: in the seller's own logged-in Chrome. This is the layer that
-does it — read buyers' messages into durable rows, send replies back, and fill a
-listing form — without the LLM ever touching a page for the ordinary cases.
+Most marketplaces have no third-party APIs, so the agent interacts with them the way a human would, by controlling a browser. This is the layer that does it. Playwright is required for controlling the browser. Only Chrome browser is supported.
 
-It is **optional in effect**: a machine with no Node, or no Chrome running, keeps
-the daemon and the carousell.ai rail working, with the browser lanes reporting
-themselves unavailable rather than reporting empty marketplaces.
+It is an **optional** layer. A agent with no third-party marketplaces will continue posting listings on carousell.ai.
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for where this sits in the whole, and
 [`tool-surface-and-passes.md`](tool-surface-and-passes.md) for the *other* browser
 seam — the Playwright server a publish pass drives itself, which is separate from
 everything below.
 
-## The warm Chrome
+## The browser (Chrome)
 
-One dedicated Chrome profile, one browser, CDP listening on the loopback
-interface. The profile is the point: the seller's everyday Chrome is never
-driven, and the marketplace sessions the agent uses persist across restarts.
+A dedicated Chrome profile is used for all agent interactions. This prevents the agent from seeing the user's everyday web-browsing sessions. The agent interacts with the browser using Chrome DevTools Protocol (CDP).
 
-**The daemon never launches it.** One profile admits exactly one Chrome — a
-second launch on a live profile either hangs or opens read-only — so supervision
-belongs to launchd (and in dev, to the person at the keyboard). `browser/chrome.py`
-holds only the parts around that:
-
-- `is_ready(port)` — an HTTP GET of Chrome's own `/json/version`. The **only
-  network I/O in the layer**.
-- `launch_command(port)` — the argv. Includes
-  `--disable-backgrounding-occluded-windows` (a window the seller has covered
-  otherwise counts as hidden, and every send would raise it again) and a pinned
-  window position and size.
-- `clear_stale_locks()` — removes the `Singleton*` files a SIGKILLed Chrome
-  leaves behind, which would hang the next launch. Only safe once the probe says
-  nothing is answering.
-- `bring_up_hint(port)` — the dev-mode instruction, printing the full command.
-
-These are the bring-up helpers. The lanes themselves do **not** probe CDP: an
-absent or logged-out Chrome surfaces through the read path below, as a failed read
-or a `logged_out` verdict.
+`browser/chrome.py` is responsible for starting the browser. It is not wired up yet.
 
 ## The client
 
 `browser/client.py` is the daemon's own Playwright MCP client: JSON-RPC over a
-**stdio subprocess**. No socket, no port, nothing to authenticate, and nothing
-else on the machine that could connect to it. The shape follows `rail/client.py`
-— typed errors, timeouts as named constants, and **no internal retry** (a lane
-backs off; a hot retry against a marketplace is the anti-automation tell).
+**stdio subprocess**. A stdio subprocess is used instead of exposing the
+Playwright MCP server over HTTP means that only the parent process (the daemon)
+can connect to it. Nothing else can do so.
+
+The shape follows `rail/client.py` — typed errors, timeouts as named constants,
+and **no internal retry** (a lane backs off; a hot retry against a marketplace
+is the anti-automation tell).
 
 Errors are three kinds because the responses differ:
 
@@ -60,24 +38,21 @@ Errors are three kinds because the responses differ:
 spawning, so absence is reported as absence with an install hint, rather than
 surfacing later as a failed read or a send that reserved pacing for nothing.
 
-Three client behaviours are load-bearing:
+Notable client behaviors:
 
 - **One tab, held by identity, not index.** `ensure_tab` opens the client's own
   tab once; because the daemon owns the server process exclusively, that tab stays
   the current one. Nothing ever selects a tab by index or guesses one by host —
   indices renumber whenever any tab opens or closes.
-- **`ensure_frontmost` before typing.** Chrome routes key events only to a
-  visible renderer, and a tab is visible only when it is its window's active tab.
-  Filling a text box still works on a background tab, which is what makes the
-  failure quiet: the text lands, the key that would commit it never arrives, and
-  nothing errors. Only sends that need a real key press pay this — reads run fine
-  in the background, which is what keeps the read lane out of the seller's way.
-  Selecting is by index, so the page is read back afterwards; a tab that came
-  forward and is not the page we navigated to belongs to something else, and the
-  client abandons its handle and raises rather than typing into it.
-- **`evaluate` never sets a value.** With a target it is a locate-and-read, plus
-  the one market-supplied submit. The text a buyer sees is always typed as real
-  input.
+- **`ensure_frontmost` before certain key events.** Chrome routes certain key
+  events (like Enter) only to a visible renderer, and a tab is visible only
+  when it is its window's active tab. Ergo, a tab must be active for it to
+  receive these key events. This only applies to key events like Enter. The
+  consequence of `ensure_frontmost` is that the browser will steal focus from
+  the user.
+- **`evaluate` runs JS on a page, and should never set a value.** With a target
+  it is a locate-and-read. The text a buyer sees is should always be typed as
+  real input.
 
 ## One Chrome, three actors
 
@@ -95,10 +70,7 @@ mid-read). Two mechanisms keep that safe:
 
 ## Market adapters
 
-`browser/markets/` is the per-market seam. Everything above it — client, read
-lane, reconcile, sink — depends only on the `MarketAdapter` protocol, so a new
-marketplace is a new module plus a registry entry, not edits threaded through the
-layer. The same split `channel/` uses for providers.
+`browser/markets/` contains market-specific adapters. Adapters implement the `MarketAdapter` interface. A new market is a new module plus a registry entry.
 
 | field | what it carries |
 | --- | --- |
@@ -111,16 +83,20 @@ layer. The same split `channel/` uses for providers.
 | `publish_skill` | the skill holding this market's publish recipe |
 | `system_handles` | rows an inbox read must never treat as a buyer |
 
-`chat_message_submit_js` is the one genuinely per-market *decision* rather than a
-per-market fact. Empty is the safe default: submitting falls back to a real key
-event, indistinguishable from a person, at the cost of pulling the seller's
-window forward on every reply. Supplying it trades that cost for a keystroke
-dispatched from the page, which carries `isTrusted: false` — a signal on the
-seller's own account, so it belongs to a market someone has decided that for.
+`chat_message_submit_js` is per-market decision rather than a per-market fact.
+Empty is a safe default; submitting falls back to a real 'Enter' key event,
+indistinguishable from a human, but requires the browser to steal focus from
+the user (see `ensure_foremost`). This field can be used to trigger a synthetic
+key event, which has the tradeoff of carrying a `isTrusted=false` signal, which
+the site can use to detect bot activity. For marketplaces that expose a 'send'
+UI element, prefer clicking on it to submit, as this does not require browser
+focus.
 
-The JS artifacts are the layer's only DOM knowledge, and they are written
-**class-agnostically** — marketplaces ship hashed CSS classes that churn every
-deploy — locating by role, by href shape, and (for message direction) by geometry.
+The JS artifacts are the layer's only DOM knowledge. They should be made as
+stable as possible. Marketplaces that ship with hashed CSS classes (e.g.
+Carousell), should have elements located by more stable identifiers instead.
+This may involve: role, href shape, element hierarchy, geometry, and so on.
+identifiers instead.
 
 ### Registry vs. adapter
 
@@ -132,7 +108,7 @@ listing a market in the registry does not make it read. Page URLs come from the
 registry's `urls` templates and the region→host `domains` map, never from a guess:
 an unrecorded template resolves to `None` and the caller reports that.
 
-### Carousell, specifically
+### Adapter: Carousell
 
 - **The conversation list is Carousell's own JSON API**, fetched from the page so
   the session cookie rides along. The inbox DOM cannot supply it: its rows are
@@ -328,9 +304,6 @@ release, and a release never overwrites what an install has learned.
 | `browser.unavailable` | the browser cannot be driven at all |
 | `browser.send` | a send's outcome: `sent`, `refused`, `unverified`, `browser_error` |
 | `browser.heal` | a selector candidate that did not resolve, and where it came from |
-
-All are `info` level — none is demoted to `routine`, so all of them show in a
-default `inspect` view. See [`observability.md`](observability.md).
 
 ## Configuration
 
