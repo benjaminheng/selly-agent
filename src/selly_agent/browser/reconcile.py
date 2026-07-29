@@ -6,11 +6,13 @@ rows already stored; whatever is not stored yet is new. "Have we handled this" i
 kept anywhere — the state that decides is the state that persists.
 
 The message id is derived from content rather than from a platform id, because the chat DOM exposes
-none. Identical text is disambiguated by how many copies are already recorded: a buyer who sends
-"ok" twice ends up with two rows, and re-reading the same tail inserts nothing either time. Counting
-against stored rows regardless of *how* they were stored is what makes our own sent replies and the
-seller's manual ones reconcile correctly too — both are already-recorded outbound text, so the
-matching bubble is not recorded twice.
+none. The tail is reconciled as what it is — the conversation's trailing window: the longest run of
+stored rows that ends the transcript and opens the tail is the region both sides already agree on,
+and only what follows it is new. That alignment is what keeps repeated text honest in both
+directions — a copy that scrolled out of the window is not re-inserted, and a buyer repeating
+themselves after it scrolled away is still heard. It holds regardless of *how* a row was stored, so
+our own sent replies and the seller's manual ones reconcile correctly too — both are
+already-recorded outbound text, so the matching bubble is not recorded twice.
 """
 
 from __future__ import annotations
@@ -110,32 +112,37 @@ def new_rows(tail, recorded, *, now: float) -> list:
     """The rows in this tail that are not stored yet, in page order.
 
     `recorded` is every row already stored for the thread, whatever wrote it — our own committed
-    replies, a manual reply journaled earlier, previous reads. Counting occurrences of the same text
-    against all of them is what makes this idempotent: the second read of an unchanged tail finds
-    every bubble already accounted for.
+    replies, a manual reply journaled earlier, previous reads. The tail is aligned against it as a
+    trailing window: the longest suffix of the stored rows that matches the tail's opening is the
+    shared region, and everything after it is new. Counting copies of each text instead would
+    swallow a repeat whose earlier copy has scrolled out of the window — the stored count exceeds
+    anything the tail can still show, so the buyer's new "ok" would read as already handled.
 
     Timestamps come from the read, not from the page (the chat exposes no per-bubble time), and step
     forward within the batch so the stored order matches what was on screen.
     """
-    already: dict = {}
-    for row in recorded or []:
-        key = (row.get("dir"), normalize(row.get("text") or ""))
-        already[key] = already.get(key, 0) + 1
+    tail_keys = [(bubble["side"], normalize(bubble["text"])) for bubble in tail]
+    stored_keys = [(row.get("dir"), normalize(row.get("text") or "")) for row in recorded or []]
+    overlap = 0
+    for size in range(min(len(tail_keys), len(stored_keys)), 0, -1):
+        if stored_keys[-size:] == tail_keys[:size]:
+            overlap = size
+            break
 
-    seen: dict = {}
+    # Occurrence numbering keeps the content-derived ids unique across repeats, and counting from
+    # the stored copies keeps them stable across reads.
+    counts: dict = {}
+    for key in stored_keys:
+        counts[key] = counts.get(key, 0) + 1
+
     out = []
-    for bubble in tail:
-        direction = bubble["side"]
-        text = bubble["text"]
-        key = (direction, normalize(text))
-        seen[key] = seen.get(key, 0) + 1
-        if seen[key] <= already.get(key, 0):
-            continue  # this copy is one we have already stored
+    for bubble, key in zip(tail[overlap:], tail_keys[overlap:]):
+        counts[key] = counts.get(key, 0) + 1
         out.append(
             {
-                "msg_id": message_id(direction, text, seen[key]),
-                "direction": direction,
-                "text": text,
+                "msg_id": message_id(bubble["side"], bubble["text"], counts[key]),
+                "direction": bubble["side"],
+                "text": bubble["text"],
                 "ts": now + len(out) * 0.001,
             }
         )

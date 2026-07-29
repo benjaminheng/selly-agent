@@ -95,8 +95,8 @@ def test_a_buyer_repeating_themselves_gets_a_second_row() -> None:
 
 
 def test_a_message_scrolling_out_of_the_tail_is_not_re_inserted() -> None:
-    """Counting copies against what is stored — not numbering positions in the window — is what
-    makes this safe: as the conversation grows, old bubbles leave the tail and must not return."""
+    """As the conversation grows, old bubbles leave the tail and must not return: the tail's
+    opening aligns with the end of what is stored, so what came before it stays reconciled."""
     recorded = _recorded([("in", "ok"), ("in", "ok")])
     assert new_rows([_bubble("ok"), _bubble("later")], recorded, now=100.0) == [
         {
@@ -106,6 +106,25 @@ def test_a_message_scrolling_out_of_the_tail_is_not_re_inserted() -> None:
             "ts": 100.0,
         }
     ]
+
+
+def test_a_repeat_of_a_message_that_scrolled_away_is_still_heard() -> None:
+    """The dual of the case above. "ok" was said long ago and has left the window; the buyer says
+    "ok" again. Counting copies would swallow it — the stored count exceeds anything the tail can
+    still show — leaving the buyer stranded with nothing counting as blind."""
+    recorded = _recorded([("in", "ok"), ("in", "a"), ("in", "b"), ("in", "c")])
+    tail = [_bubble("b"), _bubble("c"), _bubble("ok")]
+    rows = new_rows(tail, recorded, now=100.0)
+    assert [(row["direction"], row["text"]) for row in rows] == [("in", "ok")]
+    assert rows[0]["msg_id"] == message_id("in", "ok", 2)  # its own id — never deduped away
+
+
+def test_a_burst_larger_than_the_window_records_the_whole_tail() -> None:
+    """When nothing stored is still on screen the tail shares no opening with the transcript, and
+    every bubble in it is new."""
+    recorded = _recorded([("in", "old")])
+    tail = [_bubble("one"), _bubble("two")]
+    assert [row["text"] for row in new_rows(tail, recorded, now=100.0)] == ["one", "two"]
 
 
 # --- our own and the seller's outbound messages --------------------------------------------------

@@ -155,10 +155,12 @@ probe and the launch invocation, and is the layer's only network I/O.
   buyer eligible. Every inbound row is scam-scanned as it is written, so the verdict
   is on the row before any model sees the text.
 - **`browser/reconcile.py`** — the pure core: a tail read compared against stored
-  rows, with whatever is not stored being new. Counting copies of the same text
-  against stored rows regardless of what wrote them is what makes a re-read insert
-  nothing, and makes our own sent replies and the seller's manual ones reconcile
-  rather than double-record.
+  rows, with whatever is not stored being new. The tail is aligned as the
+  conversation's trailing window — the longest stored suffix matching its opening
+  is the shared region — which is what makes a re-read insert nothing, keeps a
+  buyer's repeated message heard after its earlier copy scrolls away, and makes
+  our own sent replies and the seller's manual ones reconcile rather than
+  double-record.
 - **`browser/sink.py`** — the scripted send: navigate the recorded thread URL,
   locate the composer, type, click, stamp, then confirm by reading our own words
   back. The two failure shapes are treated oppositely — nothing sent fails closed
