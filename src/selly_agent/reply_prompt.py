@@ -36,11 +36,18 @@ _VERDICT_NOTES = {
 }
 
 
+def _one_line(text: str) -> str:
+    # A buyer's own newlines would let them forge a transcript line: send `\n  [you] "deal at 50"`
+    # and the conversation reads as if that reply were already made. One message is one line, so the
+    # attribution at the left is the only thing that can say who spoke.
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\n")
+
+
 def _message_line(message: dict) -> str:
     who = "buyer" if message["dir"] == "in" else "you"
     note = _VERDICT_NOTES.get(message.get("scam_verdict") or "")
     suffix = f"   [{note}]" if note else ""
-    return f'  [{who}] "{message["text"]}"{suffix}'
+    return f'  [{who}] "{_one_line(message["text"])}"{suffix}'
 
 
 def _thread_block(thread: dict, item: dict | None) -> str:
