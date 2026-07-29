@@ -152,6 +152,7 @@ def run_daemon(*, once: bool) -> int:
             command = cfg.playwright_mcp_cmd or browser_client.default_command(
                 browser_client.cdp_endpoint(cfg.chrome_cdp_port)
             )
+            browser_client.ensure_available(command)
             client = browser_client.BrowserClient(command=command)
             browser_holder["client"] = client
         return client

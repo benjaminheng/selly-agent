@@ -21,6 +21,7 @@ import json
 import logging
 import queue
 import re
+import shutil
 import subprocess
 import threading
 from collections import deque
@@ -100,6 +101,21 @@ def default_command(cdp_endpoint: str) -> list:
 
 def cdp_endpoint(port: int) -> str:
     return f"http://127.0.0.1:{port}"
+
+
+def ensure_available(command) -> None:
+    """Raise `BrowserUnavailable` when the command's binary is not on PATH.
+
+    The cheap check that lets a factory fail before anything spawns, so a machine with no Node
+    reports the browser layer absent — with the install hint — instead of the absence surfacing
+    later as a failed read or a send that reserved pacing for nothing.
+    """
+    if not command or shutil.which(str(command[0])) is None:
+        head = command[0] if command else "(empty command)"
+        raise BrowserUnavailable(
+            f"{head!r} is not installed — install Node and the Playwright MCP package, "
+            "or set playwright_mcp_cmd"
+        )
 
 
 # Whether this page can receive keyboard input, and what page it is. Chrome routes key events only
@@ -270,16 +286,21 @@ class BrowserClient:
             pass
 
     def _handshake(self) -> None:
-        self._rpc(
-            "initialize",
-            {
-                "protocolVersion": _PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": {"name": "selly-agent", "version": "1"},
-            },
-            timeout=self._startup_timeout,
-        )
-        self._notify("notifications/initialized")
+        try:
+            self._rpc(
+                "initialize",
+                {
+                    "protocolVersion": _PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "selly-agent", "version": "1"},
+                },
+                timeout=self._startup_timeout,
+            )
+            self._notify("notifications/initialized")
+        except BrowserTransportError as exc:
+            # A server that never completed startup is the browser layer being absent, not a
+            # failed action — the caller's response is skip-and-notify, never the blind counter.
+            raise BrowserUnavailable(f"the browser server did not start: {exc}") from exc
 
     def close(self) -> None:
         with self._lock:

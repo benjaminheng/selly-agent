@@ -425,6 +425,23 @@ def test_no_browser_degrades_with_one_notice_and_no_crash(store, bus, seeded) ->
     assert _kinds(bus, "browser.unavailable")
 
 
+def test_a_server_dying_mid_read_is_unavailable_not_blind(store, bus, seeded) -> None:
+    """The binary exists but the server never starts — the same absence the factory reports,
+    discovered one step later. The seller needs the install hint, not a Chrome check, so it is
+    routed to the one unavailable notice (held to one across ticks) and never the blind counter."""
+
+    class DyingClient(StubClient):
+        def navigate(self, url):
+            raise BrowserUnavailable("the browser server did not start")
+
+    deps = _deps(store, bus, DyingClient())
+    inbox.inbox_lane(deps)
+    inbox.inbox_lane(deps)
+    assert store.count_queued_notices() == 1
+    assert _kinds(bus, "browser.unavailable")
+    assert not _kinds(bus, "browser.blind")
+
+
 # --- yielding the browser -----------------------------------------------------------------------
 
 

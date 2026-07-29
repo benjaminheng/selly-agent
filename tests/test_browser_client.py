@@ -16,6 +16,7 @@ from selly_agent.browser.client import (
     BrowserTransportError,
     BrowserUnavailable,
     default_command,
+    ensure_available,
     evaluate_result,
     same_page,
     sections,
@@ -135,9 +136,23 @@ def test_a_missing_binary_is_browser_unavailable(tmp_path) -> None:
 
 
 def test_a_server_that_dies_at_startup_is_unavailable(make_client) -> None:
+    """Absence and failure route differently: unavailable means skip-and-notify with the install
+    hint, where a transport error feeds the blind counter. A server that never completed its
+    handshake is the former."""
     client = make_client({"on_start": "die"})
-    with pytest.raises(BrowserTransportError, match="exited"):
+    with pytest.raises(BrowserUnavailable, match="did not start"):
         client.evaluate("() => 1")
+
+
+def test_a_missing_binary_is_unavailable_before_anything_spawns(monkeypatch) -> None:
+    monkeypatch.setattr("selly_agent.browser.client.shutil.which", lambda _name: None)
+    with pytest.raises(BrowserUnavailable, match="playwright_mcp_cmd"):
+        ensure_available(["npx", "--yes", "@playwright/mcp"])
+
+
+def test_a_present_binary_passes_the_availability_check(monkeypatch) -> None:
+    monkeypatch.setattr("selly_agent.browser.client.shutil.which", lambda name: f"/usr/bin/{name}")
+    ensure_available(["npx"])
 
 
 def test_a_failed_tool_is_a_tool_error_carrying_the_reason(make_client) -> None:

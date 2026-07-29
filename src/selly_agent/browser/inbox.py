@@ -89,6 +89,11 @@ def _clear_notice(deps: InboxDeps, key: str) -> None:
     deps.notified.pop(key, None)
 
 
+def _unavailable(deps: InboxDeps, exc: BrowserUnavailable) -> None:
+    deps.bus.publish("browser.unavailable", {"reason": str(exc)})
+    _notify_once(deps, "unavailable", UNAVAILABLE_NOTICE.format(reason=exc))
+
+
 def browser_pass_running(store) -> bool:
     """Whether a pass that drives Chrome is queued or running.
 
@@ -116,10 +121,8 @@ def inbox_lane(deps: InboxDeps) -> None:
     try:
         client = deps.browser_factory()
     except BrowserUnavailable as exc:
-        deps.bus.publish("browser.unavailable", {"reason": str(exc)})
-        _notify_once(deps, "unavailable", UNAVAILABLE_NOTICE.format(reason=exc))
+        _unavailable(deps, exc)
         return
-    _clear_notice(deps, "unavailable")
 
     region = seller_region(deps.store)
     for market in marketplaces.browser_markets():
@@ -129,8 +132,18 @@ def inbox_lane(deps: InboxDeps) -> None:
         try:
             with client.exclusive():
                 _read_market(deps, client, adapter, region)
+        except BrowserUnavailable as exc:
+            # The same absence the factory reports, discovered one step later (the binary is
+            # there but the server dies at startup). Every browser market is equally unreadable,
+            # and the seller needs the install hint, not a Chrome check — so this is never fed
+            # to the blind counter.
+            _unavailable(deps, exc)
+            return
         except BrowserError as exc:
             _count_blind(deps, market, str(exc))
+    # Recovery is a tick that ran into no unavailability, so a condition that persists mid-loop
+    # keeps its one notice instead of being re-queued every tick.
+    _clear_notice(deps, "unavailable")
 
 
 def _read_market(deps: InboxDeps, client, adapter, region: str | None) -> None:
