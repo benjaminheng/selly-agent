@@ -38,6 +38,7 @@ from selly_agent.tools import (
 
 log = logging.getLogger(__name__)
 
+# Runaway backstops, not budgets, so they are sized per flow rather than shared across flows.
 PASS_MAX_TURNS = 30
 # Filling a marketplace composer takes many more calls than answering a buyer.
 PUBLISH_MAX_TURNS = 80
@@ -65,14 +66,12 @@ DEFAULT_PUBLISH_MARKET = "carousell-ai"
 # The browser tools a publish pass may call — the diet, not the whole Playwright surface. Every tool
 # schema rides every turn of the pass, so a name that no recipe step uses is paid for on every run.
 #
-# Four exclusions are deliberate rather than incidental:
+# Three exclusions are deliberate rather than incidental:
 #   * no browser_close — it would close the seller's warm Chrome out from under everything else;
 #   * no browser_run_code_unsafe — arbitrary Playwright code is the browser's equivalent of a shell,
 #     and this whole surface exists so that a pass has typed verbs instead of one;
 #   * no browser_take_screenshot — every check in the recipe is a DOM read-back, which is both
-#     cheaper and harder to misread than a picture;
-#   * no browser_navigate_back / hover / drag / resize / network reads — nothing in the flow needs
-#     them, and each would ride along on every turn.
+#     cheaper and harder to misread than a picture.
 PUBLISH_BROWSER_TOOLS = (
     "browser_navigate",
     "browser_snapshot",
@@ -267,8 +266,7 @@ class PassType:
     skills: tuple = ()
     web_tools: bool = False
     build_media_paths: Callable[[dict, object, str], tuple] = _no_media_paths
-    # Which browser tools this pass may call, decided from its payload — the browser is granted per
-    # flow, and for the publish flow per marketplace, so a rail publish is handed none.
+    # Which browser tools this pass may call, decided from its payload.
     build_browser_tools: Callable[[dict, object, str], tuple] = _no_browser_tools
     # The entity scope the pass's token carries. Enforced per request at every row load, so a scoped
     # pass cannot read or write outside what it was spawned for.
@@ -276,7 +274,6 @@ class PassType:
     # Set when the skill set depends on the payload (which marketplace's recipe a publish needs);
     # otherwise `skills` is the declaration and stays readable at a glance.
     build_skills: Callable[[dict, object, str], tuple] | None = None
-    # A runaway backstop, not a budget, so it is sized to the flow rather than shared across them.
     max_turns: int = PASS_MAX_TURNS
 
     def skills_for(self, payload: dict, store=None, pass_id: str = "") -> tuple:
@@ -290,9 +287,8 @@ PASS_TYPES = {
     # conversation that produced the draft, so this pass needs the flow's publish discipline and
     # nothing about voice — it talks to no one, and the photo upload is daemon-side, so it never
     # needs to see an image either.
-    # One publish type serves both kinds of marketplace: the rail (an API call) and a browser market
-    # (a form the pass fills in Chrome). What differs — the recipe skill and whether a browser is
-    # granted at all — is derived from the payload's market, so a new marketplace needs no new type.
+    # One publish type serves both kinds of marketplace, the rail and a browser market: what differs
+    # is derived from the payload (see `_publish_skills` / `_publish_browser_tools`).
     "publish": PassType(
         tier=TIER_PASS_PUBLISH,
         build_prompt=_publish_prompt,

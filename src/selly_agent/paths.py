@@ -206,11 +206,8 @@ def launch_agents_dir(platform=None) -> Path:
 
 
 def ensure_private_dir(path: Path) -> Path:
-    """Create a directory only its owner can read, from creation.
-
-    For a directory made outside startup — a per-pass workspace, which holds the seller's photos
-    while a browser publish runs.
-    """
+    """Create a directory only its owner can read, from creation — for one made outside startup,
+    like a per-pass workspace."""
     return _ensure(path, 0o700)
 
 
@@ -239,8 +236,7 @@ def ensure_state_dirs() -> None:
     _ensure(state_dir(), 0o755)
     _ensure(backups_dir(), 0o755)
     _ensure(logs_dir(), 0o755)
-    # 0700: a browser publish stages the item's photographs into its pass workspace, because the
-    # browser's file upload can only read its own workspace roots.
+    # 0700: a browser publish stages the item's photographs into its pass workspace.
     _ensure(passes_dir(), 0o700)
     # 0700: page snapshots can carry the seller's own address off a composer page.
     _ensure(browser_output_dir(), 0o700)

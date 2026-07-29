@@ -1,19 +1,11 @@
 """The marketplace send: a scripted, verified reply in the seller's own logged-in Chrome.
 
-The legacy version of this was five CLI steps restated across five prompt files, with the model
-holding the bracket together across turns. Here the whole thing is one call the daemon makes:
-navigate the recorded thread URL, locate the composer, type, commit, stamp the intent, and confirm
-by reading our own message back off the page.
+The whole bracket is one call the daemon makes: navigate the recorded thread URL, locate the
+composer, type, commit, stamp the intent, and confirm by reading our own message back off the page.
 
-The text is typed as real input; **how it is committed is the market's own decision**, carried on
-its adapter. Typing costs the seller nothing, but the ways to commit differ in what they give away:
-
-  * A real key event reaches only the *active* tab, so it means selecting the agent's tab, and
-    selecting pulls the seller's window in front of whatever they were doing — every reply
-    interrupting them. This is the default, because it is indistinguishable from a person.
-  * A keystroke dispatched from the page interrupts nothing and carries `isTrusted: false`, which a
-    marketplace can read in one line. A market opts into that by supplying
-    `chat_message_submit_js`, and only where someone has decided the account can afford the signal.
+The text is always typed as real input; **how it is committed is the market's own decision**,
+carried on its adapter as `chat_message_submit_js` — supplied, the page submits the message itself;
+empty, a real key press does, at the cost of pulling the seller's window forward.
 
 Two failure modes are deliberately different, because the safe response to each is opposite:
 
@@ -37,7 +29,6 @@ log = logging.getLogger(__name__)
 
 _MESSAGE_BOX = "message_box"
 
-# The key that sends, pressed into the focused message box.
 _SEND_KEY = "Enter"
 
 

@@ -47,8 +47,6 @@ def test_config_dir_is_0700_from_creation(xdg_tmp) -> None:
 
 
 def test_the_browser_dirs_are_0700_from_creation(xdg_tmp) -> None:
-    """The profile holds the seller's live marketplace sessions, and the output dir holds page
-    snapshots that can carry their address — both as sensitive as a credential file."""
     paths.ensure_data_dirs()
     paths.ensure_state_dirs()
     assert os.stat(paths.browser_profile_dir()).st_mode & 0o777 == 0o700
@@ -56,8 +54,6 @@ def test_the_browser_dirs_are_0700_from_creation(xdg_tmp) -> None:
 
 
 def test_the_pass_workspaces_are_0700_from_creation(xdg_tmp) -> None:
-    """A browser publish stages the item's photographs here, because the browser's upload can only
-    read its own workspace roots. Generated config would not need this; photographs do."""
     paths.ensure_state_dirs()
     assert os.stat(paths.passes_dir()).st_mode & 0o777 == 0o700
 

@@ -19,7 +19,6 @@ from selly_agent import paths
 
 _PROBE_TIMEOUT_SEC = 2.0
 
-# Chrome's macOS install location. The dev bring-up prints this command rather than running it.
 _CHROME_MACOS = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 # Locks a SIGKILLed Chrome leaves behind. They make the next launch on the same profile hang, so the
@@ -65,10 +64,9 @@ def launch_command(port: int, *, chrome_bin: str = _CHROME_MACOS) -> list:
     A dedicated profile is the point — the seller's everyday Chrome is never driven, and the
     marketplace sessions the agent uses persist here across restarts.
 
-    Without `--disable-backgrounding-occluded-windows`, a window the seller has covered with another
-    app counts as hidden, and a hidden tab is one a send has to bring to the front before its keys
-    will land. The flag does not stop a send raising the window — real key input does that on its
-    own — but it stops every send raising it a second time for a tab that was already active.
+    `--disable-backgrounding-occluded-windows` keeps a window the seller has covered with another
+    app from counting as hidden, which spares every send the work of raising a tab that was already
+    active.
     """
     return [
         chrome_bin,

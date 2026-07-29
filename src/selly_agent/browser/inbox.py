@@ -1,13 +1,13 @@
 """The inbox read lane: see what buyers said, without spending a single token on it.
 
 Each tick the lane asks the marketplace which conversations exist, opens the ones that look like
-they moved, reads each one's messages, and reconciles them against the rows already stored. It costs
-a navigate and one JS evaluate per thread and no model turns at all, which is what lets the reply
-loop above it stay browser-free: by the time a pass runs, what the buyer said is already state.
+they moved, reads each one's messages, and reconciles them against the rows already stored — a
+navigate and one JS evaluate per thread, no model turns. By the time a reply pass runs, what the
+buyer said is already state.
 
 The conversation list is the marketplace's own API where it has one, and the message read is DOM
-work. That split is deliberate — identity, the counterpart, the listing and the unread count are
-facts we want typed and loudly wrong when they change; message bubbles are only ever on a page.
+work: identity, the counterpart, the listing and the unread count are facts we want typed and loudly
+wrong when they change; message bubbles are only ever on a page.
 
 Three rules keep the lane honest:
 
@@ -359,7 +359,7 @@ def _read_thread(
 
 def _scan(deps: InboxDeps, thread: dict, text: str, stored) -> dict:
     """Scan one inbound message as it is written, so the verdict is on the row before any model sees
-    it. The engine is deterministic and offline, so this costs nothing and cannot be argued with."""
+    it. The engine is deterministic and offline, so this costs nothing."""
     history = "\n".join(row["text"] for row in stored if row["dir"] == "in")
     merged, registry_ok = deps.store.merged_scam_signatures()
     return scam_engine.scan(

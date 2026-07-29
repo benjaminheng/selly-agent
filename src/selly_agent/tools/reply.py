@@ -1,12 +1,10 @@
 """send_reply and record_manual_reply — the send bracket, composed atomically in code.
 
-The legacy five-CLI bracket (pacing reserve → journal intent → browser type+send → mark-sent →
-commit, restated across five prompt files) ceases to exist as instructions. send_reply runs it as
-one tool call: validate the thread, reserve pacing + write a durable intent (one transaction),
-send through the sink outside any transaction, then fold the outbound row + advance the cursor +
-mark the intent committed (a second transaction). A wait/quiet verdict records nothing; a killed
-send leaves the intent for the sweep to fold as unconfirmed, never a re-send. 04 ships no live sink,
-so a real market returns a structured no_send_path.
+send_reply is the whole bracket in one tool call: validate the thread, reserve pacing + write a
+durable intent (one transaction), send through the sink outside any transaction, then fold the
+outbound row + advance the cursor + mark the intent committed (a second transaction). A wait/quiet
+verdict records nothing; a killed send leaves the intent for the sweep to fold as unconfirmed, never
+a re-send. With no sink to send through, it returns a structured no_send_path.
 """
 
 from __future__ import annotations
@@ -64,7 +62,7 @@ def _send_reply(ctx: ToolContext, params: dict) -> dict:
             "(terminal/held/escalated threads are never re-engaged)"
         )
 
-    # 04 ships no live sink: refuse before any reserve or intent, so nothing is recorded.
+    # Nothing to send through: refuse before any reserve or intent, so nothing is recorded.
     if ctx.reply_sink is None:
         return {
             "status": "no_send_path",

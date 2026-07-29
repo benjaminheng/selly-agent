@@ -224,8 +224,7 @@ def test_an_already_visible_tab_is_left_alone(make_client) -> None:
 
 
 def test_a_hidden_tab_is_selected_and_then_confirmed(make_client) -> None:
-    """Chrome delivers keys only to a visible renderer, so a background tab takes the text and drops
-    the key that sends it — with no error anywhere."""
+    """A background tab takes the text and drops the key that sends it, with no error anywhere."""
     client = make_client(
         {
             "tools": {

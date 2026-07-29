@@ -35,7 +35,7 @@ class SlowClient:
         return _Held(self)
 
     def _record(self, entry):
-        with threading.Lock():
+        with self.lock:
             self.log.append(entry)
 
     def navigate(self, url):

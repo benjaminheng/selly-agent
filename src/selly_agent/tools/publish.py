@@ -138,9 +138,7 @@ def _record_published_listing_url(ctx: ToolContext, params: dict) -> dict:
 
     The rail's publish tool does its own recording, because the daemon makes the call and sees the
     result. A browser publish is filled by the pass, so nothing daemon-side knows the outcome and
-    this is how it comes back. Until it does, the item has no listing URL — and a buyer's
-    conversation is joined to an item by exactly that, so an unrecorded listing is one whose buyers
-    are never answered.
+    this is how it comes back.
     """
     market, url = params["market"], params["url"]
     verdict = verify_market_url(ctx, market, url, ctx.store.seller_region())

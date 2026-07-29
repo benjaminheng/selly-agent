@@ -3,8 +3,7 @@
 
 -- Answers the seller has taught the agent, so the same buyer question is never escalated twice.
 -- item_id = '*' is a global entry (applies to every item). source is CHECK-constrained to
--- 'seller': the only answers banked today are ones the seller gave, and widening that to
--- research-sourced answers is a deliberate schema change, not an accident at a call site.
+-- 'seller': the only answers banked today are ones the seller gave.
 CREATE TABLE qa_bank (
     id         INTEGER PRIMARY KEY,
     item_id    TEXT NOT NULL,
@@ -17,10 +16,9 @@ CREATE TABLE qa_bank (
 CREATE INDEX idx_qa_bank_item ON qa_bank (item_id);
 
 -- The per-market selector cache ("page memory"): where each browser control was last found, so a
--- routine pass skips the snapshot+vision round-trip per field. A hint layer only — a stale or
--- missing row degrades to vision, never to a confident wrong action. It stores DOM-locating
--- strings and timestamps ONLY: never a value, price, or address. page_url_pattern is the page
--- guard; a row is never trusted on the wrong page, so record refuses its absence in code.
+-- routine pass skips the snapshot+vision round-trip per field. A hint layer only. It stores
+-- DOM-locating strings and timestamps ONLY: never a value, price, or address. page_url_pattern is
+-- the page guard; a row is never trusted on the wrong page, so record refuses its absence in code.
 CREATE TABLE ui_cache (
     market           TEXT NOT NULL,
     flow             TEXT NOT NULL,

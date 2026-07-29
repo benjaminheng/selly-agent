@@ -221,9 +221,7 @@ def test_browser_knobs_round_trip(xdg_tmp) -> None:
     assert cfg.chrome_cdp_port == 9333
     assert cfg.playwright_mcp_cmd == ["node", "/opt/mcp/cli.js"]
     assert cfg.inbox_read_interval_sec == 120.0
-    # 1 disables the skip gate (every tick opens everything) — a supported posture, since the gate
-    # is a cost optimization and never a correctness input.
-    assert cfg.inbox_full_sweep_every == 1
+    assert cfg.inbox_full_sweep_every == 1  # 1 disables the skip gate, a supported posture
     assert cfg.browser_blind_after == 5
 
 

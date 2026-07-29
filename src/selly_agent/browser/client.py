@@ -118,11 +118,6 @@ def ensure_available(command) -> None:
         )
 
 
-# Whether this page can receive keyboard input, and what page it is. Chrome routes key events only
-# to a visible renderer, and a tab is visible when it is the active tab of its window — so a tab
-# opened in the background swallows every keystroke in silence. Filling a text box still works there
-# (that input is injected below the page), which is what makes the failure so quiet: the text lands,
-# the key that would commit it never arrives, and nothing reports an error.
 _PAGE_STATE_JS = "() => ({visible: document.visibilityState === 'visible', url: location.href})"
 
 # How long to give a tab we just brought forward to notice. Chrome tells the renderer it became
@@ -387,9 +382,9 @@ class BrowserClient:
         """Run a JS function in the page and return its value.
 
         `function` is a function expression — `() => {...}`, or `(element) => {...}` when a
-        target is given. With a target this is a *locate-and-read* on that element; the daemon
-        uses it for reads only, and never to set a field's value (synthetic value-setting is
-        untrusted input, the fingerprint the whole real-session posture exists to avoid).
+        target is given. With a target this is a *locate-and-read* on that element, plus the one
+        market-supplied submit that dispatches into the composer. Nothing here ever sets a field's
+        value: the text a buyer will see is always typed as real input.
         """
         arguments: dict = {"function": function}
         if target is not None:
@@ -419,6 +414,12 @@ class BrowserClient:
 
     def ensure_frontmost(self, url: str) -> None:
         """Make the tab this client drives the active tab of its window, so keys reach it.
+
+        Chrome routes key events only to a visible renderer, and a tab is visible when it is the
+        active tab of its window — so a tab opened in the background swallows every keystroke in
+        silence. Filling a text box still works there (that input is injected below the page), which
+        is what makes the failure so quiet: the text lands, the key that would commit it never
+        arrives, and nothing reports an error.
 
         Only what needs typing needs this: a scripted read runs fine on a background tab, which is
         what keeps the read lane out of the seller's way. Nothing happens when the tab is already

@@ -83,8 +83,7 @@ def locate_js(target: str) -> str:
     """A locate-only probe: how many visible elements this target matches, and where we are.
 
     Deliberately read-only. Resolving a control this way is fine; setting a value this way is not —
-    synthetic input carries none of the focus and keystroke cadence of a real one, which is the
-    fingerprint the whole real-session posture exists to avoid.
+    synthetic input carries none of the focus and keystroke cadence of a real one.
     """
     encoded = json.dumps(target)
     return (

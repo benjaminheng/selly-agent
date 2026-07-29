@@ -41,7 +41,6 @@ def mcp_config(spec: PassSpec) -> dict:
 
 
 def browser_tool_rules(spec: PassSpec) -> tuple:
-    """The pass's browser tool allow-list rules, or nothing when it has no browser server."""
     if spec.browser_server is None:
         return ()
     name = spec.browser_server.name

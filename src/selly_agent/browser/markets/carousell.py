@@ -146,14 +146,11 @@ CONVERSATION_TAIL_JS = """() => {
 #
 # There is no send control to click — the icon sits inside undecorated elements with no role, no
 # label and no cursor change — so the only ways to submit are a real key event or this. A real one
-# reaches only the *active* tab, which means selecting the agent's tab, and selecting is what pulls
-# the seller's window in front of whatever they were doing. Every reply would interrupt them.
-#
-# So the keystroke is dispatched from the page instead. It carries `isTrusted: false`, which a
-# marketplace can read in one line, and that is a bot signal on the seller's own account — which is
-# why this lives here and not in the sink. It is allowed for Carousell because we know what the page
-# does with it: the box's handler tests the key, the trimmed length, a guard ref and Shift, and
-# nothing else. The message text still arrives as real input; only the submit is synthesised.
+# reaches only the *active* tab, so it pulls the seller's window in front of whatever they were
+# doing; dispatching from the page interrupts nothing but carries `isTrusted: false`. Carousell
+# takes the second trade because the page's own handler is known: it tests the key, the trimmed
+# length, a guard ref and Shift, and nothing else. The message text still arrives as real input;
+# only the submit is synthesised.
 #
 # `preventDefault` is called only inside that handler's send branch, so its having been called is
 # the page acknowledging the message. Reported back as `sent`, which is what lets a refusal stay

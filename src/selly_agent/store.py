@@ -68,8 +68,6 @@ _QA_SOURCES = ("seller",)
 # over. A held/escalated thread is deliberately excluded — it is waiting on someone else.
 _REPLY_THREAD_STATUSES = ("active", "liaising", "agreed")
 
-# Selector-cache staleness: a row that failed too often, carries no page guard, or has not been
-# re-verified within the freshness window is a miss (→ vision), never "act anyway".
 UI_CACHE_STALE_FAILS = 3
 UI_CACHE_STALE_DAYS = 30
 _UI_CACHE_STRATEGIES = ("css", "aria", "role", "text")
@@ -950,8 +948,7 @@ class Store:
     # --- selector cache ("page memory") -----------------------------------------------------
     #
     # An acceleration layer over the browser flows, never a decision input: a hit says only WHERE a
-    # control was last found. Stale == miss == vision, so a drifted selector degrades to the slow
-    # path rather than a confident wrong action, and nothing here ever holds a value or an address.
+    # control was last found.
 
     def ui_cache_get(self, market: str, flow: str, step: str | None = None) -> dict:
         """One step's cached selector, or the whole flow's map when no step is named (the batched
@@ -998,10 +995,7 @@ class Store:
         if not (query or "").strip():
             raise StoreError("a ui cache row needs a non-empty query")
         if not (page_url_pattern or "").strip():
-            raise StoreError(
-                "a ui cache row needs a page_url_pattern — a step with no page guard is never "
-                "trusted, so recording one without it would be a no-op"
-            )
+            raise StoreError("a ui cache row needs a page_url_pattern")
         now = _now()
         with self._db.transaction() as conn:
             conn.execute(
@@ -1064,9 +1058,7 @@ class Store:
     def archive_listing_url(self, item_id: str, market: str) -> ItemRecord:
         """Drop one market's URL from the item's listing_urls — the listing is no longer live there.
 
-        The counterpart of record_listing_url, and the only other writer of that field. Removing the
-        URL is what stops every later flow (checkout, take-down, follow-ups) from treating a closed
-        listing as somewhere a buyer can still be sent.
+        The counterpart of record_listing_url, and the only other writer of that field.
         """
         with self._db.transaction() as conn:
             row = conn.execute("SELECT listing_urls FROM items WHERE id = ?", (item_id,)).fetchone()
@@ -1309,11 +1301,9 @@ class Store:
     ) -> bool:
         """Record one message the scripted marketplace read saw, idempotent on msg_id.
 
-        This is the daemon's own writer, so inbound persistence no longer rides the outbound send
-        bracket. It deliberately does NOT advance the reply cursor: only a committed reply does, so
-        a crash between reading a message and answering it leaves the thread eligible again rather
-        than silently answered. An outbound bubble we did not write is recorded too — that is the
-        seller replying by hand in their app, and recording it is what stops a double-message.
+        Deliberately does NOT advance the reply cursor — only a committed reply does. An outbound
+        bubble we did not write is recorded too: that is the seller replying by hand in their app,
+        and recording it is what stops a double-message.
         """
         return self.append_thread_message(
             thread_id,
@@ -2250,9 +2240,8 @@ class Store:
     def seller_region(self) -> str | None:
         """Which regional site of a marketplace this seller posts on, or None if not recorded.
 
-        Every URL the agent composes and every one it verifies is pinned to this: without it a host
-        check falls back to matching the marketplace's name anywhere in the domain, which a
-        lookalike satisfies. So it is read from here rather than accepted from a caller.
+        Every URL the agent composes and every one it verifies is pinned to this, so it is read from
+        here rather than accepted from a caller.
         """
         region = (self.get_seller_config_section("basics") or {}).get("region")
         return str(region) if region else None
@@ -3004,12 +2993,8 @@ class Store:
 
     def threads_with_unhandled_inbound(self) -> list[dict]:
         """Sell threads whose buyer is waiting: an inbound message past the reply cursor, a status
-        that is still conversational, and no escalation already open on them.
-
-        The cursor — not a flag — is the source of truth, so a crash between reading a message and
-        replying leaves the thread eligible again rather than silently answered. An open escalation
-        excludes a thread because the seller, not the agent, owns the next move there.
-        """
+        that is still conversational, and no escalation already open on them — an escalation means
+        the seller, not the agent, owns the next move."""
         rows = self._db.query(_UNHANDLED_INBOUND_SQL, _REPLY_THREAD_STATUSES)
         return _unhandled_inbound_rows(rows)
 

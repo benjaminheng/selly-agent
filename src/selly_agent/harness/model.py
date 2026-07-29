@@ -75,6 +75,5 @@ class PassSpec:
             if self.browser_server.name == self.server_name:
                 raise ValueError("the browser server must not share our own server's name")
             if not self.browser_server.tools:
-                # A server reachable with no tools allowed is authority with no use for it; a pass
-                # that needs no browser tools should not be handed a browser server at all.
+                # A pass that needs no browser tools should not be handed a browser server at all.
                 raise ValueError("PassSpec.browser_server must allow at least one tool")
