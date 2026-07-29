@@ -92,13 +92,19 @@ class BrowserReplySink:
                     # retry — the one case a key press could never tell us about.
                     self._publish(market, thread, "refused", "the page did not accept the send")
                     raise SendNotAttempted("the page did not accept the send")
-                # Past this line the buyer may already have the message, so nothing below may retry.
+                # Past this line the buyer may already have the message, so nothing below may
+                # retry — and nothing below may claim the send did not happen.
                 self._store.mark_intent_sent_unverified(intent_id)
-                verified = self._verify(adapter, text)
+                try:
+                    verified = self._verify(adapter, text)
+                except BrowserError as exc:
+                    # The read-back failing says nothing about the send, which the page already
+                    # accepted: delivered-or-not-unknown is the unverified case, never a retry.
+                    self._publish(market, thread, "unverified", str(exc))
+                    raise SendUnverified(str(exc)) from exc
         except BrowserError as exc:
-            # A browser failure before the commit leaves nothing sent; the type and commit calls are
-            # the only ones that could have delivered anything, and a failure in them means the
-            # action did not complete. Either way the intent's status decides what happens next.
+            # Only the steps before the commit can raise to here, so nothing was delivered and
+            # the intent's pending status keeps this retry-safe.
             self._publish(market, thread, "browser_error", str(exc))
             raise SendNotAttempted(str(exc)) from exc
 
@@ -180,8 +186,7 @@ class BrowserReplySink:
         """
         tail = reconcile.classify_tail(self._client.evaluate(adapter.conversation_tail_js) or [])
         return any(
-            bubble["side"] == "out" and reconcile.same_text(bubble["text"], text)
-            for bubble in tail
+            bubble["side"] == "out" and reconcile.same_text(bubble["text"], text) for bubble in tail
         )
 
     def _publish(self, market: str, thread: dict, outcome: str, detail: str | None) -> None:

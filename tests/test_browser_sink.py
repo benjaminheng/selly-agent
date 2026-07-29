@@ -323,6 +323,25 @@ def test_a_send_we_cannot_confirm_stays_sent_unverified_and_is_never_resent(stor
     assert [e.payload["outcome"] for e in _events(bus, "browser.send")] == ["unverified"]
 
 
+def test_a_read_back_failure_after_the_commit_is_unverified_never_retryable(store, bus, thread):
+    """The page took the message and the confirming read then failed. That is delivered-or-not
+    unknown — the unverified case — and must never surface as "not attempted", whose whole meaning
+    is that a retry is safe."""
+
+    class BlindAfterSendClient(StubClient):
+        def evaluate(self, function, **kwargs):
+            if function == carousell_market.CONVERSATION_TAIL_JS:
+                raise BrowserToolError("tab crashed during the read-back")
+            return super().evaluate(function, **kwargs)
+
+    client = BlindAfterSendClient()
+    intent = _reserve(store)
+    with pytest.raises(sink.SendUnverified):
+        _sink(store, bus, client).send(thread, "yes, still available!", "reply", intent)
+    assert _intent_status(store, intent) == "sent_unverified"
+    assert [e.payload["outcome"] for e in _events(bus, "browser.send")] == ["unverified"]
+
+
 def test_the_sweep_escalates_an_unverified_send_without_resending(store, bus, thread) -> None:
     from selly_agent import intent_sweep
 
