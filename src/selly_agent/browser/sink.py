@@ -179,9 +179,8 @@ class BrowserReplySink:
         all look like success from the outside. Only our own words in an outbound bubble count.
         """
         tail = reconcile.classify_tail(self._client.evaluate(adapter.conversation_tail_js) or [])
-        wanted = reconcile.normalize(text)
         return any(
-            bubble["side"] == "out" and reconcile.normalize(bubble["text"]) == wanted
+            bubble["side"] == "out" and reconcile.same_text(bubble["text"], text)
             for bubble in tail
         )
 

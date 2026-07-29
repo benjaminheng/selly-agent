@@ -129,13 +129,13 @@ def thread(store):
     return store.get_thread("carousell:99")
 
 
-def _reserve(store, thread_id="carousell:99"):
+def _reserve(store, thread_id="carousell:99", text="yes, still available!"):
     from selly_agent.engines import pacing
 
     reserved = store.reserve_reply(
         thread_id=thread_id,
         kind="reply",
-        text="yes, still available!",
+        text=text,
         in_msg_id="m1",
         cfg=pacing.resolve(_FAST, quiet_hours=(0, 0)),
     )
@@ -291,6 +291,24 @@ def test_an_unknown_market_is_refused_before_any_navigation(store, bus) -> None:
 
 
 # --- sent but unconfirmed: verify, never re-drive ------------------------------------------------
+
+
+def test_a_long_reply_verifies_against_its_truncated_bubble(store, bus, thread) -> None:
+    """The tail artifact caps bubble text, so a long reply reads back cut short — still ours,
+    still confirmed. Demanding full equality would escalate every long reply as unverified."""
+
+    class TruncatingClient(StubClient):
+        def evaluate(self, function, **kwargs):
+            result = super().evaluate(function, **kwargs)
+            if function == carousell_market.CONVERSATION_TAIL_JS:
+                return [dict(bubble, text=bubble["text"][:300]) for bubble in result]
+            return result
+
+    long_reply = "yes! " + "it comes with the original box and receipts " * 8
+    client = TruncatingClient()
+    intent = _reserve(store, text=long_reply)
+    _sink(store, bus, client).send(thread, long_reply, "reply", intent)
+    assert [e.payload["outcome"] for e in _events(bus, "browser.send")] == ["sent"]
 
 
 def test_a_send_we_cannot_confirm_stays_sent_unverified_and_is_never_resent(store, bus, thread):

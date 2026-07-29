@@ -44,6 +44,25 @@ def normalize(text: str) -> str:
     return collapsed.rstrip(".…").strip()
 
 
+# A reader may cap how much of a bubble it returns (the tail artifact slices text), so a long
+# message and its cut-short read-back must still compare as the same message. Short texts keep
+# exact matching: "ok" opening "ok, deal" is a coincidence, not a truncation.
+_TRUNCATION_FLOOR = 200
+
+
+def same_text(left: str, right: str) -> bool:
+    """Whether two message texts are the same message, tolerating one being a truncated read of
+    the other."""
+    return _same_normalized(normalize(left), normalize(right))
+
+
+def _same_normalized(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    return len(shorter) >= _TRUNCATION_FLOOR and longer.startswith(shorter)
+
+
 def message_id(direction: str, text: str, occurrence: int) -> str:
     digest = hashlib.sha256(normalize(text).encode()).hexdigest()[:12]  # an id, not a security hash
     return f"{direction}|{digest}|{occurrence}"
@@ -125,7 +144,11 @@ def new_rows(tail, recorded, *, now: float) -> list:
     stored_keys = [(row.get("dir"), normalize(row.get("text") or "")) for row in recorded or []]
     overlap = 0
     for size in range(min(len(tail_keys), len(stored_keys)), 0, -1):
-        if stored_keys[-size:] == tail_keys[:size]:
+        pairs = zip(stored_keys[-size:], tail_keys[:size])
+        # Truncation-tolerant: a long stored reply must match its cut-short bubble, or the bubble
+        # would be recorded as an outbound message we never wrote — a phantom manual seller reply
+        # that silences the thread.
+        if all(s[0] == t[0] and _same_normalized(s[1], t[1]) for s, t in pairs):
             overlap = size
             break
 

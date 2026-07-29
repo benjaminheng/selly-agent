@@ -18,6 +18,7 @@ from selly_agent.browser.reconcile import (
     new_rows,
     normalize,
     preview_matches,
+    same_text,
 )
 
 
@@ -62,6 +63,16 @@ def test_the_same_message_always_gets_the_same_id() -> None:
     assert message_id("in", "Still available?", 1) == message_id("in", "still  available?", 1)
     assert message_id("in", "hi", 1) != message_id("in", "hi", 2)
     assert message_id("in", "hi", 1) != message_id("out", "hi", 1)
+
+
+def test_texts_match_exactly_or_as_a_long_truncation() -> None:
+    """The tail read caps bubble text, so a long message and its cut-short read-back are the same
+    message — while short texts must still match exactly, or "ok" would open "ok, deal"."""
+    assert same_text("ok", " OK ")
+    assert not same_text("ok", "ok, deal — see you at 5")
+    long_message = "measurements, provenance and receipts " * 8
+    assert same_text(long_message, long_message[:300])
+    assert not same_text("short", "short" + " padding" * 40)
 
 
 # --- idempotency --------------------------------------------------------------------------------
@@ -135,6 +146,16 @@ def test_a_reply_we_sent_is_not_recorded_twice() -> None:
     reconcile against it by content — otherwise every reply would double-record."""
     recorded = _recorded([("in", "still available?"), ("out", "yes it is!")])
     tail = [_bubble("still available?"), _bubble("yes it is!", "out")]
+    assert new_rows(tail, recorded, now=100.0) == []
+
+
+def test_a_truncated_read_of_a_long_reply_matches_its_stored_row() -> None:
+    """The tail artifact caps bubble text, so a long committed reply reads back cut short. It must
+    still reconcile against the stored full text — recording the cut as new would invent a manual
+    seller reply, and a phantom manual reply silences the thread."""
+    long_reply = "here are the details: " + "measurements and provenance " * 12
+    recorded = _recorded([("in", "tell me more?"), ("out", long_reply)])
+    tail = [_bubble("tell me more?"), _bubble(long_reply[:300], "out")]
     assert new_rows(tail, recorded, now=100.0) == []
 
 
