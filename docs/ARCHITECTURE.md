@@ -106,8 +106,7 @@ Detail in [`tool-surface-and-passes.md`](tool-surface-and-passes.md):
   safety tools compose the engines with the store; `send_reply` runs the whole
   send bracket (pacing reserve + durable intent in one transaction, the sink send
   outside it, then fold + cursor advance + commit) behind a `ReplySink` seam, which
-  the browser layer fills; with no browser available a real market returns a
-  structured `no_send_path`. A killed send is folded by the `stale_intent_sweep`
+  the browser layer fills. A killed send is folded by the `stale_intent_sweep`
   scheduler task as unconfirmed + an escalation, never re-sent.
 - **`mcp_proxy.py`** — a stdio↔HTTP shim so stdio-only harnesses reach the same
   server.
@@ -129,54 +128,16 @@ Detail in [`tool-surface-and-passes.md`](tool-surface-and-passes.md):
 ### The browser layer
 
 Marketplaces with no API are driven through the seller's own logged-in Chrome —
-one dedicated profile, one warm browser, CDP open on the loopback interface. The
-daemon never launches it: one profile admits exactly one Chrome, so supervision is
-launchd's (and in dev, the developer's). `browser/chrome.py` holds the readiness
-probe and the launch invocation, and is the layer's only network I/O.
-
-- **`browser/client.py`** — the daemon's own Playwright MCP client, JSON-RPC over a
-  stdio subprocess: no port, nothing to authenticate, nothing else on the machine
-  can connect to it. Typed errors and no internal retry, the shape `rail/client.py`
-  set. `BrowserUnavailable` is distinct because the response is: no Node means the
-  daemon runs on with browser lanes skipped, not every market reading as quiet.
-- **`browser/markets/`** — the per-market seam. An adapter carries that
-  marketplace's JS artifacts, its composer's shipped selectors, its login probe and
-  its recipe pointer; everything above depends only on that protocol, so adding a
-  marketplace is a new module plus a registry entry. The artifacts are the layer's
-  only DOM knowledge and are all class-agnostic — hashed classes churn every
-  deploy — locating by role, by href shape, and (for message direction) by geometry.
-- **`browser/inbox.py`** — the read lane. It folds buyer messages into durable rows
-  for a navigate and one JS evaluate per thread and no model turns at all, which is
-  what lets the reply pass above it stay browser-free. Three rules: a market that
-  cannot be seen must never look like one with no news (failed reads are counted
-  and raise one needs-me notice); the skip gate is a cost optimization backstopped
-  by a periodic full sweep, never a correctness input; and reading never advances
-  the reply cursor, so a crash between seeing a message and answering it leaves the
-  buyer eligible. Every inbound row is scam-scanned as it is written, so the verdict
-  is on the row before any model sees the text.
-- **`browser/reconcile.py`** — the pure core: a tail read compared against stored
-  rows, with whatever is not stored being new. The tail is aligned as the
-  conversation's trailing window — the longest stored suffix matching its opening
-  is the shared region — which is what makes a re-read insert nothing, keeps a
-  buyer's repeated message heard after its earlier copy scrolls away, and makes
-  our own sent replies and the seller's manual ones reconcile rather than
-  double-record.
-- **`browser/sink.py`** — the scripted send: navigate the recorded thread URL,
-  locate the composer, type, click, stamp, then confirm by reading our own words
-  back. The two failure shapes are treated oppositely — nothing sent fails closed
-  before the click and stays retryable, while sent-but-unconfirmed stays
-  `sent_unverified` and is escalated rather than ever re-driven; while one is open,
-  the reserve refuses any fresh send on that thread, so no caller can talk past it.
-- **`browser/selectors.py`** — shipped selector defaults with the `ui_cache` table
-  as a heal overlay over them, so a fresh install pays no vision cost and a
-  self-heal never waits on a release. A resolve must match exactly one visible
-  element on the right page; none means absent, several means acting would be a
-  guess.
-
-One Chrome means three actors share one tab — the read lane, the reply sink, and a
-browser-driving pass. A re-entrant mutex on the client serializes whole operations
-rather than single calls, and the lane yields entirely while a browser-touching
-pass is queued or running.
+one dedicated profile, one warm browser, CDP open on the loopback interface, which
+the daemon attaches to but never launches. `browser/` holds the daemon's own
+Playwright MCP client (stdio, so there is no port to authenticate), the token-free
+read lane that folds buyer messages into durable rows, the pure reconcile that
+decides what is new, the scripted verified send, and a per-market adapter seam
+that keeps each marketplace's DOM knowledge in one module. Three actors share the
+one tab — the read lane, the reply sink, and a browser-driving pass — serialized
+by a mutex held for whole operations. A machine with no Node runs on with the
+browser lanes reporting themselves unavailable, rather than every market reading
+as quiet. Detail in [`browser-layer.md`](browser-layer.md).
 
 ### Skills and prompt composition
 
