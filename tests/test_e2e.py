@@ -16,6 +16,7 @@ import threading
 import urllib.request
 
 import pytest
+from tests.conftest import leak_paths
 
 import selly_agent.tools  # noqa: F401  registration
 from selly_agent import passes
@@ -204,5 +205,4 @@ def test_attended_session_shape(wired) -> None:
     assert store.get_item(item_id)["listing_urls"]["carousell-ai"] == _LISTING_URL
 
     # the floor value never leaked into any event
-    for event in bus.store.read():
-        assert "40.0" not in str(event.payload) and "40" != str(event.payload.get("floor", ""))
+    assert leak_paths([e.payload for e in bus.store.read()], 40.0) == []

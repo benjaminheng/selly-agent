@@ -11,11 +11,11 @@ way — not in a tool result, not in an event, not in the reply.
 from __future__ import annotations
 
 import json
-import re
 import sys
 import threading
 
 import pytest
+from tests.conftest import leak_paths
 
 import selly_agent.tools  # noqa: F401  registration
 from selly_agent import passes
@@ -337,16 +337,14 @@ def test_the_floor_never_appears_anywhere_in_the_loop(wired, tmp_path) -> None:
         claimed,
     )
 
-    # As a number, not as digits that happen to fall inside a timestamp or an id.
-    leaked = re.compile(rf"(?<!\d){int(_FLOOR)}(\.0+)?(?!\d)")
-    haystack = json.dumps([{"kind": e.kind, "payload": e.payload} for e in _events(bus)])
-    assert not leaked.search(haystack), "the floor reached the event log"
+    events = [{"kind": e.kind, "payload": e.payload} for e in _events(bus)]
+    assert leak_paths(events, _FLOOR) == [], "the floor reached the event log"
     for send in sink.sends:
-        assert not leaked.search(send["text"])
+        assert leak_paths(send["text"], _FLOOR) == []
     for message in store.get_thread("carousell:1")["messages"]:
-        assert not leaked.search(message["text"])
-    # and the sweep is real: the same search does find the floor where it legitimately lives
-    assert leaked.search(json.dumps(store.get_floor(item["id"])))
+        assert leak_paths(message["text"], _FLOOR) == []
+    # and the sweep is real: the same walk does find the floor where it legitimately lives
+    assert leak_paths(store.get_floor(item["id"]), _FLOOR)
 
 
 def _events(bus):

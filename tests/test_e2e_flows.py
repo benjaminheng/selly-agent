@@ -5,6 +5,8 @@ idempotent checkout; the buy path runs want -> budget -> thread -> open -> reply
 
 from __future__ import annotations
 
+from tests.conftest import leak_paths
+
 from selly_agent.config import Config
 from selly_agent.tools.registry import TIER_ATTENDED, dispatch
 
@@ -112,10 +114,10 @@ def test_sell_path_end_to_end_no_secret_leak(make_ctx, store, bus) -> None:
     assert link2["already_issued"] is True and link1["checkout_url"] == link2["checkout_url"]
 
     # the leak sweep: no sentinel appears in any recorded event payload
-    blob = "".join(str(e.payload) for e in bus.store.read())
-    assert str(FLOOR_SENTINEL) not in blob
-    assert str(BUDGET_SENTINEL) not in blob  # (not set on this path, but proves the sweep is real)
-    assert ORIGIN_SENTINEL not in blob
+    payloads = [e.payload for e in bus.store.read()]
+    assert leak_paths(payloads, FLOOR_SENTINEL) == []
+    assert leak_paths(payloads, BUDGET_SENTINEL) == []  # not set on this path — trivially clean
+    assert leak_paths(payloads, ORIGIN_SENTINEL) == []
 
 
 def test_buy_path_end_to_end(make_ctx, store) -> None:
@@ -174,8 +176,8 @@ def test_leak_sweep_over_budget_and_no_value_in_returns(make_ctx, store, bus) ->
         {"want_id": wid, "max_budget": BUDGET_SENTINEL, "target_price": 5000, "source": "buyer"},
         ctx,
     )
-    assert str(BUDGET_SENTINEL) not in str(ack)  # the ack carries no value
+    assert leak_paths(ack, BUDGET_SENTINEL) == []  # the ack carries no value
     got = dispatch("get_want", {"want_id": wid}, ctx)
-    assert str(BUDGET_SENTINEL) not in str(got)
-    blob = "".join(str(e.payload) for e in bus.store.read())
-    assert str(BUDGET_SENTINEL) not in blob  # masked in tool.call, never in tool.result
+    assert leak_paths(got, BUDGET_SENTINEL) == []
+    payloads = [e.payload for e in bus.store.read()]
+    assert leak_paths(payloads, BUDGET_SENTINEL) == []  # masked in tool.call, never in tool.result

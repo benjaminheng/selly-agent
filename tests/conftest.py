@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 
 import pytest
@@ -11,6 +12,38 @@ from selly_agent import migrations
 from selly_agent.config import Config
 from selly_agent.db import Database
 from selly_agent.events import EventBus, EventStore
+
+
+def leak_paths(node, sentinel, path="$") -> list:
+    """Where a sentinel value appears inside a payload, walking its structure — [] is clean.
+
+    The leak sweeps used to scan str(payload) for the sentinel's digits, which trips on digits
+    that happen to fall inside a random id ("call_47331f…" contains 7331). So numbers are compared
+    as numbers, and strings are searched for the sentinel standing alone — never mid-token.
+    """
+    found = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            found += leak_paths(value, sentinel, f"{path}.{key}")
+    elif isinstance(node, (list, tuple)):
+        for index, value in enumerate(node):
+            found += leak_paths(value, sentinel, f"{path}[{index}]")
+    elif isinstance(node, bool) or node is None:
+        pass
+    elif isinstance(node, (int, float)):
+        if not isinstance(sentinel, str) and float(node) == float(sentinel):
+            found.append(path)
+    elif isinstance(node, str):
+        if _sentinel_pattern(sentinel).search(node):
+            found.append(path)
+    return found
+
+
+def _sentinel_pattern(sentinel) -> re.Pattern:
+    if isinstance(sentinel, str):
+        return re.compile(re.escape(sentinel))
+    digits = re.escape(f"{sentinel:g}")  # 61.0 -> "61"
+    return re.compile(rf"(?<![0-9A-Za-z_]){digits}(\.0+)?(?![0-9A-Za-z_])")
 
 
 def seed_setting(store, key, value) -> None:
