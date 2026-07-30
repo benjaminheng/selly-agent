@@ -328,6 +328,28 @@ def test_enabling_a_market_picks_up_items_listed_before(store, bus) -> None:
     assert crosslist.enqueue_next(_deps(store, bus))
 
 
+# --- what the seller conversation says about it ------------------------------------------------
+
+
+def test_the_listing_flow_names_the_destinations_and_claims_no_tool() -> None:
+    """The one thing the recipe is asked to do here is set expectations — the fan-out itself is the
+    daemon's, and a recipe that thought it had to trigger it would look for a tool that isn't there.
+    """
+    from selly_agent import skills
+
+    recipe = skills.load("listing-flow")
+    assert "crosslist_markets" in recipe
+    assert "not your job" in recipe
+    assert "background" in recipe
+
+
+def test_the_channel_pass_can_see_the_setting_it_is_told_to_name(store, bus, enabled) -> None:
+    """Naming the destinations requires knowing them: the settings block carries the value."""
+    block = settings.prompt_block(store)
+    assert "crosslist_markets" in block
+    assert "Carousell" in block
+
+
 def test_settings_read_filters_to_publishable_markets(store, bus, enabled) -> None:
     """A stale id in the stored value is not an eligible publish."""
     seed_setting(store, "crosslist_markets", ["carousell", "fb"])
