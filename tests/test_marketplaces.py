@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from selly_agent import marketplaces
+from selly_agent.browser import markets as market_adapters
+from selly_agent.engines import hosts
 
 
 def test_resolve_regional_host_exact() -> None:
@@ -42,3 +44,34 @@ def test_recipe_less_stubs_are_pruned() -> None:
     assert {"depop", "thredup", "nextdoor"}.isdisjoint(ids)
     # the kept first-port markets are present
     assert {"fb", "carousell", "carousell-ai"}.issubset(ids)
+
+
+def test_registry_carries_no_unread_fields() -> None:
+    """The registry is the data no code can derive: hosts, URL templates, display names. A field
+    nothing reads is a fact free to drift, so it does not live here."""
+    unread = {"regions", "categories", "fulfillment", "default_enabled"}
+    for entry in marketplaces.all_marketplaces():
+        assert unread.isdisjoint(entry), entry["id"]
+        assert set((entry.get("connector") or {})) <= {"type"}, entry["id"]
+
+
+def test_allowlist_covers_markets_without_adapters() -> None:
+    """Why the registry cannot shrink to the markets we drive: entries with no adapter still
+    contribute the hosts that keep the scam scanner from flagging legitimate marketplace links."""
+    allowlist = hosts.build_allowlist(marketplaces.all_marketplaces())
+    assert {"ebay.com", "mercari.com", "poshmark.com"} <= allowlist
+
+
+def test_publishable_markets_is_the_adapter_registry() -> None:
+    """Only carousell today — every other browser entry is a host the scanner needs, not a market
+    anything can drive."""
+    assert market_adapters.publishable_markets() == ["carousell"]
+
+
+def test_publishable_market_needs_both_an_adapter_and_a_recipe(monkeypatch) -> None:
+    monkeypatch.setattr(marketplaces, "listing_flow", lambda market: "")
+    assert market_adapters.publishable_markets() == []
+
+    monkeypatch.undo()
+    monkeypatch.setattr(market_adapters, "_ADAPTERS", {})
+    assert market_adapters.publishable_markets() == []

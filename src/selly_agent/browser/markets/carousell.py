@@ -16,8 +16,6 @@ scroll container, by geometry, and by the shape of a message bubble.
 
 from __future__ import annotations
 
-PUBLISH_SKILL = "listing-flow-carousell"
-
 # Conversations with Carousell itself — the platform assistant and its promotional accounts — rather
 # than with a buyer. Never conversations to answer. (`is_bot_offer` looks like it should say this
 # and does not: it is false for the campaign accounts.)

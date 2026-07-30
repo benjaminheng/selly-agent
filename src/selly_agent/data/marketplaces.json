@@ -1,19 +1,9 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "marketplaces": [
     {
       "id": "fb",
       "display_name": "Facebook Marketplace",
-      "regions": [
-        "*"
-      ],
-      "categories": [
-        "*"
-      ],
-      "fulfillment": [
-        "ship_only",
-        "local"
-      ],
       "listing_url": {
         "host": "facebook.com",
         "path": "/marketplace/item/"
@@ -22,8 +12,7 @@
         "*": "www.facebook.com"
       },
       "connector": {
-        "type": "browser",
-        "auth": "chrome_session"
+        "type": "browser"
       },
       "status": "active",
       "urls": {
@@ -34,21 +23,6 @@
     {
       "id": "carousell",
       "display_name": "Carousell",
-      "regions": [
-        "SG",
-        "MY",
-        "HK",
-        "TW",
-        "PH",
-        "AU",
-        "ID"
-      ],
-      "categories": [
-        "*"
-      ],
-      "fulfillment": [
-        "ship_only"
-      ],
       "listing_flow": "listing-flow-carousell",
       "listing_url": {
         "host": "carousell.",
@@ -64,8 +38,7 @@
         "ID": "www.carousell.co.id"
       },
       "connector": {
-        "type": "browser",
-        "auth": "chrome_session"
+        "type": "browser"
       },
       "status": "active",
       "urls": {
@@ -78,44 +51,19 @@
     {
       "id": "carousell-ai",
       "display_name": "Carousell.ai",
-      "regions": [
-        "*"
-      ],
-      "categories": [
-        "*"
-      ],
-      "fulfillment": [
-        "ship_only"
-      ],
       "listing_flow": "listing-flow",
       "listing_url": {
         "host": "www.carousell.ai",
         "path": "/listing/"
       },
       "connector": {
-        "type": "mcp",
-        "auth": "api_key"
+        "type": "mcp"
       },
-      "status": "active",
-      "default_enabled": true
+      "status": "active"
     },
     {
       "id": "ebay",
       "display_name": "eBay",
-      "regions": [
-        "US",
-        "UK",
-        "AU",
-        "DE",
-        "CA",
-        "*"
-      ],
-      "categories": [
-        "*"
-      ],
-      "fulfillment": [
-        "ship_only"
-      ],
       "listing_url": {
         "host": "ebay.",
         "path": "/itm/"
@@ -130,24 +78,13 @@
         "*": "www.ebay.com"
       },
       "connector": {
-        "type": "browser",
-        "auth": "chrome_session"
+        "type": "browser"
       },
       "status": "stub"
     },
     {
       "id": "mercari",
       "display_name": "Mercari",
-      "regions": [
-        "US",
-        "JP"
-      ],
-      "categories": [
-        "*"
-      ],
-      "fulfillment": [
-        "ship_only"
-      ],
       "listing_url": {
         "host": "mercari.",
         "path": "/item/"
@@ -157,24 +94,13 @@
         "JP": "jp.mercari.com"
       },
       "connector": {
-        "type": "browser",
-        "auth": "chrome_session"
+        "type": "browser"
       },
       "status": "active"
     },
     {
       "id": "offerup",
       "display_name": "OfferUp",
-      "regions": [
-        "US"
-      ],
-      "categories": [
-        "*"
-      ],
-      "fulfillment": [
-        "ship_only",
-        "local"
-      ],
       "listing_url": {
         "host": "offerup.com",
         "path": "/item/"
@@ -184,30 +110,13 @@
         "*": "offerup.com"
       },
       "connector": {
-        "type": "browser",
-        "auth": "chrome_session"
+        "type": "browser"
       },
       "status": "active"
     },
     {
       "id": "poshmark",
       "display_name": "Poshmark",
-      "regions": [
-        "US",
-        "CA",
-        "AU"
-      ],
-      "categories": [
-        "fashion",
-        "apparel",
-        "shoes",
-        "accessories",
-        "beauty",
-        "home_decor"
-      ],
-      "fulfillment": [
-        "ship_only"
-      ],
       "listing_url": {
         "host": "poshmark.",
         "path": "/listing/"
@@ -218,32 +127,19 @@
         "AU": "poshmark.com.au"
       },
       "connector": {
-        "type": "browser",
-        "auth": "chrome_session"
+        "type": "browser"
       },
       "status": "active"
     },
     {
       "id": "craigslist",
       "display_name": "Craigslist",
-      "regions": [
-        "US",
-        "CA"
-      ],
-      "categories": [
-        "*"
-      ],
-      "fulfillment": [
-        "ship_only",
-        "local"
-      ],
       "listing_url": {
         "host": "craigslist.org",
         "path": "/d/"
       },
       "connector": {
-        "type": "browser",
-        "auth": "none"
+        "type": "browser"
       },
       "status": "active"
     }

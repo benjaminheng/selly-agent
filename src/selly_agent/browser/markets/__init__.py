@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from selly_agent import marketplaces
 from selly_agent.browser.markets import carousell
 
 
@@ -55,8 +56,6 @@ class MarketAdapter:
     listing_id_pattern: str = ""
     # The reply composer's shipped selector defaults, by step.
     composer: tuple = ()
-    # The skill holding this market's publish recipe.
-    publish_skill: str = ""
     # Rows an inbox read should never treat as a buyer conversation.
     system_handles: frozenset = field(default_factory=frozenset)
 
@@ -75,7 +74,6 @@ CAROUSELL = MarketAdapter(
     chat_message_submit_js=carousell.CHAT_MESSAGE_SUBMIT_JS,
     listing_id_pattern=carousell.LISTING_ID_PATTERN,
     composer=tuple(Selector(**row) for row in carousell.COMPOSER_DEFAULTS),
-    publish_skill=carousell.PUBLISH_SKILL,
     system_handles=carousell.SYSTEM_HANDLES,
 )
 
@@ -91,3 +89,18 @@ def get_adapter(market: str) -> MarketAdapter | None:
 
 def adapters() -> list:
     return list(_ADAPTERS.values())
+
+
+def publishable_markets() -> list:
+    """The browser markets the agent can actually publish to, in registry order: active entries
+    with a registered adapter and a recorded publish recipe.
+
+    This is the whole answer to "which markets may a seller enable" — capability is derived from
+    the code that implements it, never from a registry flag that could say yes while the adapter
+    says no.
+    """
+    return [
+        market
+        for market in marketplaces.browser_markets()
+        if market in _ADAPTERS and marketplaces.listing_flow(market)
+    ]
