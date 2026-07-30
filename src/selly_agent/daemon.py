@@ -20,6 +20,7 @@ import time
 from selly_agent import (
     __version__,
     config,
+    crosslist,
     heartbeat,
     intent_sweep,
     lock,
@@ -58,6 +59,10 @@ _REPLY_LANE_INTERVAL_SEC = 10.0
 # The proposal TTL is a day; an hourly sweep gives at most an hour's slack past it. The doors also
 # enforce the TTL inline when a stale id is tapped, so this only cleans up the never-answered ones.
 _SETTINGS_EXPIRY_INTERVAL_SEC = 3600.0
+# The fan-out lane only reads durable rows and queues at most one publish per tick, and a browser
+# publish takes minutes — so this is about how soon a seller hears their listing went up, not about
+# throughput.
+_CROSSLIST_LANE_INTERVAL_SEC = 30.0
 
 
 def _setup_logging(level_name: str) -> None:
@@ -309,6 +314,16 @@ def run_daemon(*, once: bool) -> int:
             name="reply_lane",
             interval_sec=_REPLY_LANE_INTERVAL_SEC,
             func=lambda: inbox.reply_lane(store=store, bus=bus),
+        )
+    )
+    # List what is on carousell.ai everywhere else the seller sells, and report each outcome. Driven
+    # off stored rows, so rail-first is a precondition rather than a step a recipe could skip.
+    crosslist_deps = crosslist.CrosslistDeps(store=store, bus=bus, config=cfg)
+    scheduler.register(
+        Task(
+            name="crosslist_lane",
+            interval_sec=_CROSSLIST_LANE_INTERVAL_SEC,
+            func=lambda: crosslist.crosslist_lane(crosslist_deps),
         )
     )
     # Fold settled channel passes' claimed inbox rows from durable state (not a pass.end

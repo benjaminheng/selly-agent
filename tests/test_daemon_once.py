@@ -18,6 +18,14 @@ def _event_kinds(events_db_path) -> list[str]:
         conn.close()
 
 
+def _tasks_run(events_db_path) -> set:
+    conn = connect_reader(events_db_path)
+    try:
+        return {e.payload.get("task") for e in query_events(conn) if e.kind == "task.start"}
+    finally:
+        conn.close()
+
+
 def _write_config(obj) -> None:
     paths.ensure_config_dir()
     paths.config_path().write_text(json.dumps(obj))
@@ -45,6 +53,13 @@ def test_run_once_migrates_heartbeats_and_ledgers(xdg_tmp) -> None:
     assert "daemon.stop" in kinds
     assert "migration.applied" in kinds
     assert "task.start" in kinds and "task.ok" in kinds  # retention lane exercised
+
+    # Every lane is registered and survives a tick against an empty store. A lane that is built but
+    # never scheduled is the failure this pins: the browser publish shipped that way.
+    assert {"pass_lane", "inbox_read", "reply_lane", "crosslist_lane"} <= _tasks_run(
+        paths.events_db()
+    )
+    assert "task.error" not in kinds
 
 
 def test_duplicate_instance_exits_zero_without_starting(xdg_tmp) -> None:
