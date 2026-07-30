@@ -13,18 +13,15 @@ everything below.
 
 A dedicated Chrome profile is used for all agent interactions. This prevents the agent from seeing the user's everyday web-browsing sessions. The agent interacts with the browser using Chrome DevTools Protocol (CDP).
 
-`browser/chrome.py` starts the browser when it is not already running. `ensure_running`
-probes the CDP port first and everything follows from that answer: a port that answers
-is left alone (two Chromes cannot share one profile), and only a silent port makes it
-safe to clear a `Singleton*` lock left behind by a killed Chrome and launch again.
-Chrome is started in its own session, so neither the daemon exiting nor a pass group
-being killed takes the seller's browser with it.
+`browser/chrome.py` starts the browser when nothing is listening. The probe decides
+everything: a port that answers is left alone (two Chromes cannot share a profile),
+and only a silent port makes it safe to clear a `Singleton*` lock left by a killed
+Chrome and launch. Chrome gets its own session, so neither the daemon exiting nor a
+pass being killed takes the seller's browser with it.
 
-The fan-out lane is the caller today (see [the fan-out](#the-fan-out) below): it brings
-Chrome up before queueing a publish, and tells the seller a window is about to appear.
-The read lane does not — it skips and notifies instead, so a machine with no browser is
-quiet rather than repeatedly launching one nobody asked for. Keeping Chrome alive across
-crashes and logins is the supervisor's job, not this module's.
+[The fan-out](#the-fan-out) is the only caller: it brings Chrome up before queueing a
+publish, and tells the seller a window is coming. The read lane skips and notifies
+instead. Keeping Chrome alive across crashes and logins is the supervisor's job.
 
 ## The client
 
@@ -119,20 +116,22 @@ listing a market in the registry does not make it read. Page URLs come from the
 registry's `urls` templates and the region→host `domains` map, never from a guess:
 an unrecorded template resolves to `None` and the caller reports that.
 
-The split is capability versus data, and it decides where each fact lives. **What we
-can drive is a fact about the code** — `supported_markets()` answers it from the
-adapter registry and the recipe pointer, never from a flag in the JSON that could
-say yes while the adapter says no. **Where a marketplace operates is data** — and
-the `domains` map already carries it, so it is not restated anywhere: a map is
-**exhaustive**, meaning a region absent from it is a region the marketplace does not
-serve, and `resolve_domain` answers `None` there. That is why a US seller cannot be
-listed on Carousell (seven regional sites, no US one) and why an MY seller could be,
-with no code change. `publishable_markets(region)` is the two facts crossed, and it
-gates the setting, both enqueue doors, and the fan-out lane alike.
+Whether a market can be *published* to is two facts with two homes:
 
-Entries with no adapter are not dead weight: `hosts.build_allowlist` reads every
+- **What we can drive is code.** `supported_markets()` reads the adapter registry
+  and the recipe pointer — never a flag in the JSON, which could say yes while the
+  adapter says no.
+- **Where a market operates is data.** The `domains` map, which every URL already
+  rests on. A map is **exhaustive**: a region absent from it is one the market does
+  not serve, so `resolve_domain` answers `None` — no Carousell for a US seller
+  (seven regional sites, no US one), and an MY seller with no code change.
+
+`publishable_markets(region)` crosses the two, and gates the setting, both enqueue
+doors and the fan-out alike.
+
+Adapter-less entries still earn their place: `hosts.build_allowlist` reads every
 entry's hosts, which is what stops the scam scanner flagging a legitimate eBay or
-Mercari link a buyer sends.
+Mercari link.
 
 ### Adapter: Carousell
 
@@ -319,52 +318,43 @@ release, and a release never overwrites what an install has learned.
 
 ## The fan-out
 
-`crosslist.py` is what makes "list this" mean "list where the seller sells". The publish
-itself is the pass the [tool surface](tool-surface-and-passes.md) describes; this lane
-decides when one is queued and tells the seller how it went.
+`crosslist.py`, on the `crosslist_lane` scheduler task — what makes "list this" mean
+"list where the seller sells". The publish itself is the pass
+[the tool surface](tool-surface-and-passes.md) describes; this lane decides when one
+is queued, and tells the seller how it went.
 
-The seller opts in per marketplace through the `crosslist_markets` setting (default
-empty, approval-gated — enabling one makes the agent post publicly as them). A market
-can be enabled only if something can drive it: a registered adapter, a recorded publish
-recipe, and a regional site for the seller's own region. `browser/markets`'s
-`supported_markets()` and `publishable_markets(region)` are the two halves of that
-answer, and the same predicate gates the enqueue doors, so a market cannot be enabled
-and then never published to.
+The seller opts in per market with `crosslist_markets`: empty by default,
+approval-gated (enabling one makes the agent post publicly as them), and limited to
+what `publishable_markets(region)` allows.
 
-**Eligibility is a query, not a step in a recipe.** Each tick the lane looks for an item
-that is live on carousell.ai, missing from an enabled market, not sold, and never
-attempted there. Three properties fall out of deriving it from rows rather than
-instructing a flow to fan out:
+Per tick: report settled publishes → queue at most one more.
 
-- **rail-first is a precondition** — an item with no carousell.ai URL cannot qualify, so
-  it is not something a model can do out of order;
-- **it is idempotent** — `record_published_listing_url` writing the URL is what stops the
-  pair qualifying;
-- **it backfills** — items listed long before the setting existed qualify the moment it
-  is turned on, with no separate path.
+**Eligibility is a query, not a recipe step.** An item qualifies when it is live on
+carousell.ai, missing from an enabled market, not sold, and never attempted there.
+Reading that off rows is what buys:
 
-**One shot per item and marketplace.** An attempt is minutes of browser work and a
-vision-priced token bill, so a settled pass — whatever its outcome — ends automatic
-attempts for that pair, and the failure is reported instead. What *is* retried every tick
-is the cheap part: whether Node is installed and whether Chrome is up. Both are checked
-before queueing, so a condition that fixes itself never spends the one attempt.
+- **rail-first as a precondition** — no carousell.ai URL, no fan-out, so it cannot
+  happen out of order;
+- **idempotence** — `record_published_listing_url` writing the URL stops the pair
+  qualifying;
+- **backfill** — items listed before the setting existed qualify the moment it is
+  turned on.
 
-The lane holds off entirely while the daemon is paused, while another publish is queued
-or running (passes run one at a time, and a queued publish only delays the seller's own
-conversations), and during quiet hours — a publish is a burst of visible activity on the
-seller's real account, and one that starts at 4am is a pattern nobody sells like. Nothing
-already running is interrupted; the window holds the *start* of new work.
+**One shot per item and market.** A settled pass ends automatic attempts for that pair
+whatever its outcome — an attempt is minutes of browser work and a vision-priced token
+bill. The cheap preconditions (Node installed, Chrome up) retry every tick and are
+checked *before* queueing, so a condition that fixes itself never spends the attempt.
 
-**Outcomes are reported by the daemon, from the rows the pass wrote.** A publish pass has
-no conversation to report into, and a live run proved the model will not remember to
-open one: it published successfully, recorded the URL, and told nobody. So the lane
-sweeps settled fan-out passes and reads the verdict off the item — a recorded URL is a
-success notice with the link, and anything else is a failure notice naming the item, the
-market and the CLI retry. The pass's own exit code is not the verdict: one that ends
-clean having recorded no URL has left no listing anyone can find. `passes.reported` is
-flipped in the same transaction as the notice insert, so a crash mid-sweep can neither
-announce a listing twice nor swallow it. Publishes started by hand carry no `crosslist`
-origin and are not reported — whoever ran one is watching it.
+The lane holds off while paused, while another publish is queued or running (passes run
+one at a time), and inside quiet hours — a publish is a visible burst on the seller's
+real account. Quiet hours hold the *start* of work; nothing running is interrupted.
+
+**The outcome is read off the rows, not off the pass.** A recorded URL becomes a success
+notice with the link. Anything else — including a pass that exited clean having recorded
+nothing, which leaves no listing anyone can find — becomes a failure notice naming the
+item, the market and the CLI retry. `passes.reported` flips in the same transaction as
+the notice, so a crash mid-sweep neither announces twice nor swallows. Publishes run by
+hand carry no `crosslist` origin and are not reported.
 
 ## Events
 
