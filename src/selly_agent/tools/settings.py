@@ -45,6 +45,7 @@ def _propose_setting_change(ctx: ToolContext, params: dict) -> dict:
         raise ToolError(f"unknown setting {key!r} — call get_settings for the list of settings")
     try:
         value = spec.parse(_decode_raw(params["raw_value"]))
+        settings.check_for_seller(key, value, ctx.store)
     except settings.SettingError as exc:
         raise ToolError(str(exc)) from exc
 

@@ -24,6 +24,9 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+from selly_agent import marketplaces
+from selly_agent.browser import markets as market_adapters
+
 log = logging.getLogger(__name__)
 
 # An unaccepted proposal expires after this long — long enough that an approval notice sitting on a
@@ -33,7 +36,11 @@ PROPOSAL_TTL_SEC = 24 * 3600
 # Settings always shown on the /selly card even at their default — the discoverable headline set.
 # Everything else appears on the card only once changed from its default (the card scales with
 # customization, not catalog size).
-CARD_HEADLINE = ("quiet_hours",)
+#
+# crosslist_markets earns a place at its default because its default is "off" and nothing else on
+# the card would ever hint that listing elsewhere is possible; a knob that shapes wording is
+# discoverable from the wording, but a market the seller has never been told about is not.
+CARD_HEADLINE = ("quiet_hours", "crosslist_markets")
 
 # The door tokens. A callback carries the change id and one of these choices (the channel encodes it
 # as "<change_id>:<choice>"); a text fast path is "<verb> <change_id>". Both are LLM-free doors: an
@@ -132,6 +139,14 @@ def effective(store) -> dict:
 
 def is_default(key: str, value: object) -> bool:
     return canonical_json(value) == canonical_json(_REGISTRY[key].default)
+
+
+def check_for_seller(key: str, value: object, store) -> None:
+    """Validate an already-parsed value against seller state, raising SettingError if it cannot
+    apply. Most settings are valid or invalid on their own terms; a marketplace list is not, because
+    which marketplaces exist depends on where the seller sells."""
+    if key == "crosslist_markets":
+        _check_crosslist_markets(value, store)
 
 
 # --- discoverability renderers (F10) ---------------------------------------------------------
@@ -498,6 +513,108 @@ def _parse_firmness(raw: object) -> str:
 
 def _render_firmness(value: object) -> str:
     return str(value)
+
+
+# --- where a listing goes -----------------------------------------------------------------------
+#
+# The marketplaces to list on *besides* carousell.ai. The rail is not a member: it is where every
+# listing goes, guaranteed by the flow itself, so naming it here would only be a value the validator
+# has to special-case. Empty — the default — means carousell.ai alone, so an upgrade changes
+# nobody's behaviour.
+#
+# A market is accepted only if something can actually drive it (an adapter plus a publish recipe).
+# Refusing at write time rather than skipping at publish time keeps the failure where the seller can
+# see it: a setting that lists a market nothing publishes to reads as a promise being kept.
+
+
+def _market_names(markets) -> str:
+    return ", ".join(marketplaces.display_name(market) for market in markets)
+
+
+def _crosslist_help() -> str:
+    supported = market_adapters.supported_markets()
+    if not supported:
+        return "no other marketplaces are supported yet — carousell.ai only"
+    return f"the only other marketplace I can list on is {_market_names(supported)}"
+
+
+def _parse_crosslist_markets(raw: object) -> list:
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(",") if part.strip()]
+    if not isinstance(raw, (list, tuple)):
+        raise SettingError(f"this must be a list of marketplaces — {_crosslist_help()}")
+    supported = market_adapters.supported_markets()
+    out = set()
+    for entry in raw:
+        market = str(entry).strip().lower()
+        if not market:
+            continue
+        if market not in supported:
+            raise SettingError(f"I can't list on {market!r} — {_crosslist_help()}")
+        out.add(market)
+    return sorted(out)
+
+
+def _check_crosslist_markets(value: object, store) -> None:
+    """Refuse a marketplace that exists but has nowhere to put this seller's listing.
+
+    Whether we can drive a marketplace is a fact about our code, which the parser settles. Whether
+    it operates where the seller sells is a fact about them, so it is checked here — a US seller
+    cannot be listed on Carousell, which runs no US site.
+    """
+    region = store.seller_region()
+    if not region:
+        raise SettingError(
+            "I don't know which country you sell in yet, so I can't tell which marketplaces are "
+            "available — tell me your region and I'll set this up"
+        )
+    available = market_adapters.publishable_markets(region)
+    unavailable = [market for market in value if market not in available]
+    if not unavailable:
+        return
+    if available:
+        raise SettingError(
+            f"{_market_names(unavailable)} isn't available for {region} accounts — "
+            f"I can list on {_market_names(available)}"
+        )
+    raise SettingError(
+        f"{_market_names(unavailable)} isn't available for {region} accounts, and no other "
+        "marketplace is either yet — carousell.ai only"
+    )
+
+
+def _render_crosslist_markets(value: object) -> str:
+    if not value:
+        return "none — carousell.ai only"
+    return ", ".join(marketplaces.display_name(market) for market in value)
+
+
+def crosslist_markets(store) -> list:
+    """The external marketplaces the seller has enabled, filtered to the ones still publishable.
+
+    The filter matters after the fact: a stored market can stop being publishable — an adapter
+    withdrawn, or the seller's region changed to one it does not serve — and a stale id must not
+    become an eligible publish.
+    """
+    publishable = market_adapters.publishable_markets(store.seller_region())
+    return [market for market in get(store, "crosslist_markets") if market in publishable]
+
+
+register(
+    SettingSpec(
+        key="crosslist_markets",
+        label="Also list on",
+        parse=_parse_crosslist_markets,
+        render=_render_crosslist_markets,
+        default=[],
+        description="Other marketplaces to list on as well as carousell.ai. Each one is published "
+        "in the browser after the carousell.ai listing is live, and the link is sent over when it "
+        "is up. Empty means carousell.ai only.",
+        take_effect="applies to items listed from now on; anything already listed is picked up "
+        "too.",
+        requires_approval=True,
+    )
+)
 
 
 register(
