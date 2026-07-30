@@ -142,13 +142,8 @@ def staged_photo_names(item_id: str, market: str, store) -> tuple:
     )
 
 
-def publish_market_error(market: str, region: str | None = None) -> str | None:
-    """Why this market cannot be published to, or None when it can.
-
-    A mistyped market used to reach a real pass: `display_name` falls back to the id, the connector
-    lookup answers neither `mcp` nor `browser`, and the spawned pass was told to publish somewhere
-    in a browser it was never given, with no recipe. Both enqueue doors ask this first.
-    """
+def _publish_market_error(market: str, region: str | None) -> str | None:
+    """Why this market cannot be published to, or None when it can."""
     if market == DEFAULT_PUBLISH_MARKET:
         return None
     if marketplaces.get_marketplace(market) is None:
@@ -160,14 +155,26 @@ def publish_market_error(market: str, region: str | None = None) -> str | None:
     return None
 
 
+def validate_payload(pass_type: str, payload: dict, store) -> None:
+    """Raise PassPayloadError if this payload could only ever produce a failed pass.
+
+    Both the runner and the control route ask this — the runner so a pass enqueued in process
+    fails loudly instead of spawning, the route so a person at a terminal hears their own typo
+    instead of being handed the id of a pass that was already doomed. A mistyped market is the
+    case that motivated it: `display_name` falls back to the id and the connector lookup matches
+    neither kind, so the pass was told to publish somewhere in a browser it never got.
+    """
+    if pass_type == "publish":
+        if not payload.get("item_id"):
+            raise PassPayloadError("no item_id in payload")
+        reason = _publish_market_error(publish_market(payload), store.seller_region())
+        if reason:
+            raise PassPayloadError(reason)
+
+
 def _publish_prompt(payload: dict, store, pass_id: str) -> str:
-    item_id = payload.get("item_id")
-    if not item_id:
-        raise PassPayloadError("no item_id in payload")
+    item_id = payload["item_id"]
     market = publish_market(payload)
-    reason = publish_market_error(market, store.seller_region())
-    if reason:
-        raise PassPayloadError(reason)
     return publish_prompt(
         item_id,
         market,
@@ -559,6 +566,7 @@ def run_pass(deps: PassDeps, claimed) -> str:
         return _spawn_error(deps, claimed, pass_id, f"unknown pass type {claimed.type!r}")
     payload = claimed.payload or {}
     try:
+        validate_payload(claimed.type, payload, deps.store)
         prompt = pass_type.build_prompt(payload, deps.store, pass_id)
         media_paths = pass_type.build_media_paths(payload, deps.store, pass_id)
         browser_tools = pass_type.build_browser_tools(payload, deps.store, pass_id)

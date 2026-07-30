@@ -236,29 +236,28 @@ def test_the_prompt_carries_the_composer_url_from_the_registry(store, xdg_tmp) -
 
 
 def test_a_market_that_cannot_be_published_to_fails_the_payload(store, xdg_tmp) -> None:
-    """The ledgered backstop behind the control route's 400: a pass told to publish somewhere it
-    cannot never gets spawned, so a typo is an error and not eighty turns of a model discovering it
-    has no browser and no recipe."""
+    """A pass told to publish somewhere it cannot never gets spawned, so a typo is an error rather
+    than eighty turns of a model discovering it has no browser and no recipe."""
     store.set_seller_config_section("basics", {"region": "SG"})
     item = _item_with_photos(store, count=1)
     for market in ("carousel", "fb", "ebay"):
         with pytest.raises(passes.PassPayloadError):
-            passes._publish_prompt(  # noqa: SLF001
-                {"item_id": item["id"], "market": market}, store, "pass_1"
-            )
+            passes.validate_payload("publish", {"item_id": item["id"], "market": market}, store)
 
 
 def test_a_market_with_no_site_in_the_sellers_region_fails_the_payload(store, xdg_tmp) -> None:
     store.set_seller_config_section("basics", {"region": "US"})
     item = _item_with_photos(store, count=1)
     with pytest.raises(passes.PassPayloadError):
-        passes._publish_prompt(  # noqa: SLF001
-            {"item_id": item["id"], "market": "carousell"}, store, "pass_1"
-        )
-    # The rail is region-independent from the prompt's side and always allowed through.
-    assert passes._publish_prompt(  # noqa: SLF001
-        {"item_id": item["id"], "market": "carousell-ai"}, store, "pass_1"
-    )
+        passes.validate_payload("publish", {"item_id": item["id"], "market": "carousell"}, store)
+    # The rail is region-independent here and always allowed through.
+    passes.validate_payload("publish", {"item_id": item["id"], "market": "carousell-ai"}, store)
+
+
+def test_a_publish_payload_without_an_item_fails(store, xdg_tmp) -> None:
+    passes.validate_payload("channel", {}, store)  # only publish has payload preconditions
+    with pytest.raises(passes.PassPayloadError):
+        passes.validate_payload("publish", {"market": "carousell"}, store)
 
 
 def test_the_composer_url_is_the_sellers_own_region(store, xdg_tmp) -> None:

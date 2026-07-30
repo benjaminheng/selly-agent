@@ -316,15 +316,11 @@ class _Handler(BaseHTTPRequestHandler):
         if not isinstance(pass_type, str) or not isinstance(payload, dict):
             self._send_json(400, {"error": "type (string) and payload (object) are required"})
             return
-        if pass_type == "publish":
-            # Answered here rather than ledgered as a doomed pass: a mistyped market is the caller's
-            # typo, and they are still on the other end of this request to be told.
-            reason = passes.publish_market_error(
-                passes.publish_market(payload), self._app.store.seller_region()
-            )
-            if reason:
-                self._send_json(400, {"error": reason})
-                return
+        try:
+            passes.validate_payload(pass_type, payload, self._app.store)
+        except passes.PassPayloadError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
         pass_id = self._app.store.enqueue_pass(pass_type, payload)
         self._app.bus.publish(
             "pass.queued", {"type": pass_type, "payload": payload}, pass_id=pass_id
