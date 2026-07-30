@@ -515,6 +515,33 @@ def _render_firmness(value: object) -> str:
     return str(value)
 
 
+register(
+    SettingSpec(
+        key="persona",
+        label="Persona",
+        parse=_parse_persona,
+        render=_render_persona,
+        default="",
+        description='A free-text steer on voice, e.g. "cheeky, give lowballers a hard time". '
+        "Guidance for wording only — it never changes a price, a decision, or an escalation.",
+        take_effect="applies to the next message composed.",
+    )
+)
+register(
+    SettingSpec(
+        key="firmness",
+        label="Negotiation firmness",
+        parse=_parse_firmness,
+        render=_render_firmness,
+        default="balanced",
+        description="How hard to haggle: soft | balanced | firm | hardline. Sets how many "
+        "counters to make, how low an offer counts as a lowball, and how many lowballs to "
+        "tolerate. A per-item counter setting still wins over it.",
+        take_effect="applies to the next offer decided.",
+    )
+)
+
+
 # --- where a listing goes -----------------------------------------------------------------------
 #
 # The marketplaces to list on *besides* carousell.ai. The rail is not a member: it is where every
@@ -613,32 +640,5 @@ register(
         take_effect="applies to items listed from now on; anything already listed is picked up "
         "too.",
         requires_approval=True,
-    )
-)
-
-
-register(
-    SettingSpec(
-        key="persona",
-        label="Persona",
-        parse=_parse_persona,
-        render=_render_persona,
-        default="",
-        description='A free-text steer on voice, e.g. "cheeky, give lowballers a hard time". '
-        "Guidance for wording only — it never changes a price, a decision, or an escalation.",
-        take_effect="applies to the next message composed.",
-    )
-)
-register(
-    SettingSpec(
-        key="firmness",
-        label="Negotiation firmness",
-        parse=_parse_firmness,
-        render=_render_firmness,
-        default="balanced",
-        description="How hard to haggle: soft | balanced | firm | hardline. Sets how many "
-        "counters to make, how low an offer counts as a lowball, and how many lowballs to "
-        "tolerate. A per-item counter setting still wins over it.",
-        take_effect="applies to the next offer decided.",
     )
 )
