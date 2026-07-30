@@ -57,6 +57,28 @@ def test_no_sink_returns_no_send_path_recording_nothing(make_ctx, store) -> None
     assert store.get_thread("fb:1")["messages"] == []
 
 
+def test_a_browser_that_cannot_start_returns_no_send_path_recording_nothing(
+    make_ctx, store
+) -> None:
+    """The sink is acquired before the reserve on purpose: a send with no browser must spend no
+    pacing slot and write no intent — a pending intent would have the sweep asking a human about a
+    send that provably never happened."""
+    from selly_agent.browser.client import BrowserUnavailable
+
+    _sell_thread(store)
+    ctx = make_ctx("attended", config=_FAST)
+
+    def _no_browser():
+        raise BrowserUnavailable("Chrome is not running on port 9222")
+
+    ctx.reply_sink = _no_browser
+    res = dispatch("send_reply", {"thread_id": "fb:1", "text": "hi"}, ctx)
+    assert res["status"] == "no_send_path"
+    assert "Chrome is not running" in res["detail"]  # the seller-facing reason rides along
+    assert _intents(store) == [] and _pacing_rows(store) == []
+    assert store.get_thread("fb:1")["messages"] == []
+
+
 # --- go path ----------------------------------------------------------------------------------
 
 

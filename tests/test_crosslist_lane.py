@@ -1,8 +1,9 @@
 """The fan-out lane: which items it queues a publish for, what it refuses to try twice, when it
 holds off, and how each outcome reaches the seller.
 
-Chrome and the Playwright command are stubbed at the module boundary — these tests are about the
-lane's decisions, and the bring-up itself is covered in test_browser_client.py.
+The browser is a fake acquisition factory — these tests are about the lane's decisions. The
+bring-up itself is covered in test_browser_client.py, and what acquiring does (Node check, Chrome
+launch, the window notice) in test_browser_acquisition.py.
 """
 
 from __future__ import annotations
@@ -11,7 +12,6 @@ import pytest
 from tests.conftest import seed_setting
 
 from selly_agent import crosslist, settings
-from selly_agent.browser import chrome
 from selly_agent.browser.client import BrowserUnavailable
 from selly_agent.config import Config
 
@@ -19,18 +19,13 @@ _RAIL_URL = "https://www.carousell.ai/listing/abc123"
 _CAROUSELL_URL = "https://www.carousell.sg/p/teak-lamp-1328307791/"
 
 
-@pytest.fixture(autouse=True)
-def _browser_is_available(monkeypatch):
-    """The default posture for these tests: Node present, Chrome already up."""
-    monkeypatch.setattr(crosslist.browser_client, "ensure_available", lambda command: None)
-    monkeypatch.setattr(crosslist.chrome, "ensure_running", lambda port, **kw: chrome.READY)
-
-
-def _deps(store, bus, **overrides):
+def _deps(store, bus, browser_factory=None, **overrides):
     return crosslist.CrosslistDeps(
         store=store,
         bus=bus,
         config=Config(**overrides) if overrides else Config(),
+        # The default posture: acquiring the browser succeeds without launching anything.
+        browser_factory=browser_factory if browser_factory is not None else lambda: object(),
         # Midday, so the default quiet window (23:00–08:00) is not in force.
         now=lambda: _noon(),
     )
@@ -183,11 +178,15 @@ def test_quiet_hours_hold_the_start_of_new_work(store, bus, enabled) -> None:
     # The store fixture seeds quiet hours off; this is the one test that needs a real window.
     seed_setting(store, "quiet_hours", [2300, 800])
 
-    deps = crosslist.CrosslistDeps(store=store, bus=bus, config=Config(), now=_midnight)
+    deps = crosslist.CrosslistDeps(
+        store=store, bus=bus, config=Config(), browser_factory=lambda: object(), now=_midnight
+    )
     crosslist.crosslist_lane(deps)
     assert _queued(store) == []
 
-    deps = crosslist.CrosslistDeps(store=store, bus=bus, config=Config(), now=_noon)
+    deps = crosslist.CrosslistDeps(
+        store=store, bus=bus, config=Config(), browser_factory=lambda: object(), now=_noon
+    )
     crosslist.crosslist_lane(deps)
     assert len(_queued(store)) == 1
 
@@ -195,48 +194,46 @@ def test_quiet_hours_hold_the_start_of_new_work(store, bus, enabled) -> None:
 # --- the browser has to be there --------------------------------------------------------------
 
 
-def test_no_node_means_no_attempt_spent(store, bus, enabled, monkeypatch) -> None:
-    def _absent(command):
-        raise BrowserUnavailable("'npx' is not installed")
+def _unavailable_factory(reason):
+    def _factory():
+        raise BrowserUnavailable(reason)
 
-    monkeypatch.setattr(crosslist.browser_client, "ensure_available", _absent)
-    assert crosslist.enqueue_next(_deps(store, bus)) is None
-    assert any("can't drive a browser" in text for text in _notices(store))
-
-    # Eligibility survives, so installing Node is all it takes.
-    monkeypatch.setattr(crosslist.browser_client, "ensure_available", lambda command: None)
-    assert crosslist.enqueue_next(_deps(store, bus))
+    return _factory
 
 
-def test_chrome_that_will_not_start_means_no_attempt_spent(
-    store, bus, enabled, monkeypatch
-) -> None:
-    monkeypatch.setattr(crosslist.chrome, "ensure_running", lambda port, **kw: chrome.UNAVAILABLE)
-    assert crosslist.enqueue_next(_deps(store, bus)) is None
+def test_an_unavailable_browser_means_no_attempt_spent(store, bus, enabled) -> None:
+    deps = _deps(store, bus, browser_factory=_unavailable_factory("'npx' is not installed"))
+    assert crosslist.enqueue_next(deps) is None
     notices = _notices(store)
-    assert any("couldn't start the agent's Chrome" in text for text in notices)
-    assert any("--remote-debugging-port" in text for text in notices)  # the by-hand command
+    assert any("can't drive a browser" in text for text in notices)
+    assert any("npx" in text for text in notices)  # the acquisition's reason, verbatim
 
-    monkeypatch.setattr(crosslist.chrome, "ensure_running", lambda port, **kw: chrome.READY)
+    # Eligibility survives, so fixing the environment is all it takes.
     assert crosslist.enqueue_next(_deps(store, bus))
 
 
-def test_a_started_chrome_is_announced_before_the_publish(store, bus, enabled, monkeypatch) -> None:
-    """A window appearing on its own is alarming; the seller should already know why."""
-    monkeypatch.setattr(crosslist.chrome, "ensure_running", lambda port, **kw: chrome.LAUNCHED)
-    crosslist.enqueue_next(_deps(store, bus))
+def test_chrome_that_will_not_start_means_no_attempt_spent(store, bus, enabled) -> None:
+    """A failed bring-up surfaces as the acquisition raising with the by-hand launch command."""
+    hint = (
+        "Chrome is not running on port 9222 — start it with:\n"
+        "  /bin/chrome --remote-debugging-port=9222"
+    )
+    deps = _deps(store, bus, browser_factory=_unavailable_factory(hint))
+    assert crosslist.enqueue_next(deps) is None
+    assert any("--remote-debugging-port" in text for text in _notices(store))
 
-    assert any("Opening the agent's Chrome" in text for text in _notices(store))
+    assert crosslist.enqueue_next(_deps(store, bus))
 
 
-def test_an_already_running_chrome_is_not_announced(store, bus, enabled) -> None:
+def test_a_working_browser_is_not_announced_by_the_lane(store, bus, enabled) -> None:
+    """The window notice belongs to the acquisition (which knows whether a launch happened), not
+    to this lane — a clean acquisition queues nothing."""
     crosslist.enqueue_next(_deps(store, bus))
     assert _notices(store) == []
 
 
-def test_a_repeated_failure_tells_the_seller_once(store, bus, enabled, monkeypatch) -> None:
-    monkeypatch.setattr(crosslist.chrome, "ensure_running", lambda port, **kw: chrome.UNAVAILABLE)
-    deps = _deps(store, bus)
+def test_a_repeated_failure_tells_the_seller_once(store, bus, enabled) -> None:
+    deps = _deps(store, bus, browser_factory=_unavailable_factory("'npx' is not installed"))
     for _ in range(3):
         crosslist.enqueue_next(deps)
 

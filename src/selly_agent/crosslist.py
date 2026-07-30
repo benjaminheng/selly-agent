@@ -28,10 +28,9 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from selly_agent import marketplaces, settings
-from selly_agent.browser import chrome
-from selly_agent.browser import client as browser_client
+from selly_agent.browser.client import BrowserUnavailable
 from selly_agent.engines import pacing as pacing_engine
-from selly_agent.passes import DEFAULT_PUBLISH_MARKET, browser_command
+from selly_agent.passes import DEFAULT_PUBLISH_MARKET
 
 log = logging.getLogger(__name__)
 
@@ -39,17 +38,9 @@ log = logging.getLogger(__name__)
 # ours is reported, because whoever runs a pass by hand is already watching it.
 ORIGIN = "crosslist"
 
-STARTING_CHROME_NOTICE = (
-    "Opening the agent's Chrome window to list {item} on {market} — that's expected, "
-    "you can leave it running."
-)
 NO_BROWSER_NOTICE = (
     "I can't list on {market} because I can't drive a browser here. The carousell.ai listing is "
     "unaffected. Details: {reason}"
-)
-CHROME_FAILED_NOTICE = (
-    "I couldn't start the agent's Chrome, so {item} isn't on {market} yet. I'll keep trying — "
-    "or {hint}"
 )
 PUBLISHED_NOTICE = "{item} is now listed on {market}: {url}"
 FAILED_NOTICE = (
@@ -64,6 +55,9 @@ class CrosslistDeps:
     store: object
     bus: object
     config: object
+    # The daemon's browser acquisition: calling it verifies Node and makes Chrome answer (starting
+    # it if a closed window is all that is missing), or raises BrowserUnavailable.
+    browser_factory: Callable[[], object]
     # Lane state, in process on purpose: it is all notice de-duplication, and a restart re-arming it
     # errs toward telling the seller twice rather than never.
     notified: dict = field(default_factory=dict)
@@ -156,7 +150,7 @@ def enqueue_next(deps: CrosslistDeps) -> str | None:
     if not pairs:
         return None
     item, market = pairs[0]
-    if not _browser_ready(deps, item, market):
+    if not _browser_ready(deps, market):
         return None
 
     pass_id = deps.store.enqueue_pass(
@@ -170,43 +164,26 @@ def enqueue_next(deps: CrosslistDeps) -> str | None:
     return pass_id
 
 
-def _browser_ready(deps: CrosslistDeps, item, market: str) -> bool:
-    """Whether a browser publish could actually run right now — and start Chrome if that is all
-    that is missing.
+def _browser_ready(deps: CrosslistDeps, market: str) -> bool:
+    """Whether a browser publish could actually run right now.
 
-    Checked before queueing rather than inside the pass, because a pass that cannot reach a browser
-    would spend this pair's one attempt on a condition that fixes itself.
+    Acquiring the daemon's browser is the whole check — it verifies Node, starts Chrome when a
+    closed window is all that is missing (announcing the window itself), and raises with the
+    by-hand command when it cannot. Checked before queueing rather than inside the pass, because a
+    pass that cannot reach a browser would spend this pair's one attempt on a condition that fixes
+    itself.
     """
-    market_name = marketplaces.display_name(market)
     try:
-        browser_client.ensure_available(browser_command(deps.config))
-    except browser_client.BrowserUnavailable as exc:
+        deps.browser_factory()
+    except BrowserUnavailable as exc:
         deps.bus.publish("browser.unavailable", {"reason": str(exc)})
-        _notify_once(deps, "unavailable", NO_BROWSER_NOTICE.format(market=market_name, reason=exc))
-        return False
-    _clear_notice(deps, "unavailable")
-
-    port = deps.config.chrome_cdp_port
-    state = chrome.ensure_running(port, chrome_bin=deps.config.chrome_bin)
-    if state == chrome.UNAVAILABLE:
         _notify_once(
             deps,
-            "chrome",
-            CHROME_FAILED_NOTICE.format(
-                item=item["title"],
-                market=market_name,
-                hint=chrome.bring_up_hint(port, chrome_bin=deps.config.chrome_bin),
-            ),
+            "unavailable",
+            NO_BROWSER_NOTICE.format(market=marketplaces.display_name(market), reason=exc),
         )
         return False
-    _clear_notice(deps, "chrome")
-    if state == chrome.LAUNCHED:
-        # Said before the publish, not after: a window appearing by itself is alarming, and the
-        # seller should already know why.
-        deps.store.queue_notice(
-            STARTING_CHROME_NOTICE.format(item=item["title"], market=market_name)
-        )
-        deps.bus.publish("browser.chrome_launched", {"market": market})
+    _clear_notice(deps, "unavailable")
     return True
 
 

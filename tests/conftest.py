@@ -96,7 +96,9 @@ def make_ctx(bus, store, xdg_tmp):
             bus=bus,
             config=config or Config(),
             rail_factory=rail_factory,
-            reply_sink=reply_sink,
+            # The daemon hands tools a factory (acquiring is what starts Chrome); tests hand in a
+            # built fake, so wrap it the way the tool will call it.
+            reply_sink=(lambda: reply_sink) if reply_sink is not None else None,
             browser_factory=browser_factory,
             started_ts=started_ts,
         )

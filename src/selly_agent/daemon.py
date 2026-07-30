@@ -31,10 +31,9 @@ from selly_agent import (
     secrets,
     settings,
 )
+from selly_agent.browser import chrome, inbox
 from selly_agent.browser import client as browser_client
-from selly_agent.browser import inbox
 from selly_agent.browser import sink as browser_sink
-from selly_agent.browser.client import BrowserError
 from selly_agent.channel import outbound
 from selly_agent.channel.manager import ChannelManager
 from selly_agent.channel.telegram import provider as telegram_provider
@@ -63,6 +62,55 @@ _SETTINGS_EXPIRY_INTERVAL_SEC = 3600.0
 # publish takes minutes — so this is about how soon a seller hears their listing went up, not about
 # throughput.
 _CROSSLIST_LANE_INTERVAL_SEC = 30.0
+
+# Said whenever acquiring the browser had to start Chrome. Deliberately names no flow: any actor
+# that needs the browser may be the one that opens the window, and the seller only needs to know
+# it was us.
+CHROME_STARTED_NOTICE = (
+    "Starting the agent's Chrome window — that's expected, you can leave it running."
+)
+
+
+def ensure_chrome(cfg, store, bus) -> None:
+    """Make Chrome answer on its CDP port, or raise `BrowserUnavailable` with the by-hand command.
+
+    Acquiring the browser means ensuring it runs: this is the one place that rule lives, called on
+    every acquisition because Chrome can be closed at any moment after the client is built. A launch
+    queues the seller notice before anything drives the window, so it never appears unexplained.
+    """
+    state = chrome.ensure_running(cfg.chrome_cdp_port, chrome_bin=cfg.chrome_bin)
+    if state == chrome.UNAVAILABLE:
+        raise browser_client.BrowserUnavailable(
+            chrome.bring_up_hint(cfg.chrome_cdp_port, chrome_bin=cfg.chrome_bin)
+        )
+    if state == chrome.LAUNCHED:
+        store.queue_notice(CHROME_STARTED_NOTICE)
+        bus.publish("browser.chrome_launched", {"port": cfg.chrome_cdp_port})
+
+
+def make_browser_factory(cfg, store, bus, holder: dict):
+    """The daemon's one browser acquisition path: every actor that needs the browser — the read
+    lane, the reply send, the selector probe, the fan-out — goes through the factory this returns.
+
+    Both preconditions are re-checked on every acquisition, not just at construction: the client is
+    cached (in `holder`, so the daemon's shutdown can close it), but Chrome can be closed at any
+    point after — and Node is checked first, so a machine that cannot drive a browser never has one
+    opened for it.
+    """
+
+    def browser_factory():
+        command = cfg.playwright_mcp_cmd or browser_client.default_command(
+            browser_client.cdp_endpoint(cfg.chrome_cdp_port)
+        )
+        browser_client.ensure_available(command)
+        ensure_chrome(cfg, store, bus)
+        client = holder.get("client")
+        if client is None:
+            client = browser_client.BrowserClient(command=command)
+            holder["client"] = client
+        return client
+
+    return browser_factory
 
 
 def _setup_logging(level_name: str) -> None:
@@ -150,22 +198,13 @@ def run_daemon(*, once: bool) -> int:
     # factory so a machine with no Node still starts, with its browser lanes reporting unavailable
     # instead of the daemon failing at boot.
     browser_holder: dict = {}
-
-    def browser_factory():
-        client = browser_holder.get("client")
-        if client is None:
-            command = cfg.playwright_mcp_cmd or browser_client.default_command(
-                browser_client.cdp_endpoint(cfg.chrome_cdp_port)
-            )
-            browser_client.ensure_available(command)
-            client = browser_client.BrowserClient(command=command)
-            browser_holder["client"] = client
-        return client
+    browser_factory = make_browser_factory(cfg, store, bus, browser_holder)
 
     def reply_sink_factory():
-        """The marketplace send, built per request so a browser that is unavailable now but present
-        later needs no restart. The sink writes through the unscoped store: it stamps the intent it
-        was handed, which the tool has already checked against the session's scope."""
+        """The marketplace send, built when a send actually needs it — never at context build, so
+        only a tool that intends to send acquires the browser (and starts Chrome, if that is all
+        that is missing). The sink writes through the unscoped store: it stamps the intent it was
+        handed, which the tool has already checked against the session's scope."""
         return browser_sink.BrowserReplySink(
             client=browser_factory(),
             store=store,
@@ -177,12 +216,6 @@ def run_daemon(*, once: bool) -> int:
         # The store a handler sees is scoped to the session: attended (scope None) is a
         # transparent pass-through; a headless pass is held to its spawn-time entity scope at
         # every row load, so a thread never leaves the store without passing the scope check.
-        try:
-            sink = reply_sink_factory()
-        except BrowserError:
-            # No browser to send through. send_reply then reports no_send_path instead of reserving
-            # pacing and writing an intent for a send that could never happen.
-            sink = None
         return ToolContext(
             session=session,
             store=ScopedStore(store, getattr(session, "scope", None)),
@@ -190,7 +223,7 @@ def run_daemon(*, once: bool) -> int:
             config=cfg,
             rail_factory=rail_factory,
             browser_factory=browser_factory,
-            reply_sink=sink,
+            reply_sink=reply_sink_factory,
             started_ts=started_ts,
         )
 
@@ -318,7 +351,9 @@ def run_daemon(*, once: bool) -> int:
     )
     # List what is on carousell.ai everywhere else the seller sells, and report each outcome. Driven
     # off stored rows, so rail-first is a precondition rather than a step a recipe could skip.
-    crosslist_deps = crosslist.CrosslistDeps(store=store, bus=bus, config=cfg)
+    crosslist_deps = crosslist.CrosslistDeps(
+        store=store, bus=bus, config=cfg, browser_factory=browser_factory
+    )
     scheduler.register(
         Task(
             name="crosslist_lane",

@@ -69,8 +69,8 @@ bin/selly-agent connect telegram                          # interactive prompt
 printf '%s' "<bot-token>" | bin/selly-agent connect telegram   # scripted
 
 # bring up the warm Chrome the browser layer drives (a dedicated profile, NOT your everyday
-# Chrome). The daemon starts this itself when a publish needs it, so this is for logging in to
-# Carousell by hand the first time, and for keeping an eye on it while developing.
+# Chrome). The daemon starts this itself whenever it needs the browser, so this is for logging in
+# to Carousell by hand the first time, and for keeping an eye on it while developing.
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --remote-debugging-port=9222 \
   --user-data-dir="$HOME/.local/share/selly-agent/browser-profile" \

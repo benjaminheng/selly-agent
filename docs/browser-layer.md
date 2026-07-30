@@ -19,9 +19,16 @@ and only a silent port makes it safe to clear a `Singleton*` lock left by a kill
 Chrome and launch. Chrome gets its own session, so neither the daemon exiting nor a
 pass being killed takes the seller's browser with it.
 
-[The fan-out](#the-fan-out) is the only caller: it brings Chrome up before queueing a
-publish, and tells the seller a window is coming. The read lane skips and notifies
-instead. Keeping Chrome alive across crashes and logins is the supervisor's job.
+**Acquiring the browser means ensuring it runs.** Every actor that needs the browser
+— the read lane, the reply send, the selector probe, the fan-out — acquires it through
+the daemon's one factory, and the factory checks Node, brings Chrome up if the port is
+silent, and tells the seller a window is coming (the notice names no flow, because any
+actor may be the one that opens it). A Chrome that will not start surfaces as
+`BrowserUnavailable` carrying the by-hand launch command, which every caller already
+handles. A launch is serialized under one lock (two callers in the same window must
+not both launch onto one profile), and a launch that failed quiets further attempts
+for five minutes rather than costing every caller the full wait. Keeping Chrome alive
+across crashes and logins is the supervisor's job.
 
 ## The client
 
@@ -362,7 +369,7 @@ hand carry no `crosslist` origin and are not reported.
 | --- | --- |
 | `crosslist.queued` | a fan-out publish was queued for an item and market |
 | `crosslist.reported` | a settled fan-out publish was reported to the seller, with the URL and whether it worked |
-| `browser.chrome_launched` | the daemon started Chrome because a publish needed it |
+| `browser.chrome_launched` | the daemon started Chrome because an acquisition needed it |
 | `browser.read` | one market's tick: rows listed, threads opened, rows recorded, unreadable count, whether it was a full sweep |
 | `browser.inbound` | one message folded into a durable row, with its scam verdict |
 | `browser.thread_new` | a buyer's conversation adopted as a thread |

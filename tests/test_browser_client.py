@@ -25,6 +25,15 @@ from selly_agent.browser.client import (
 FAKE = Path(__file__).parent / "fake_playwright_mcp.py"
 
 
+@pytest.fixture(autouse=True)
+def _fresh_launch_backoff():
+    """The failed-launch backoff is module state; a test that exercised a failure must not quiet
+    the launches of the tests after it."""
+    chrome._last_failed_launch_ts = None
+    yield
+    chrome._last_failed_launch_ts = None
+
+
 @pytest.fixture
 def make_client(tmp_path):
     """A client wired to the scripted fake server, so the transport under test is the real one."""
@@ -418,6 +427,94 @@ def test_ensure_running_reports_unavailable_when_the_binary_is_missing(monkeypat
 
     monkeypatch.setattr(chrome.subprocess, "Popen", _boom)
     assert chrome.ensure_running(9222, chrome_bin="/nope/chrome") == chrome.UNAVAILABLE
+
+
+def test_two_concurrent_callers_launch_one_chrome(xdg_tmp, monkeypatch) -> None:
+    """Two lanes can want the browser in the same window. Without the launch lock both would see a
+    silent port, both would clear the profile locks, and both would launch — two Chromes contending
+    one profile. The loser must instead find the port answering and launch nothing."""
+    import threading
+
+    from selly_agent import paths
+
+    paths.ensure_data_dirs()
+    up = threading.Event()
+    launches = []
+
+    def _launch(argv, **kw):
+        launches.append(argv)
+        up.set()
+
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kw: up.is_set())
+    monkeypatch.setattr(chrome, "_LAUNCH_POLL_SEC", 0.0)
+    monkeypatch.setattr(chrome.subprocess, "Popen", _launch)
+
+    results = []
+    threads = [
+        threading.Thread(target=lambda: results.append(chrome.ensure_running(9222)))
+        for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(launches) == 1
+    assert sorted(results) == [chrome.LAUNCHED, chrome.READY]
+
+
+def test_a_live_port_clears_the_failed_launch_backoff(monkeypatch) -> None:
+    """A port that answers is evidence of the thing the backoff infers against, so it ends the
+    window early: a seller who starts Chrome by hand and later closes it gets a launch, not a
+    can't-drive-a-browser refusal for the remaining minutes."""
+    launches = []
+    monkeypatch.setattr(chrome, "_LAUNCH_POLL_SEC", 0.0)
+    monkeypatch.setattr(chrome.subprocess, "Popen", lambda argv, **kw: launches.append(argv))
+
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kw: False)
+    assert chrome.ensure_running(9222, chrome_bin="/bin/chrome", wait_sec=0.01) == (
+        chrome.UNAVAILABLE
+    )
+
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kw: True)
+    assert chrome.ensure_running(9222) == chrome.READY
+
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kw: False)
+    assert chrome.ensure_running(9222, chrome_bin="/bin/chrome", wait_sec=0.01) == (
+        chrome.UNAVAILABLE
+    )
+    assert len(launches) == 2  # cleared, so this launched instead of sitting out the window
+
+
+def test_a_failed_launch_quiets_further_attempts_for_the_backoff_window(monkeypatch) -> None:
+    """A launch that never answered cost its caller the full wait; the lanes that keep asking must
+    answer UNAVAILABLE immediately rather than each burning another launch and another wait."""
+    import time as _time
+
+    launches = []
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kw: False)
+    monkeypatch.setattr(chrome, "_LAUNCH_POLL_SEC", 0.0)
+    monkeypatch.setattr(chrome.subprocess, "Popen", lambda argv, **kw: launches.append(argv))
+
+    assert chrome.ensure_running(9222, chrome_bin="/bin/chrome", wait_sec=0.01) == (
+        chrome.UNAVAILABLE
+    )
+    assert chrome.ensure_running(9222, chrome_bin="/bin/chrome", wait_sec=0.01) == (
+        chrome.UNAVAILABLE
+    )
+    assert len(launches) == 1  # the second attempt was quieted, not retried
+
+    # A port that answers is READY regardless — the backoff only quiets launches.
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kw: True)
+    assert chrome.ensure_running(9222) == chrome.READY
+
+    # Past the window, launching is tried again.
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kw: False)
+    chrome._last_failed_launch_ts = _time.monotonic() - chrome.FAILED_LAUNCH_BACKOFF_SEC - 1
+    assert chrome.ensure_running(9222, chrome_bin="/bin/chrome", wait_sec=0.01) == (
+        chrome.UNAVAILABLE
+    )
+    assert len(launches) == 2
 
 
 def test_the_default_command_pins_the_endpoint_and_its_own_output_dir(xdg_tmp) -> None:

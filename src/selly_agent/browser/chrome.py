@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -30,6 +31,18 @@ _PROBE_TIMEOUT_SEC = 2.0
 # caller retries on its own schedule rather than blocking a lane on it.
 LAUNCH_WAIT_SEC = 20.0
 _LAUNCH_POLL_SEC = 0.25
+
+# One launch at a time: two callers arriving in the same window would both see a silent port, both
+# clear the profile locks, and both launch — two Chromes contending one profile. The loser waits,
+# re-probes under the lock, finds the port answering, and never launches at all.
+_LAUNCH_LOCK = threading.Lock()
+
+# A launch that never answered cost its caller the full wait, so one failure quiets further
+# attempts for this long — the callers that keep asking (the lanes tick every 30–300s) answer
+# UNAVAILABLE immediately instead of each burning another launch and wait on a Chrome that is
+# not coming.
+FAILED_LAUNCH_BACKOFF_SEC = 300.0
+_last_failed_launch_ts: float | None = None
 
 _CHROME_MACOS = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
@@ -114,34 +127,48 @@ def ensure_running(port: int, *, chrome_bin: str | None = None, wait_sec: float 
     appeared), or UNAVAILABLE (it is not, and the caller should do nothing that needs a browser).
 
     The probe comes first and decides everything: only once the port is silent is a lock left by a
-    killed Chrome safe to clear, and only then is a second launch on this profile safe at all.
+    killed Chrome safe to clear, and only then is a second launch on this profile safe at all. The
+    whole body runs under one launch lock so that holds with concurrent callers, and a launch that
+    failed quiets further attempts for FAILED_LAUNCH_BACKOFF_SEC.
     """
-    if is_ready(port):
-        return READY
-
-    removed = clear_stale_locks()
-    if removed:
-        log.info("cleared stale Chrome profile lock(s): %s", ", ".join(removed))
-
-    argv = launch_command(port, chrome_bin=chrome_bin or _CHROME_MACOS)
-    try:
-        # Its own session, so the daemon's exit — or a pass group being killed — never takes the
-        # seller's browser with it.
-        subprocess.Popen(  # noqa: S603 — argv is composed by launch_command, not a shell
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except OSError as exc:
-        log.warning("could not start Chrome (%s): %s", argv[0], exc)
-        return UNAVAILABLE
-
-    deadline = time.monotonic() + wait_sec
-    while time.monotonic() < deadline:
-        time.sleep(_LAUNCH_POLL_SEC)
+    global _last_failed_launch_ts
+    with _LAUNCH_LOCK:
         if is_ready(port):
-            return LAUNCHED
-    log.warning("started Chrome but it did not answer on port %s within %ss", port, wait_sec)
-    return UNAVAILABLE
+            _last_failed_launch_ts = None
+            return READY
+
+        if (
+            _last_failed_launch_ts is not None
+            and time.monotonic() - _last_failed_launch_ts < FAILED_LAUNCH_BACKOFF_SEC
+        ):
+            return UNAVAILABLE
+
+        removed = clear_stale_locks()
+        if removed:
+            log.info("cleared stale Chrome profile lock(s): %s", ", ".join(removed))
+
+        argv = launch_command(port, chrome_bin=chrome_bin or _CHROME_MACOS)
+        try:
+            # Its own session, so the daemon's exit — or a pass group being killed — never takes the
+            # seller's browser with it.
+            subprocess.Popen(  # noqa: S603 — argv is composed by launch_command, not a shell
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            log.warning("could not start Chrome (%s): %s", argv[0], exc)
+            _last_failed_launch_ts = time.monotonic()
+            return UNAVAILABLE
+
+        deadline = time.monotonic() + wait_sec
+        while time.monotonic() < deadline:
+            time.sleep(_LAUNCH_POLL_SEC)
+            if is_ready(port):
+                _last_failed_launch_ts = None
+                return LAUNCHED
+        log.warning("started Chrome but it did not answer on port %s within %ss", port, wait_sec)
+        _last_failed_launch_ts = time.monotonic()
+        return UNAVAILABLE

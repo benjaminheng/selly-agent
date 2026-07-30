@@ -1,10 +1,11 @@
 """send_reply and record_manual_reply — the send bracket, composed atomically in code.
 
-send_reply is the whole bracket in one tool call: validate the thread, reserve pacing + write a
-durable intent (one transaction), send through the sink outside any transaction, then fold the
-outbound row + advance the cursor + mark the intent committed (a second transaction). A wait/quiet
-verdict records nothing; a killed send leaves the intent for the sweep to fold as unconfirmed, never
-a re-send. With no sink to send through, it returns a structured no_send_path.
+send_reply is the whole bracket in one tool call: validate the thread, acquire the sink (which
+starts Chrome if a closed window is all that is missing), reserve pacing + write a durable intent
+(one transaction), send through the sink outside any transaction, then fold the outbound row +
+advance the cursor + mark the intent committed (a second transaction). A wait/quiet verdict records
+nothing; a killed send leaves the intent for the sweep to fold as unconfirmed, never a re-send.
+With no way to send, it returns a structured no_send_path with nothing recorded.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import time
 
 from selly_agent import settings
+from selly_agent.browser.client import BrowserError
 from selly_agent.engines import pacing as pacing_engine
 from selly_agent.store import StoreError
 from selly_agent.tools.registry import (
@@ -62,8 +64,19 @@ def _send_reply(ctx: ToolContext, params: dict) -> dict:
             "(terminal/held/escalated threads are never re-engaged)"
         )
 
-    # Nothing to send through: refuse before any reserve or intent, so nothing is recorded.
-    if ctx.reply_sink is None:
+    # Acquire the send path before any reserve or intent, so "no browser" is refused with nothing
+    # recorded: no pacing slot spent, and no pending intent for the sweep to escalate as a send
+    # nobody can verify — this send provably never happened.
+    try:
+        sink = ctx.reply_sink() if ctx.reply_sink is not None else None
+    except BrowserError as exc:
+        return {
+            "status": "no_send_path",
+            "thread_id": params["thread_id"],
+            "market": thread["market"],
+            "detail": str(exc),
+        }
+    if sink is None:
         return {
             "status": "no_send_path",
             "thread_id": params["thread_id"],
@@ -93,7 +106,7 @@ def _send_reply(ctx: ToolContext, params: dict) -> dict:
 
     intent_id = reserved["intent_id"]
     try:
-        ctx.reply_sink.send(thread, params["text"], kind, intent_id)
+        sink.send(thread, params["text"], kind, intent_id)
     except Exception:
         # The sink's own message never reaches here by design (it emits its own events). Whether
         # the message may be retried is the intent's durable status, and the return says which
