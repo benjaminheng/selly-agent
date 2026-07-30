@@ -91,16 +91,27 @@ def adapters() -> list:
     return list(_ADAPTERS.values())
 
 
-def publishable_markets() -> list:
-    """The browser markets the agent can actually publish to, in registry order: active entries
-    with a registered adapter and a recorded publish recipe.
+def supported_markets() -> list:
+    """The browser markets the agent knows how to publish to at all, in registry order: active
+    entries with a registered adapter and a recorded publish recipe.
 
-    This is the whole answer to "which markets may a seller enable" — capability is derived from
-    the code that implements it, never from a registry flag that could say yes while the adapter
-    says no.
+    Capability is derived from the code that implements it, never from a registry flag that could
+    say yes while the adapter says no.
     """
     return [
         market
         for market in marketplaces.browser_markets()
         if market in _ADAPTERS and marketplaces.listing_flow(market)
+    ]
+
+
+def publishable_markets(region: str | None = None) -> list:
+    """The browser markets *this seller* can be listed on: one we can drive, that has a site where
+    they are. A marketplace with no regional site for them has nowhere to put the listing, so it is
+    not a market they can enable — with no region recorded, that is true of all of them.
+    """
+    return [
+        market
+        for market in supported_markets()
+        if marketplaces.resolve_domain(market, region) is not None
     ]

@@ -20,7 +20,7 @@ def test_resolve_falls_back_to_star_default() -> None:
 
 
 def test_resolve_falls_back_to_listing_url_host() -> None:
-    # craigslist has no domains map; the listing_url host is the last-resort answer
+    # craigslist has no domains map and a real host, so the listing_url host is the answer
     assert marketplaces.resolve_domain("craigslist", "US") == "craigslist.org"
 
 
@@ -52,7 +52,7 @@ def test_registry_carries_no_unread_fields() -> None:
     unread = {"regions", "categories", "fulfillment", "default_enabled"}
     for entry in marketplaces.all_marketplaces():
         assert unread.isdisjoint(entry), entry["id"]
-        assert set((entry.get("connector") or {})) <= {"type"}, entry["id"]
+        assert set(entry.get("connector") or {}) <= {"type"}, entry["id"]
 
 
 def test_allowlist_covers_markets_without_adapters() -> None:
@@ -62,16 +62,47 @@ def test_allowlist_covers_markets_without_adapters() -> None:
     assert {"ebay.com", "mercari.com", "poshmark.com"} <= allowlist
 
 
-def test_publishable_markets_is_the_adapter_registry() -> None:
+def test_supported_markets_is_the_adapter_registry() -> None:
     """Only carousell today — every other browser entry is a host the scanner needs, not a market
     anything can drive."""
-    assert market_adapters.publishable_markets() == ["carousell"]
+    assert market_adapters.supported_markets() == ["carousell"]
 
 
-def test_publishable_market_needs_both_an_adapter_and_a_recipe(monkeypatch) -> None:
+def test_supported_market_needs_both_an_adapter_and_a_recipe(monkeypatch) -> None:
     monkeypatch.setattr(marketplaces, "listing_flow", lambda market: "")
-    assert market_adapters.publishable_markets() == []
+    assert market_adapters.supported_markets() == []
 
     monkeypatch.undo()
     monkeypatch.setattr(market_adapters, "_ADAPTERS", {})
-    assert market_adapters.publishable_markets() == []
+    assert market_adapters.supported_markets() == []
+
+
+def test_publishable_markets_follow_the_seller_region() -> None:
+    """Carousell runs no US site, so a US seller has nowhere to be listed there; with no region
+    recorded that is true of every marketplace."""
+    assert market_adapters.publishable_markets("SG") == ["carousell"]
+    assert market_adapters.publishable_markets("US") == []
+    assert market_adapters.publishable_markets(None) == []
+
+
+# --- region resolution: a domains map is exhaustive --------------------------------------------
+
+
+def test_a_region_absent_from_the_map_has_no_site() -> None:
+    assert marketplaces.resolve_domain("carousell", "US") is None
+    assert marketplaces.resolve_domain("carousell", None) is None
+
+
+def test_carousell_ai_serves_us_and_sg_only() -> None:
+    assert marketplaces.resolve_domain("carousell-ai", "US") == "www.carousell.ai"
+    assert marketplaces.resolve_domain("carousell-ai", "SG") == "www.carousell.ai"
+    assert marketplaces.resolve_domain("carousell-ai", "MY") is None
+
+
+def test_no_entry_ever_resolves_to_a_bare_host_suffix() -> None:
+    """A suffix like "carousell." is the verifier's host pattern. Handed out as a site it composes
+    URLs that cannot resolve and region checks that compare against nonsense."""
+    for entry in marketplaces.all_marketplaces():
+        for region in ("SG", "US", "MY", "ZZ", None):
+            host = marketplaces.resolve_domain(entry["id"], region)
+            assert host is None or not host.endswith("."), (entry["id"], region, host)

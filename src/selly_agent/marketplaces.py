@@ -2,10 +2,9 @@
 
 A packaged data file (data/marketplaces.json), not user state: it backs the listing/search
 recipes and the URL verifier. resolve_domain answers "which regional site of a marketplace does
-this seller post on" (an SG seller lists to www.carousell.sg, not a global host) with a
-first-match rule: an exact regional host, then the marketplace's "*" default, then the
-listing_url host suffix for entries with no domains map. Pure and stdlib — reads the registry,
-mutates nothing.
+this seller post on" (an SG seller lists to www.carousell.sg, not a global host) — and, by
+answering None, "this marketplace has no site where this seller is", which is what makes a
+marketplace ineligible for them. Pure and stdlib — reads the registry, mutates nothing.
 """
 
 from __future__ import annotations
@@ -87,7 +86,7 @@ def market_url(market: str, key: str, region: str | None = None, **fields) -> st
     """
     path = urls(market).get(key)
     host = resolve_domain(market, region)
-    if not path or not host or host.endswith("."):
+    if not path or not host:
         return None
     try:
         path = path.format(**fields) if fields else path
@@ -97,14 +96,20 @@ def market_url(market: str, key: str, region: str | None = None, **fields) -> st
 
 
 def resolve_domain(market: str, region: str | None = None) -> str | None:
-    """The region-specific host for a market, or None if unresolvable. First match wins:
-    the exact regional host, then the "*" default, then the listing_url host suffix."""
+    """The marketplace's site for a seller in this region, or None when it has none.
+
+    An entry that enumerates its regional sites is authoritative: a region absent from the map is a
+    region the marketplace does not serve, which is how "Carousell runs seven regional sites and no
+    US one" is stated. Only an entry with no map at all falls back to its listing host, and only
+    when that is a real host — a bare suffix like "carousell." is the verifier's host *pattern*, and
+    handing it out as a site produces URLs that cannot resolve and region checks that compare
+    against nonsense.
+    """
     entry = get_marketplace(market)
     if entry is None:
         return None
     domains = entry.get("domains") or {}
-    if region and region in domains:
-        return domains[region]
-    if _ANY in domains:
-        return domains[_ANY]
-    return (entry.get("listing_url") or {}).get("host") or None
+    if domains:
+        return domains.get(region) or domains.get(_ANY)
+    host = (entry.get("listing_url") or {}).get("host") or None
+    return host if host and not host.endswith(".") else None

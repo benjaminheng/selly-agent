@@ -2241,10 +2241,12 @@ class Store:
         """Which regional site of a marketplace this seller posts on, or None if not recorded.
 
         Every URL the agent composes and every one it verifies is pinned to this, so it is read from
-        here rather than accepted from a caller.
+        here rather than accepted from a caller — and normalized here for the same reason. The
+        registry keys its regional sites by code ("SG"), and an exact-match lookup on "sg" resolves
+        to no site at all, which reads downstream as "this marketplace isn't available to you".
         """
         region = (self.get_seller_config_section("basics") or {}).get("region")
-        return str(region) if region else None
+        return str(region).strip().upper() or None if region else None
 
     def get_seller_config_public(self) -> dict:
         """Every section except the private origin address — the buyer-safe view a read tool may
