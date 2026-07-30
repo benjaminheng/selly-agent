@@ -76,6 +76,20 @@ def test_report_is_one_transaction_and_happens_once(store) -> None:
     assert not store.report_crosslist_pass(pass_id, "Listed on Carousell: https://x")
 
 
+def test_a_pass_that_owes_no_report_is_closed_out_once_seen(store) -> None:
+    """A hand-run publish is never reported, so the first sweep that sees its settled row closes
+    the flag — the scan stays bounded by work owed, not by a growing tail of CLI history."""
+    item = store.create_item(title="Lamp", list_price=80.0)
+    attended = _publish(store, item["id"], "carousell", origin=None)
+    _settle(store, attended)
+
+    assert store.unreported_crosslist_passes() == []
+    rows = store._db.query("SELECT reported FROM passes WHERE pass_id = ?", (attended,))
+    assert rows[0]["reported"] == 1
+    # And closing it queued nothing — the flag means "no report owed", not "reported".
+    assert store.claim_queued_notices(10) == []
+
+
 def test_an_already_reported_pass_stays_out_of_the_queue(store) -> None:
     """What the migration's `UPDATE passes SET reported = 1` leaves behind: rows that settled before
     the fan-out existed are never replayed on upgrade."""

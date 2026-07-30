@@ -3080,6 +3080,9 @@ class Store:
         """Settled fan-out publishes the seller has not been told about, oldest first.
 
         Only the ones the daemon started: a publish run from the CLI is watched by whoever ran it.
+        Those rows owe no report, so their flag is closed the first time the sweep sees them —
+        `reported` means "no report owed" (the meaning the migration's backfill established), and
+        closing it keeps this scan bounded by work owed rather than by CLI history.
         """
         rows = self._db.query(
             "SELECT pass_id, payload, status, class FROM passes "
@@ -3087,9 +3090,11 @@ class Store:
             "ORDER BY finished_ts ASC, pass_id ASC"
         )
         out = []
+        owes_nothing = []
         for row in rows:
             payload = json.loads(row["payload"])
             if payload.get("origin") != "crosslist":
+                owes_nothing.append((row["pass_id"],))
                 continue
             out.append(
                 {
@@ -3100,6 +3105,9 @@ class Store:
                     "class": row["class"],
                 }
             )
+        if owes_nothing:
+            with self._db.transaction() as conn:
+                conn.executemany("UPDATE passes SET reported = 1 WHERE pass_id = ?", owes_nothing)
         return out
 
     def report_crosslist_pass(self, pass_id: str, text: str, *, ref: str | None = None) -> bool:
