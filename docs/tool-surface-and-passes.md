@@ -74,9 +74,10 @@ sanitize):
 
 - **claude** (live) renders the `claude -p` argv plus the workspace's
   `.mcp.json` and `.claude/settings.json`. The no-Bash posture is by
-  construction: `--strict-mcp-config` with only our server, and `--allowedTools`
-  listing exactly the pass's rules (last, since the flag greedily consumes what
-  follows). Stream-json output requires `--verbose` with `-p` (a hard CLI
+  construction: `--strict-mcp-config`, so the rendered server set is the whole set
+  (our server, plus the Playwright server for a browser-driving pass — see
+  *Multiple servers* below), and `--allowedTools` listing exactly the pass's rules
+  (last, since the flag greedily consumes what follows). Stream-json output requires `--verbose` with `-p` (a hard CLI
   requirement). The spec's composed system prompt rides
   `--append-system-prompt`. `readable_paths` renders as one `Read(//abs/path)`
   rule per file; the bare `Read` deny is emitted only when nothing is granted,
@@ -111,9 +112,9 @@ runner:
 
 | type | tier | skills | web | browser | scope |
 |---|---|---|---|---|---|
-| `publish` | `pass:publish` — `get_item`, the photo/publish pair, `send_message`, and the selector cache (`ui_cache_*`, `probe_selector`) | conventions + the market's own recipe | no | for a browser market only | full |
+| `publish` | `pass:publish` — `get_item`, the photo/publish pair, `record_published_listing_url` (how a browser publish's result gets back at all), `send_message`, and the selector cache (`ui_cache_*`, `probe_selector`) | conventions + the market's own recipe | no | for a browser market only | full |
 | `reply` | `pass:reply` — its own threads and items, `negotiate_offer`/`status`, `search_qa_bank`, `send_reply`, `hold_thread`, `escalate`, `quote_shipping`, the checkout link, `scam_scan` | conventions, voice-and-style, buyer-conversation, scam-guard | no | no | its claimed threads + items |
-| `channel` | `pass:channel` — the broad seller-conversation set (items, photos, floors, threads, negotiate, checkout, escalations, settings, the Q&A bank, `send_message`, …) | conventions, voice-and-style, seller-comms, listing-flow | yes | no | full |
+| `channel` | `pass:channel` — the broad seller-conversation set (items, photos, floors, threads, negotiate, checkout, escalations, settings, the Q&A bank, `carousell_ai_update_listing`, `send_message`, …) | conventions, voice-and-style, seller-comms, listing-flow | yes | no | full |
 
 All three tiers are pinned by a golden (`tests/golden/pass_tiers.json`), so
 widening one is a deliberate diff. Membership follows what the skills instruct: a
@@ -185,7 +186,13 @@ delivered-via-catchup, while escalations clear only on resolve.
 
 1. `pass run publish --item X` posts to `POST /control/enqueue-pass`; a `queued`
    row is inserted and a pass id returned. (A `channel` pass is enqueued instead
-   by the poller, which claims the pending inbox rows into it in one transaction.)
+   by the poller, which claims the pending inbox rows into it in one transaction;
+   a fan-out `publish` by the crosslist lane, which marks its payload
+   `origin: "crosslist"` so the outcome is reported to the seller — a pass run by
+   hand is watched by whoever ran it and is not.) A publish payload naming a
+   market that cannot be published to — unknown, no adapter, no recipe, or no site
+   in the seller's region — is refused here with a 400 rather than ledgered as a
+   pass that could only fail.
 2. The scheduler's pass lane claims it **single-flight** (stamping `running` in
    one transaction), mints an ephemeral pass-tier token, writes an empty per-pass
    workspace holding only the generated harness config, and spawns the harness.

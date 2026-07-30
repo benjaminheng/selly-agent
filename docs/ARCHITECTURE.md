@@ -129,15 +129,23 @@ Detail in [`tool-surface-and-passes.md`](tool-surface-and-passes.md):
 
 Marketplaces with no API are driven through the seller's own logged-in Chrome —
 one dedicated profile, one warm browser, CDP open on the loopback interface, which
-the daemon attaches to but never launches. `browser/` holds the daemon's own
-Playwright MCP client (stdio, so there is no port to authenticate), the token-free
-read lane that folds buyer messages into durable rows, the pure reconcile that
-decides what is new, the scripted verified send, and a per-market adapter seam
-that keeps each marketplace's DOM knowledge in one module. Three actors share the
-one tab — the read lane, the reply sink, and a browser-driving pass — serialized
-by a mutex held for whole operations. A machine with no Node runs on with the
-browser lanes reporting themselves unavailable, rather than every market reading
-as quiet. Detail in [`browser-layer.md`](browser-layer.md).
+the daemon attaches to and, when nothing is listening, starts. `browser/` holds the
+daemon's own Playwright MCP client (stdio, so there is no port to authenticate),
+the token-free read lane that folds buyer messages into durable rows, the pure
+reconcile that decides what is new, the scripted verified send, and a per-market
+adapter seam that keeps each marketplace's DOM knowledge in one module. Three
+actors share the one tab — the read lane, the reply sink, and a browser-driving
+pass — serialized by a mutex held for whole operations. A machine with no Node
+runs on with the browser lanes reporting themselves unavailable, rather than every
+market reading as quiet. Detail in [`browser-layer.md`](browser-layer.md).
+
+**`crosslist.py`** is the fan-out lane above it: the seller names the marketplaces
+they sell on in a setting, and a listing that is live on carousell.ai and missing
+from one of them becomes a queued browser publish. Eligibility is a query over
+stored rows rather than a step in a recipe, which is what makes rail-first a
+precondition, the work idempotent, and the backlog free; each outcome is reported
+to the seller by the daemon, read off the row the pass wrote rather than off what
+the pass said about itself.
 
 ### Skills and prompt composition
 

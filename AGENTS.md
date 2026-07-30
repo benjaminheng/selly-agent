@@ -116,7 +116,10 @@ Keep these distinct — where a value lives is a decision about what it *is*:
   live in the registry, not as rows: an unset key reads as its default. Adding a
   setting is one `SettingSpec` (type/parse/render/default/description/approval
   policy) — the registry is the validation source, the card's discoverability
-  source, and the LLM's vocabulary at once.
+  source, and the LLM's vocabulary at once. `SettingSpec.parse` is pure: a value
+  that is only valid against seller state (which marketplaces exist for their
+  region) is checked in `settings.check_for_seller`, called once from the propose
+  tool.
 
 **Settings change only through a door — the LLM proposes, it never applies.**
 `propose_setting_change` is the *only* settings-mutation tool on any tier; there

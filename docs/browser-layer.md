@@ -13,7 +13,18 @@ everything below.
 
 A dedicated Chrome profile is used for all agent interactions. This prevents the agent from seeing the user's everyday web-browsing sessions. The agent interacts with the browser using Chrome DevTools Protocol (CDP).
 
-`browser/chrome.py` is responsible for starting the browser. It is not wired up yet.
+`browser/chrome.py` starts the browser when it is not already running. `ensure_running`
+probes the CDP port first and everything follows from that answer: a port that answers
+is left alone (two Chromes cannot share one profile), and only a silent port makes it
+safe to clear a `Singleton*` lock left behind by a killed Chrome and launch again.
+Chrome is started in its own session, so neither the daemon exiting nor a pass group
+being killed takes the seller's browser with it.
+
+The fan-out lane is the caller today (see [the fan-out](#the-fan-out) below): it brings
+Chrome up before queueing a publish, and tells the seller a window is about to appear.
+The read lane does not — it skips and notifies instead, so a machine with no browser is
+quiet rather than repeatedly launching one nobody asked for. Keeping Chrome alive across
+crashes and logins is the supervisor's job, not this module's.
 
 ## The client
 
@@ -107,6 +118,21 @@ Carousell has an adapter** — the lane skips a registry entry with no adapter, 
 listing a market in the registry does not make it read. Page URLs come from the
 registry's `urls` templates and the region→host `domains` map, never from a guess:
 an unrecorded template resolves to `None` and the caller reports that.
+
+The split is capability versus data, and it decides where each fact lives. **What we
+can drive is a fact about the code** — `supported_markets()` answers it from the
+adapter registry and the recipe pointer, never from a flag in the JSON that could
+say yes while the adapter says no. **Where a marketplace operates is data** — and
+the `domains` map already carries it, so it is not restated anywhere: a map is
+**exhaustive**, meaning a region absent from it is a region the marketplace does not
+serve, and `resolve_domain` answers `None` there. That is why a US seller cannot be
+listed on Carousell (seven regional sites, no US one) and why an MY seller could be,
+with no code change. `publishable_markets(region)` is the two facts crossed, and it
+gates the setting, both enqueue doors, and the fan-out lane alike.
+
+Entries with no adapter are not dead weight: `hosts.build_allowlist` reads every
+entry's hosts, which is what stops the scam scanner flagging a legitimate eBay or
+Mercari link a buyer sends.
 
 ### Adapter: Carousell
 
@@ -291,10 +317,62 @@ release, and a release never overwrites what an install has learned.
 - **The table holds locating strings and timestamps only** — never a value, a
   price, or an address.
 
+## The fan-out
+
+`crosslist.py` is what makes "list this" mean "list where the seller sells". The publish
+itself is the pass the [tool surface](tool-surface-and-passes.md) describes; this lane
+decides when one is queued and tells the seller how it went.
+
+The seller opts in per marketplace through the `crosslist_markets` setting (default
+empty, approval-gated — enabling one makes the agent post publicly as them). A market
+can be enabled only if something can drive it: a registered adapter, a recorded publish
+recipe, and a regional site for the seller's own region. `browser/markets`'s
+`supported_markets()` and `publishable_markets(region)` are the two halves of that
+answer, and the same predicate gates the enqueue doors, so a market cannot be enabled
+and then never published to.
+
+**Eligibility is a query, not a step in a recipe.** Each tick the lane looks for an item
+that is live on carousell.ai, missing from an enabled market, not sold, and never
+attempted there. Three properties fall out of deriving it from rows rather than
+instructing a flow to fan out:
+
+- **rail-first is a precondition** — an item with no carousell.ai URL cannot qualify, so
+  it is not something a model can do out of order;
+- **it is idempotent** — `record_published_listing_url` writing the URL is what stops the
+  pair qualifying;
+- **it backfills** — items listed long before the setting existed qualify the moment it
+  is turned on, with no separate path.
+
+**One shot per item and marketplace.** An attempt is minutes of browser work and a
+vision-priced token bill, so a settled pass — whatever its outcome — ends automatic
+attempts for that pair, and the failure is reported instead. What *is* retried every tick
+is the cheap part: whether Node is installed and whether Chrome is up. Both are checked
+before queueing, so a condition that fixes itself never spends the one attempt.
+
+The lane holds off entirely while the daemon is paused, while another publish is queued
+or running (passes run one at a time, and a queued publish only delays the seller's own
+conversations), and during quiet hours — a publish is a burst of visible activity on the
+seller's real account, and one that starts at 4am is a pattern nobody sells like. Nothing
+already running is interrupted; the window holds the *start* of new work.
+
+**Outcomes are reported by the daemon, from the rows the pass wrote.** A publish pass has
+no conversation to report into, and a live run proved the model will not remember to
+open one: it published successfully, recorded the URL, and told nobody. So the lane
+sweeps settled fan-out passes and reads the verdict off the item — a recorded URL is a
+success notice with the link, and anything else is a failure notice naming the item, the
+market and the CLI retry. The pass's own exit code is not the verdict: one that ends
+clean having recorded no URL has left no listing anyone can find. `passes.reported` is
+flipped in the same transaction as the notice insert, so a crash mid-sweep can neither
+announce a listing twice nor swallow it. Publishes started by hand carry no `crosslist`
+origin and are not reported — whoever ran one is watching it.
+
 ## Events
 
 | kind | when |
 | --- | --- |
+| `crosslist.queued` | a fan-out publish was queued for an item and market |
+| `crosslist.reported` | a settled fan-out publish was reported to the seller, with the URL and whether it worked |
+| `browser.chrome_launched` | the daemon started Chrome because a publish needed it |
 | `browser.read` | one market's tick: rows listed, threads opened, rows recorded, unreadable count, whether it was a full sweep |
 | `browser.inbound` | one message folded into a durable row, with its scam verdict |
 | `browser.thread_new` | a buyer's conversation adopted as a thread |
@@ -310,8 +388,10 @@ release, and a release never overwrites what an install has learned.
 | key | default | what it does |
 | --- | --- | --- |
 | `chrome_cdp_port` | `9222` | the warm Chrome's CDP port on loopback |
+| `chrome_bin` | `null` | the Chrome executable to start; `null` means the OS default install path |
 | `playwright_mcp_cmd` | `null` | override the server command; `null` means `npx --yes @playwright/mcp` against the CDP endpoint |
 | `inbox_read_interval_sec` | `300.0` | how often the read lane ticks |
+| `crosslist_lane` interval | `30.0` (code) | how soon a seller hears a listing went up; not throughput — one publish is queued per tick at most |
 | `inbox_full_sweep_every` | `6` | every Nth tick opens every active thread; `1` disables the skip gate |
 | `browser_blind_after` | `3` | consecutive failed reads before the needs-me notice |
 
@@ -331,7 +411,8 @@ re-arming them errs toward reading more rather than less.
    someone has decided that market's account can afford a page-dispatched
    keystroke.
 4. **A publish recipe skill**, if the market should be publishable, pointed at by
-   the registry's `listing_flow`.
+   the registry's `listing_flow`. Steps 2 and 4 together are what make the market
+   selectable in `crosslist_markets` — there is no separate switch to remember.
 
 Nothing else in the layer changes: the read lane, reconcile, the sink and the
 selector cache are all written against the protocol.

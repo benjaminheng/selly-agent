@@ -69,14 +69,16 @@ bin/selly-agent connect telegram                          # interactive prompt
 printf '%s' "<bot-token>" | bin/selly-agent connect telegram   # scripted
 
 # bring up the warm Chrome the browser layer drives (a dedicated profile, NOT your everyday
-# Chrome). Keep it running in its own terminal; log in to Carousell in it once, by hand.
-# In production launchd keeps it alive — in dev that is your job.
+# Chrome). The daemon starts this itself when a publish needs it, so this is for logging in to
+# Carousell by hand the first time, and for keeping an eye on it while developing.
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --remote-debugging-port=9222 \
   --user-data-dir="$HOME/.local/share/selly-agent/browser-profile" \
-  --no-first-run --no-default-browser-check --restore-last-session
+  --disable-backgrounding-occluded-windows \
+  --no-first-run --no-default-browser-check --restore-last-session \
+  --hide-crash-restore-bubble --window-position=80,80 --window-size=1200,900
 
-# check the daemon can see it (this is what the browser lanes probe)
+# check whether a Chrome is answering (the same probe the daemon makes before starting one)
 curl -s http://127.0.0.1:9222/json/version
 
 # tail the event store (works whether or not the daemon is running)
