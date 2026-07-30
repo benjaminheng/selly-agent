@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 from selly_agent import settings
+from selly_agent.channel import fastpaths
 from selly_agent.tools import TIER_ATTENDED, TIER_PASS_CHANNEL, tools_for_tier
 from selly_agent.tools.registry import ToolError, dispatch
 
@@ -103,6 +104,48 @@ def test_get_settings_lists_registry(make_ctx) -> None:
     assert "quiet_hours" in keys
     q = next(s for s in out["settings"] if s["key"] == "quiet_hours")
     assert q["requires_approval"] is True
+
+
+# --- the seller-state check runs at the propose door -------------------------------------------
+
+
+def test_propose_crosslist_without_a_region_is_refused(make_ctx) -> None:
+    """check_for_seller is wired into the propose tool, not just callable: a value the parser
+    accepts can still be refused by who the seller is."""
+    ctx = make_ctx(TIER_ATTENDED)
+    with pytest.raises(ToolError, match="which country"):
+        dispatch(
+            "propose_setting_change", {"key": "crosslist_markets", "raw_value": ["carousell"]}, ctx
+        )
+
+
+def test_propose_crosslist_for_an_unserved_region_is_refused(make_ctx, store) -> None:
+    store.set_seller_config_section("basics", {"region": "US"})
+    ctx = make_ctx(TIER_ATTENDED)
+    with pytest.raises(ToolError, match="US accounts"):
+        dispatch(
+            "propose_setting_change", {"key": "crosslist_markets", "raw_value": ["carousell"]}, ctx
+        )
+
+
+def test_crosslist_applies_through_the_door(make_ctx, store, bus) -> None:
+    """The whole path a real enable takes: proposed in conversation, held, approved on the phone —
+    and only then read back by the fan-out's own helper."""
+    store.set_seller_config_section("basics", {"region": "SG"})
+    ctx = make_ctx(TIER_PASS_CHANNEL, pass_id="p1")
+    out = dispatch(
+        "propose_setting_change", {"key": "crosslist_markets", "raw_value": ["carousell"]}, ctx
+    )
+    assert out["status"] == "held" and out["rendered"] == "Carousell"
+    assert settings.get(store, "crosslist_markets") == []  # nothing applied yet
+
+    reply, _controls = fastpaths.handle_settings_door(
+        store,
+        bus,
+        {"kind": "action", "payload": {"choice": settings.CB_APPROVE, "ref": out["change_id"]}},
+    )
+    assert "Applied" in reply
+    assert settings.crosslist_markets(store) == ["carousell"]
 
 
 # --- tier membership --------------------------------------------------------------------------
