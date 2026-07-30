@@ -199,6 +199,9 @@ def test_invalid_pacing_and_negotiation_values_are_rejected(xdg_tmp, obj) -> Non
         {"inbox_full_sweep_every": 0},
         {"inbox_full_sweep_every": 1.5},
         {"browser_blind_after": 0},
+        {"chrome_bin": ""},
+        {"chrome_bin": "   "},
+        {"chrome_bin": 5},
     ],
 )
 def test_invalid_browser_values_are_rejected(xdg_tmp, obj) -> None:
@@ -215,9 +218,11 @@ def test_browser_knobs_round_trip(xdg_tmp) -> None:
             "inbox_read_interval_sec": 120,
             "inbox_full_sweep_every": 1,
             "browser_blind_after": 5,
+            "chrome_bin": " /opt/chrome/chrome ",
         }
     )
     cfg = load()
+    assert cfg.chrome_bin == "/opt/chrome/chrome"
     assert cfg.chrome_cdp_port == 9333
     assert cfg.playwright_mcp_cmd == ["node", "/opt/mcp/cli.js"]
     assert cfg.inbox_read_interval_sec == 120.0

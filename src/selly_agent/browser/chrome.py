@@ -1,9 +1,10 @@
-"""The warm Chrome the browser layer attaches to: readiness probe and the launch invocation.
+"""The warm Chrome the browser layer attaches to: readiness probe, launch invocation, bring-up.
 
-The daemon never starts Chrome. One dedicated profile means exactly one Chrome may own it, and a
-second launch on a live profile either hangs or opens read-only — so supervision belongs to launchd
-(and, in dev, to the person at the keyboard). What lives here is the probe that answers "is it
-there", and the command to run when it is not.
+One dedicated profile means exactly one Chrome may own it, and a second launch on a live profile
+either hangs or opens read-only — so nothing here launches without the probe first saying the port
+is silent. Given that, the daemon may start Chrome itself: a background publish that arrives while
+the window happens to be closed is worth a window opening for, and the seller is told before it
+does. Keeping it alive across crashes and logins is still the supervisor's job, not this module's.
 
 The probe is the only network I/O in the browser layer: an HTTP GET of Chrome's own CDP version
 endpoint on the loopback interface.
@@ -12,14 +13,30 @@ endpoint on the loopback interface.
 from __future__ import annotations
 
 import json
+import logging
+import subprocess
+import time
 import urllib.error
 import urllib.request
 
 from selly_agent import paths
 
+log = logging.getLogger(__name__)
+
 _PROBE_TIMEOUT_SEC = 2.0
 
+# How long a launched Chrome gets to answer on its debugging port, and how often we ask. A cold
+# start on a large profile is seconds; anything past this is a Chrome that is not coming up, and the
+# caller retries on its own schedule rather than blocking a lane on it.
+LAUNCH_WAIT_SEC = 20.0
+_LAUNCH_POLL_SEC = 0.25
+
 _CHROME_MACOS = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+# What ensure_running found or did.
+READY = "ready"
+LAUNCHED = "launched"
+UNAVAILABLE = "unavailable"
 
 # Locks a SIGKILLed Chrome leaves behind. They make the next launch on the same profile hang, so the
 # bring-up clears them — safe only because it has already established that no Chrome is answering.
@@ -82,9 +99,49 @@ def launch_command(port: int, *, chrome_bin: str = _CHROME_MACOS) -> list:
     ]
 
 
-def bring_up_hint(port: int) -> str:
-    """What to tell a person whose Chrome is not running. Installing the launchd job that keeps it
-    alive is the installer's work; this is the dev-mode instruction."""
-    argv = launch_command(port)
+def bring_up_hint(port: int, *, chrome_bin: str | None = None) -> str:
+    """What to tell a person whose Chrome could not be started for them. Installing the launchd job
+    that keeps it alive is the installer's work; this is the by-hand instruction."""
+    argv = launch_command(port, chrome_bin=chrome_bin or _CHROME_MACOS)
     quoted = " ".join(f'"{part}"' if " " in part else part for part in argv)
     return f"the agent's Chrome is not running on port {port} — start it with:\n  {quoted}"
+
+
+def ensure_running(port: int, *, chrome_bin: str | None = None, wait_sec: float = LAUNCH_WAIT_SEC):
+    """Make sure the agent's Chrome is answering on its debugging port, starting it if it is not.
+
+    Answers READY (it already was), LAUNCHED (it is now, and the seller should be told a window
+    appeared), or UNAVAILABLE (it is not, and the caller should do nothing that needs a browser).
+
+    The probe comes first and decides everything: only once the port is silent is a lock left by a
+    killed Chrome safe to clear, and only then is a second launch on this profile safe at all.
+    """
+    if is_ready(port):
+        return READY
+
+    removed = clear_stale_locks()
+    if removed:
+        log.info("cleared stale Chrome profile lock(s): %s", ", ".join(removed))
+
+    argv = launch_command(port, chrome_bin=chrome_bin or _CHROME_MACOS)
+    try:
+        # Its own session, so the daemon's exit — or a pass group being killed — never takes the
+        # seller's browser with it.
+        subprocess.Popen(  # noqa: S603 — argv is composed by launch_command, not a shell
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        log.warning("could not start Chrome (%s): %s", argv[0], exc)
+        return UNAVAILABLE
+
+    deadline = time.monotonic() + wait_sec
+    while time.monotonic() < deadline:
+        time.sleep(_LAUNCH_POLL_SEC)
+        if is_ready(port):
+            return LAUNCHED
+    log.warning("started Chrome but it did not answer on port %s within %ss", port, wait_sec)
+    return UNAVAILABLE

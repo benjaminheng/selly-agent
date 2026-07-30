@@ -62,9 +62,12 @@ class Config:
     # The Telegram Bot API base. Overridable so the channel tests point the real transport at a
     # local fake server; production uses the default.
     telegram_api_base: str = "https://api.telegram.org"
-    # The warm Chrome's CDP port. The daemon never launches Chrome itself; it attaches to the one
-    # already listening here (dev: launched by hand, production: by launchd).
+    # The warm Chrome's CDP port. The daemon attaches to the Chrome listening here, and starts one
+    # on this port if none is — always after probing, since two Chromes cannot share the profile.
     chrome_cdp_port: int = 9222
+    # The Chrome executable to start when none is running. Null resolves to the OS default install
+    # path, which is what a normal install has.
+    chrome_bin: str | None = None
     # The Playwright MCP server the daemon spawns as a stdio subprocess, as an argv list. Null
     # resolves to the npx default at spawn time. Pinning it avoids an npx cold resolution — a
     # network fetch — landing on the hot path.
@@ -202,6 +205,14 @@ def _validate(raw: dict) -> Config:
         if not _is_real_int(port) or not (1024 <= port <= 65535):
             raise ConfigError(f"chrome_cdp_port must be an integer in 1024..65535, got {port!r}")
         values["chrome_cdp_port"] = port
+
+    if "chrome_bin" in raw:
+        chrome_bin = raw["chrome_bin"]
+        if chrome_bin is not None and (not isinstance(chrome_bin, str) or not chrome_bin.strip()):
+            raise ConfigError(
+                f"chrome_bin must be a path to the Chrome executable or null, got {chrome_bin!r}"
+            )
+        values["chrome_bin"] = chrome_bin.strip() if chrome_bin is not None else None
 
     if "playwright_mcp_cmd" in raw:
         cmd = raw["playwright_mcp_cmd"]

@@ -367,6 +367,59 @@ def test_stale_singleton_locks_are_cleared(xdg_tmp) -> None:
     assert chrome.clear_stale_locks() == []  # idempotent
 
 
+def test_ensure_running_launches_nothing_when_chrome_already_answers(monkeypatch) -> None:
+    """Two Chromes cannot share the profile, so a live port is the end of it."""
+    launches = []
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kw: True)
+    monkeypatch.setattr(chrome.subprocess, "Popen", lambda *a, **kw: launches.append(a))
+
+    assert chrome.ensure_running(9222) == chrome.READY
+    assert launches == []
+
+
+def test_ensure_running_starts_chrome_and_waits_for_the_port(xdg_tmp, monkeypatch) -> None:
+    from selly_agent import paths
+
+    paths.ensure_data_dirs()
+    (paths.browser_profile_dir() / chrome.SINGLETON_LOCKS[0]).write_text("")
+    answers = iter([False, False, True])
+    launched = {}
+
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kw: next(answers))
+    monkeypatch.setattr(chrome, "_LAUNCH_POLL_SEC", 0.0)
+    monkeypatch.setattr(
+        chrome.subprocess, "Popen", lambda argv, **kw: launched.update(argv=argv, kw=kw)
+    )
+
+    assert chrome.ensure_running(9222, chrome_bin="/bin/chrome") == chrome.LAUNCHED
+    assert launched["argv"][0] == "/bin/chrome"
+    # Its own session: the daemon exiting, or a pass group being killed, must not take the seller's
+    # browser with it.
+    assert launched["kw"]["start_new_session"] is True
+    # The lock only goes once the probe has said nobody is answering.
+    assert not (paths.browser_profile_dir() / chrome.SINGLETON_LOCKS[0]).exists()
+
+
+def test_ensure_running_reports_unavailable_when_chrome_never_answers(monkeypatch) -> None:
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kw: False)
+    monkeypatch.setattr(chrome, "_LAUNCH_POLL_SEC", 0.0)
+    monkeypatch.setattr(chrome.subprocess, "Popen", lambda argv, **kw: None)
+
+    assert chrome.ensure_running(9222, chrome_bin="/bin/chrome", wait_sec=0.01) == (
+        chrome.UNAVAILABLE
+    )
+
+
+def test_ensure_running_reports_unavailable_when_the_binary_is_missing(monkeypatch) -> None:
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kw: False)
+
+    def _boom(argv, **kw):
+        raise FileNotFoundError(argv[0])
+
+    monkeypatch.setattr(chrome.subprocess, "Popen", _boom)
+    assert chrome.ensure_running(9222, chrome_bin="/nope/chrome") == chrome.UNAVAILABLE
+
+
 def test_the_default_command_pins_the_endpoint_and_its_own_output_dir(xdg_tmp) -> None:
     """The server saves a page snapshot per navigation. Left to itself it writes them into whatever
     directory it started in — a checkout, or wherever the daemon was launched — and those files are
