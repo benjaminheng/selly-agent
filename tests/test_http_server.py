@@ -230,6 +230,36 @@ def test_enqueue_pass_creates_row_and_event(server, store, bus) -> None:
     assert queued and queued[0].pass_id == pass_id
 
 
+def test_enqueue_pass_refuses_a_market_it_cannot_publish_to(server, store, bus) -> None:
+    """A mistyped market used to spawn a real pass told to publish in a browser it never got, with
+    no recipe. The caller is still on the other end of this request, so they hear it here."""
+    store.set_seller_config_section("basics", {"region": "SG"})
+    for market in ("carousel", "fb", "ebay"):
+        status, body = _request(
+            server,
+            "POST",
+            "/control/enqueue-pass",
+            token="attended-secret",
+            body={"type": "publish", "payload": {"item_id": "item_1", "market": market}},
+        )
+        assert status == 400, market
+        assert market in body["error"]
+    assert [e for e in bus.store.read() if e.kind == "pass.queued"] == []
+
+
+def test_enqueue_pass_accepts_the_rail_and_a_publishable_market(server, store) -> None:
+    store.set_seller_config_section("basics", {"region": "SG"})
+    for market in ("carousell-ai", "carousell"):
+        status, _ = _request(
+            server,
+            "POST",
+            "/control/enqueue-pass",
+            token="attended-secret",
+            body={"type": "publish", "payload": {"item_id": "item_1", "market": market}},
+        )
+        assert status == 200, market
+
+
 def test_enqueue_pass_requires_attended_token(server) -> None:
     pass_token = server.auth.mint_pass_token("pass:publish", "pass_1", expiry_ts=1e18)
     status, _ = _request(

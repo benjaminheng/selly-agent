@@ -23,6 +23,7 @@ from typing import Callable
 from selly_agent import marketplaces, paths, settings, skills
 from selly_agent import reply_prompt as reply_prompt_mod
 from selly_agent.browser import client as browser_client
+from selly_agent.browser import markets as market_adapters
 from selly_agent.channel import prompt as channel_prompt_mod
 from selly_agent.harness import claude
 from selly_agent.harness.model import PassSpec, StdioServer
@@ -141,11 +142,32 @@ def staged_photo_names(item_id: str, market: str, store) -> tuple:
     )
 
 
+def publish_market_error(market: str, region: str | None = None) -> str | None:
+    """Why this market cannot be published to, or None when it can.
+
+    A mistyped market used to reach a real pass: `display_name` falls back to the id, the connector
+    lookup answers neither `mcp` nor `browser`, and the spawned pass was told to publish somewhere
+    in a browser it was never given, with no recipe. Both enqueue doors ask this first.
+    """
+    if market == DEFAULT_PUBLISH_MARKET:
+        return None
+    if marketplaces.get_marketplace(market) is None:
+        return f"no marketplace {market!r} in the registry"
+    publishable = market_adapters.publishable_markets(region)
+    if market not in publishable:
+        supported = ", ".join(publishable) or "none"
+        return f"cannot publish to {market!r} (publishable here: {supported})"
+    return None
+
+
 def _publish_prompt(payload: dict, store, pass_id: str) -> str:
     item_id = payload.get("item_id")
     if not item_id:
         raise PassPayloadError("no item_id in payload")
     market = publish_market(payload)
+    reason = publish_market_error(market, store.seller_region())
+    if reason:
+        raise PassPayloadError(reason)
     return publish_prompt(
         item_id,
         market,
