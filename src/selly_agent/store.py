@@ -3054,6 +3054,76 @@ class Store:
         )
         return [{"type": r["type"], "payload": json.loads(r["payload"])} for r in rows]
 
+    def publish_pass_index(self) -> list[dict]:
+        """Every publish pass ever queued, as {market, item_id, status, origin}.
+
+        The fan-out's whole memory of what it has tried. A publish is attempted once per item and
+        marketplace: rows are never pruned, so the history is the attempt counter and there is no
+        second piece of state to keep in step with it. Markets are decided by the caller — the store
+        holds no marketplace knowledge.
+        """
+        rows = self._db.query("SELECT payload, status FROM passes WHERE type = 'publish'")
+        out = []
+        for row in rows:
+            payload = json.loads(row["payload"])
+            out.append(
+                {
+                    "market": payload.get("market"),
+                    "item_id": payload.get("item_id"),
+                    "origin": payload.get("origin"),
+                    "status": row["status"],
+                }
+            )
+        return out
+
+    def unreported_crosslist_passes(self) -> list[dict]:
+        """Settled fan-out publishes the seller has not been told about, oldest first.
+
+        Only the ones the daemon started: a publish run from the CLI is watched by whoever ran it.
+        """
+        rows = self._db.query(
+            "SELECT pass_id, payload, status, class FROM passes "
+            "WHERE type = 'publish' AND reported = 0 AND status IN ('done', 'error') "
+            "ORDER BY finished_ts ASC, pass_id ASC"
+        )
+        out = []
+        for row in rows:
+            payload = json.loads(row["payload"])
+            if payload.get("origin") != "crosslist":
+                continue
+            out.append(
+                {
+                    "pass_id": row["pass_id"],
+                    "item_id": payload.get("item_id"),
+                    "market": payload.get("market"),
+                    "status": row["status"],
+                    "class": row["class"],
+                }
+            )
+        return out
+
+    def report_crosslist_pass(self, pass_id: str, text: str, *, ref: str | None = None) -> bool:
+        """Tell the seller how a fan-out publish went and flag the pass, or do neither.
+
+        One transaction, and the flag is only cleared-to-set once, so a crash mid-sweep cannot
+        announce a listing twice or swallow the announcement. Returns whether this call was the one
+        that reported it.
+        """
+        with self._db.transaction() as conn:
+            cur = conn.execute(
+                "UPDATE passes SET reported = 1 WHERE pass_id = ? AND reported = 0", (pass_id,)
+            )
+            if cur.rowcount == 0:
+                return False
+            _insert_notice(conn, text, ref=ref)
+        return True
+
+    def sold_item_ids(self) -> set:
+        """Items whose sale is settled. Sale state lives in the negotiation ledger, not on the item,
+        so this is the one honest answer to "is this item still for sale"."""
+        rows = self._db.query("SELECT item_id FROM negotiations WHERE state = 'sold'")
+        return {row["item_id"] for row in rows}
+
     def inbox_for_pass(self, pass_id: str) -> list[InboxRecord]:
         """The inbox rows claimed into a pass — the prompt builder reads these (arrival order)."""
         rows = self._db.query(
