@@ -25,7 +25,7 @@ from selly_agent import paths
 # of a running install. `make dist` packs this same set, so installing from a checkout and
 # installing from a release tarball produce identical trees.
 VERSION_DIRS = ("bin", "src")
-VERSION_FILES = ("README.md", "LICENSE")
+VERSION_FILES = ("setup", "README.md", "LICENSE")
 
 _IGNORED = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo")
 
@@ -147,6 +147,10 @@ def stage_version(tree, version: str) -> Path:
     dest = root / version
     staged = root / f"{version}.tmp"
 
+    # Sweep any `.old` left by a crash between the two renames below — `installed_versions`
+    # hides them, so nothing else would ever notice they are there.
+    for leftover in root.glob("*.old"):
+        shutil.rmtree(leftover, ignore_errors=True)
     if staged.exists():
         shutil.rmtree(staged)
     staged.mkdir()
@@ -227,7 +231,10 @@ def prune_versions(keep: int = VERSIONS_KEPT) -> list:
     """Delete all but the newest `keep` versions, never touching the live one. Returns what went."""
     live = current_version()
     candidates = [p for p in installed_versions() if p.name != live]
-    doomed = candidates[: max(0, len(candidates) - max(0, keep - 1))]
+    # The live version occupies one of the `keep` slots when there is one; with no live version
+    # (nothing installed yet) all `keep` slots are available to the rest.
+    room = max(0, keep - (1 if live else 0))
+    doomed = candidates[: max(0, len(candidates) - room)]
     removed = []
     for path in doomed:
         shutil.rmtree(path, ignore_errors=True)
@@ -238,18 +245,38 @@ def prune_versions(keep: int = VERSIONS_KEPT) -> list:
 # --- the ~/.local/bin shim ------------------------------------------------------------------
 
 
-def install_shim() -> Path:
-    """Link `~/.local/bin/selly-agent` at the launcher inside `current`.
+def shim_target() -> Path:
+    """What the shim points at: the launcher through `current`, never at a version directly, so
+    the command a person types keeps working across every update without being rewritten."""
+    return paths.current() / "bin" / "selly-agent"
 
-    Through `current` rather than at a version, so the command a person types keeps working
-    across every update without the shim being rewritten.
+
+def _shim_is_ours(shim: Path) -> bool:
+    """Whether the name at `~/.local/bin/selly-agent` is one we installed.
+
+    Two ways to be ours, because a dev install has neither the same link text nor a target under
+    the data root as a versioned one: the link says exactly what `install_shim` writes, or it
+    resolves inside our data root.
     """
+    if not shim.is_symlink():
+        return False
+    if os.readlink(shim) == str(shim_target()):
+        return True
+    resolved = Path(os.path.realpath(shim))
+    root = paths.data_root().resolve()
+    return root == resolved or root in resolved.parents
+
+
+def install_shim() -> Path:
+    """Link `~/.local/bin/selly-agent` at the launcher inside `current`."""
     shim = paths.shim_path()
-    target = paths.current() / "bin" / "selly-agent"
+    target = shim_target()
     shim.parent.mkdir(parents=True, exist_ok=True)
-    if shim.exists() and not shim.is_symlink():
+    if (shim.is_symlink() or shim.exists()) and not _shim_is_ours(shim):
+        # Taking a name we did not create is the mirror of the care `remove_shim` takes not to
+        # delete one: an install that quietly replaces someone else's command cannot give it back.
         raise LayoutError(
-            f"{shim} already exists and is not a symlink",
+            f"{shim} already exists and was not created by selly-agent",
             "Something else owns that name. Move it aside and re-run ./setup.",
         )
     staging = shim.with_name(shim.name + ".new")
@@ -261,13 +288,9 @@ def install_shim() -> Path:
 
 
 def remove_shim() -> bool:
-    """Remove the shim, but only when it is ours — a symlink into our data root."""
+    """Remove the shim, but only when it is one we installed."""
     shim = paths.shim_path()
-    if not shim.is_symlink():
-        return False
-    target = Path(os.path.realpath(shim))
-    root = paths.data_root().resolve()
-    if root != target and root not in target.parents:
+    if not _shim_is_ours(shim):
         return False
     shim.unlink()
     return True
@@ -308,12 +331,17 @@ def add_rc_block(rc_path) -> bool:
 
 
 def strip_rc_block(text: str) -> str:
-    """Remove the marked block from rc-file text, leaving everything around it untouched."""
+    """Remove the marked block from rc-file text, leaving everything around it untouched.
+
+    An unterminated block — someone edited the file and lost the closing fence — leaves the text
+    exactly as it was. Skipping to end-of-file instead would silently delete everything the
+    person wrote after our block, which is far worse than leaving three lines behind.
+    """
     lines = (text or "").splitlines(keepends=True)
-    out, skipping = [], False
+    out, skipping, closed = [], False, True
     for line in lines:
         if line.strip() == RC_MARKER_START:
-            skipping = True
+            skipping, closed = True, False
             # Drop one blank line we ourselves inserted before the block, so repeated
             # add/remove cycles do not accumulate whitespace.
             if out and out[-1].strip() == "":
@@ -321,26 +349,50 @@ def strip_rc_block(text: str) -> str:
             continue
         if skipping:
             if line.strip() == RC_MARKER_END:
-                skipping = False
+                skipping, closed = False, True
             continue
         out.append(line)
-    return "".join(out)
+    return text if not closed else "".join(out)
 
 
 def remove_rc_block(rc_path) -> bool:
+    """Remove our block from an rc file, answering whether anything actually changed.
+
+    False covers both "it was never there" and "it is there but unterminated, so removing it
+    safely is not possible" — in neither case has the file been touched, and saying it was
+    would be a claim the caller then repeats to the seller.
+    """
     rc_path = Path(rc_path)
     if not rc_path.is_file():
         return False
     text = rc_path.read_text()
     if not rc_block_present(text):
         return False
-    rc_path.write_text(strip_rc_block(text))
+    stripped = strip_rc_block(text)
+    if stripped == text:
+        return False
+    rc_path.write_text(stripped)
     return True
 
 
 def shell_rc_target(shell=None) -> Path:
     """The rc file to offer, chosen from the login shell."""
     return paths.shell_rc_path(shell if shell is not None else os.environ.get("SHELL", ""))
+
+
+def rc_candidates() -> list:
+    """Every rc file an install might have written the PATH block to.
+
+    Removal checks all of them rather than only the shell running right now: install under zsh,
+    uninstall from bash, and looking at just the current shell leaves the block behind for good.
+    """
+    seen, found = set(), []
+    for shell in ("zsh", "bash", ""):
+        candidate = paths.shell_rc_path(shell)
+        if candidate not in seen:
+            seen.add(candidate)
+            found.append(candidate)
+    return found
 
 
 # --- the mutation preview -------------------------------------------------------------------

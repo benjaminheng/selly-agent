@@ -38,6 +38,10 @@ log = logging.getLogger(__name__)
 _TAIL_PAGE = PACKAGE_DATA_DIR / "tail.html"
 
 _LOCALHOST_NAMES = frozenset({"127.0.0.1", "localhost", "::1"})
+
+# Pass types that drive the browser. A login probe navigates the daemon's one tab, so it waits
+# rather than pulling the page out from under one of these.
+_BROWSER_PASS_TYPES = ("reply", "publish")
 _DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
 # How often the accept loop wakes to notice a shutdown request. stop() cannot return until it does,
@@ -490,11 +494,18 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"market": adapter.market, "url": url, "state": state})
 
     def _handle_market_login(self, parsed) -> None:
+        # A read, so it never opens a window and never elbows a pass off the shared tab. The
+        # connect route above is the one that may start Chrome, because being asked to open a
+        # marketplace is being asked for a window.
         qs = self._attended_query(parsed)
         if qs is None:
             return
         adapter = self._market_adapter(qs.get("market", [None])[0])
         if adapter is None:
+            return
+        blocked = self._probe_blocked()
+        if blocked:
+            self._send_json(200, {"market": adapter.market, "state": "unknown", "detail": blocked})
             return
         try:
             state, url = self._open_and_probe(adapter)
@@ -503,26 +514,39 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json(200, {"market": adapter.market, "url": url, "state": state})
 
+    def _probe_blocked(self):
+        """Why a login probe must not run right now, or "" when it may.
+
+        Two reasons, both about not surprising the seller: Chrome being closed (probing acquires
+        the browser, which starts it — a status read that opens a window is not a status read),
+        and a browser pass already driving the one tab we would navigate.
+        """
+        from selly_agent import config as config_module
+        from selly_agent.browser import chrome
+
+        cfg = self._app.config or config_module.load()
+        if not chrome.is_ready(cfg.chrome_cdp_port):
+            return "Chrome isn't running"
+        if self._app.store.active_passes_of_types(_BROWSER_PASS_TYPES):
+            return "a pass is using the browser"
+        return ""
+
     def _handle_market_logins(self, parsed) -> None:
         """Every marketplace the seller enabled, and — only if Chrome is already up — whether
         they are still signed in to each.
 
         Both halves are answered here because both depend on state this side owns: the enabled
-        list comes from the store crossed with the seller's region, and the decision *not* to
-        probe comes from Chrome's port. Probing goes through the browser factory, which starts
-        Chrome when it is closed, and a status read that opens a window on someone's screen is
-        not a status read — so a closed Chrome is reported as such instead.
+        list comes from the store crossed with the seller's region, and whether probing is
+        allowed at all comes from Chrome's port and the pass queue (see `_probe_blocked`).
         """
-        from selly_agent import config as config_module
         from selly_agent import settings
-        from selly_agent.browser import chrome
         from selly_agent.browser import markets as market_adapters
 
         if self._attended_query(parsed) is None:
             return
-        cfg = self._app.config or config_module.load()
         enabled = settings.crosslist_markets(self._app.store)
-        chrome_ready = chrome.is_ready(cfg.chrome_cdp_port)
+        blocked = self._probe_blocked()
+        chrome_ready = not blocked
 
         results = []
         if chrome_ready:

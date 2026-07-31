@@ -152,3 +152,10 @@ def test_die_raises_and_fatal_renders_the_fix_to_stderr() -> None:
     assert out.getvalue() == ""
     assert "SELLY: no Chrome here" in err.getvalue()
     assert "brew install --cask google-chrome" in err.getvalue()
+
+
+def test_multiselect_says_something_when_it_cannot_read_the_answer() -> None:
+    answers = iter(["nonsense", "1"])
+    ui, out, _ = make_ui(interactive=True, input_fn=lambda: next(answers))
+    assert ui.multiselect("Which?", ["a", "b"]) == [0]
+    assert "I didn't follow that" in out.getvalue()

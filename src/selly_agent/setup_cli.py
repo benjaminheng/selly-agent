@@ -54,6 +54,14 @@ def run(args) -> int:
     except materialize.LayoutError as exc:
         ui.fatal(Abort(exc.message, exc.fix))
         return 1
+    except control.DaemonUnreachable as exc:
+        ui.fatal(
+            Abort(
+                f"the background worker stopped answering ({exc})",
+                _daemon_diagnostics(),
+            )
+        )
+        return 1
     return 0
 
 
@@ -68,7 +76,7 @@ def _run(args, ui: Ui) -> None:
 
     _intro(ui, platform)
     _gates(ui, tree)
-    _install_layout(ui, args, tree)
+    _install_layout(ui, args, platform, tree)
     _start_daemon(ui, args, platform)
 
     # Everything past here talks to the running daemon, so it needs the token minted at its
@@ -201,7 +209,15 @@ def _gate_dependency(ui: Ui, name: str, probe, *, package: str, cask: bool = Fal
 # --- the layout -----------------------------------------------------------------------------
 
 
-def _install_layout(ui: Ui, args, tree) -> None:
+def _install_layout(ui: Ui, args, platform, tree) -> None:
+    # A re-run replaces the very directory a running daemon is executing out of, so it is stopped
+    # first. Skipping this is not merely untidy: `launchctl bootstrap` is a no-op on a label that
+    # is already loaded, so the old process would keep running — still ticking heartbeats, so the
+    # wait below would pass — while setup reported the new version as up.
+    if supervisor.gather_status(platform=platform).registered:
+        ui.say("Stopping the running worker so it can pick up this version…")
+        supervisor.stop(platform=platform)
+
     if args.dev:
         ui.say(f"Dev mode: pointing the install at {tree} — edits are live on the next restart.")
         materialize.install_dev(tree)

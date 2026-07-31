@@ -223,3 +223,4 @@ class Ui:
                 picked.append(index)
             if picked:
                 return sorted(picked)
+            self.say(f"I didn't follow that — numbers from 1 to {len(options)}, or Enter to skip.")

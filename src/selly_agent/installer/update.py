@@ -22,7 +22,9 @@ import logging
 import re
 import shutil
 import tarfile
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,7 +38,15 @@ DEFAULT_BASE_URL = "https://github.com/carousell/selly-agent/releases/latest/dow
 
 _SUMS_NAME = "SHA256SUMS"
 _ASSET_RE = re.compile(r"^selly-agent-(?P<version>.+)\.tar\.gz$")
-_DIGITS = re.compile(r"\d+")
+# A version is a dotted run of numbers, optionally followed by a pre-release marker.
+_VERSION_RE = re.compile(r"^v?(?P<release>\d+(?:\.\d+)*)(?P<pre>.*)$")
+_VERSION_PARTS = 4
+
+# Hosts allowed to serve a release over plain HTTP. The digest check is self-consistent — the
+# checksums come from the same origin as the archive — so an unencrypted channel means whoever
+# controls it chooses what code runs here. Loopback is exempt because there is no network to
+# intercept, and that is what the staged-release tests serve from.
+_PLAINTEXT_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 _FETCH_TIMEOUT_SEC = 300.0
 _DOWNLOAD_CHUNK = 1 << 16
@@ -61,16 +71,22 @@ class Release:
 
 
 def version_key(text: str) -> tuple:
-    """A sortable key for a version string, where a .dev build sorts below its own release.
+    """A sortable key for a version string, where any pre-release sorts below its own release.
 
-    Deliberately forgiving: it reads the numbers it finds and ignores the rest, because the only
-    question ever asked of it is "is the published version newer than this one", and refusing to
-    answer that because a tag had an unexpected shape would strand an install on an old version.
+    The leading dotted-number run is the version; whatever follows it (`.dev0`, `-rc1`, `b2`) is
+    a pre-release marker, which is why its presence *lowers* the key — `1.2.3-rc1` must not read
+    as equal to `1.2.3`, or an install sitting on the candidate would never see the release.
+
+    Deliberately forgiving about anything past that: the only question ever asked here is whether
+    the published version is newer than this one, and refusing to answer because a tag had an
+    unexpected shape would strand an install on an old version indefinitely.
     """
-    core = text.split(".dev")[0]
-    numbers = tuple(int(found) for found in _DIGITS.findall(core))
-    padded = (numbers + (0, 0, 0))[:3]
-    return padded + (0 if ".dev" in text else 1,)
+    found = _VERSION_RE.match(text.strip())
+    if not found:
+        return (0, 0, 0, 0, 0)
+    numbers = tuple(int(part) for part in found.group("release").split("."))
+    padded = (numbers + (0, 0, 0, 0))[:_VERSION_PARTS]
+    return padded + (0 if found.group("pre").strip() else 1,)
 
 
 def is_newer(candidate: str, current: str) -> bool:
@@ -279,10 +295,29 @@ def update_probe(*, store, bus, config_obj, seen: set) -> None:
 
 
 def _base_url(args, cfg) -> str:
-    return getattr(args, "url", None) or cfg.update_base_url or DEFAULT_BASE_URL
+    """Where to fetch a release from, having established the channel can be trusted.
+
+    Everything downloaded here is executed, and the checksum file travels the same channel as
+    the archive it vouches for — so an attacker who can rewrite the channel rewrites both. That
+    makes transport security the actual integrity guarantee, not the digest.
+    """
+    base = getattr(args, "url", None) or cfg.update_base_url or DEFAULT_BASE_URL
+    parsed = urllib.parse.urlparse(base)
+    if parsed.scheme == "https":
+        return base
+    if parsed.scheme == "http" and (parsed.hostname or "") in _PLAINTEXT_HOSTS:
+        return base
+    raise UpdateError(
+        f"refusing to fetch a release over {parsed.scheme or 'an unknown scheme'} from {base!r} — "
+        "releases must come over https"
+    )
 
 
 def _guard_updatable() -> None:
+    if materialize.current_target() is None:
+        raise UpdateError(
+            "there is no installed version here to update — run ./setup from a checkout first"
+        )
     if materialize.is_dev_install():
         raise UpdateError(
             "this install points at a working tree, not a released version — update it with git "
@@ -315,11 +350,19 @@ def perform(args, cfg, out, *, platform=None) -> int:
 
     previous = materialize.current_target()
     staged = unpack(archive, paths.cache_dir() / "unpacked")
-    snapshot_before = latest_snapshot()
+    started_at = time.time()
 
-    # The mode comes from what is actually registered on this machine, not from whatever config
-    # this call was handed: re-installing the job under the wrong mode would quietly move the
-    # plist and turn a start-at-login daemon into one that never comes back.
+    # What is already wrong before we touch anything, so the gate afterwards can tell a problem
+    # this update caused from one it merely inherited.
+    from selly_agent import healthcheck
+
+    failing_before = {
+        result.name for result in healthcheck.run_checks(platform=platform) if result.failed
+    }
+
+    # The mode is read from the recorded config rather than from whatever config object this call
+    # was handed: re-installing the job under the wrong mode would quietly move the plist and
+    # turn a start-at-login daemon into one that never comes back.
     status = supervisor.gather_status(platform=platform)
     mode, was_running = status.mode, status.registered
     if was_running:
@@ -346,25 +389,47 @@ def perform(args, cfg, out, *, platform=None) -> int:
         return 0
 
     healthy = _start_daemon(mode, platform=platform)
+    regressions: set = set()
     if healthy:
         from selly_agent import healthcheck
 
         results = healthcheck.run_checks(platform=platform)
         out(" ".join(_summarise(check_result) for check_result in results))
-        healthy = not any(result.failed for result in results)
+        # Only what this update *broke* is a reason to undo it. A machine that was already
+        # signed out of Carousell, or never provisioned the rail, fails those checks before and
+        # after — and rolling back for that would make every future update fail the same way,
+        # forever, for a reason the update did not cause and cannot fix.
+        regressions = {result.name for result in results if result.failed} - failing_before
+        healthy = not regressions
 
     if healthy:
         materialize.prune_versions()
+        _clear_cache(keep=archive)
         out(
             f"Updated to {release.version}. Previous version retained "
             f"(selly-agent update --rollback to revert)."
         )
         return 0
 
-    out(f"{release.version} did not come up healthy — rolling back.")
-    _roll_back_to(previous, snapshot_before, mode, out, platform=platform)
+    reason = f"broke {', '.join(sorted(regressions))}" if regressions else "did not come up"
+    out(f"{release.version} {reason} — rolling back.")
+    _roll_back_to(previous, mode, out, migrated_after=started_at, platform=platform)
     out(f"Back on {materialize.current_version()}. Left {release.version} in place to inspect.")
     return 1
+
+
+def _clear_cache(*, keep) -> None:
+    """Drop the unpacked tree and any archive but the one just installed.
+
+    The cache dir is documented as regenerable, and nothing regenerated it: without this every
+    release ever downloaded stays on disk forever.
+    """
+    unpacked = paths.cache_dir() / "unpacked"
+    if unpacked.is_dir():
+        shutil.rmtree(unpacked, ignore_errors=True)
+    for stale in paths.cache_dir().glob("selly-agent-*.tar.gz"):
+        if stale != keep:
+            stale.unlink(missing_ok=True)
 
 
 def _summarise(result) -> str:
@@ -372,19 +437,25 @@ def _summarise(result) -> str:
     return f"{glyph} {result.name}"
 
 
-def _roll_back_to(target, snapshot_before, mode: str, out, *, platform=None) -> None:
-    """Put the previous version back, and with it the database the previous version can read."""
+def _roll_back_to(target, mode: str, out, *, migrated_after: float, platform=None) -> None:
+    """Put the previous version back, and with it the database that version can read.
+
+    `migrated_after` is the moment past which a pre-migration snapshot means "the version being
+    backed out of migrated the database". Auto-rollback knows that moment exactly — it is when
+    the update started. A rollback asked for later has to infer it, and uses when the version
+    being returned to was installed: a snapshot newer than that was taken by something that ran
+    after it, which is precisely the migration being undone.
+    """
     _stop_daemon(platform)
     materialize.swap_current(target)
 
-    snapshot_after = latest_snapshot()
-    if snapshot_after is not None and snapshot_after != snapshot_before:
-        # The version we are backing out of migrated the database on its way up, and the code
-        # going back cannot read the new schema. Restoring costs whatever was written since the
-        # snapshot, which is why it is said out loud rather than done quietly.
-        restore_snapshot(snapshot_after)
+    snapshot = latest_snapshot()
+    if snapshot is not None and snapshot.stat().st_mtime > migrated_after:
+        # The code going back cannot read the newer schema. Restoring costs whatever was written
+        # since the snapshot, which is why it is said out loud rather than done quietly.
+        restore_snapshot(snapshot)
         out(
-            f"Restored the database as it was before the migration ({snapshot_after.name}). "
+            f"Restored the database as it was before the migration ({snapshot.name}). "
             "Anything written since then is not in it."
         )
     _start_daemon(mode, platform=platform)
@@ -398,7 +469,14 @@ def rollback(args, cfg, out, *, platform=None) -> int:
         raise UpdateError("there is no previous version retained to roll back to")
     leaving = materialize.current_version()
     out(f"Rolling back {leaving} → {target.name}.")
-    _roll_back_to(target, latest_snapshot(), cfg.daemon_mode, out, platform=platform)
+    status = supervisor.gather_status(platform=platform)
+    _roll_back_to(
+        target,
+        status.mode,
+        out,
+        migrated_after=target.stat().st_mtime,
+        platform=platform,
+    )
     out(f"Now on {materialize.current_version()}.")
     return 0
 

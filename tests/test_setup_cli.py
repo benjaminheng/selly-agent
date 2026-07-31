@@ -461,3 +461,27 @@ def test_the_attended_workspace_lands_at_a_documented_path(world, monkeypatch, c
     assert setup_main("--yes", "--manual") == 0
     assert written == [paths.data_root() / "attended"]
     assert f"cd {paths.data_root() / 'attended'} && claude" in capsys.readouterr().out
+
+
+def test_a_re_run_stops_the_old_worker_before_replacing_its_code(world, capsys) -> None:
+    # `launchctl bootstrap` is a no-op on a label that is already loaded, so without stopping
+    # first the old process keeps running — still writing heartbeats, so the wait below passes —
+    # while setup reports the new version as up.
+    setup_main("--yes", "--manual")
+    capsys.readouterr()
+
+    assert setup_main("--yes", "--manual") == 0
+
+    out = capsys.readouterr().out
+    assert "Stopping the running worker" in out
+
+
+def test_a_custom_daemon_label_is_not_replaced_by_the_default_one(world) -> None:
+    # Installing under the default label while a custom-labelled job is loaded leaves two plists
+    # and two daemons writing one database.
+    config.merge_into_file({"daemon_label": "com.selly.agent.dev"})
+
+    assert setup_main("--yes", "--manual") == 0
+
+    assert (paths.config_dir() / "com.selly.agent.dev.plist").exists()
+    assert not (paths.config_dir() / "com.selly.agent.plist").exists()

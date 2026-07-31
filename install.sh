@@ -35,6 +35,12 @@ if [ -z "$BASE_URL" ]; then
 	exit 1
 fi
 
+# --dev points the install at the tree it was run from, and this one is a temp directory that is
+# deleted the moment setup returns — the install would be dead on arrival, with no error.
+for arg in "$@"; do
+	[ "$arg" = "--dev" ] && die "--dev needs a checkout; clone the repo and run ./setup --dev there."
+done
+
 # --- what is about to happen ---------------------------------------------------------------
 
 say "Here's what this does, before it does any of it:"
@@ -67,8 +73,14 @@ curl -fsSL "$BASE_URL/SHA256SUMS" -o SHA256SUMS ||
 
 # The archive's name is read out of the checksum file, so there is no second source to disagree
 # with it, no API call, and nothing to parse JSON with.
-archive="$(awk '$2 ~ /^\*?selly-agent-.*\.tar\.gz$/ { sub(/^\*/, "", $2); print $2; exit }' SHA256SUMS)"
-[ -n "$archive" ] || die "SHA256SUMS doesn't name a selly-agent archive."
+archives="$(awk '$2 ~ /^\*?selly-agent-.*\.tar\.gz$/ { sub(/^\*/, "", $2); print $2 }' SHA256SUMS)"
+[ -n "$archives" ] || die "SHA256SUMS doesn't name a selly-agent archive."
+if [ "$(echo "$archives" | wc -l)" -gt 1 ]; then
+	# A release directory holds exactly one. More than one means we would be guessing which,
+	# and guessing which code to run is not something this should do.
+	die "SHA256SUMS names more than one archive; can't tell which release to install."
+fi
+archive="$archives"
 
 say "Downloading $archive…"
 curl -fsSL "$BASE_URL/$archive" -o "$archive" || die "couldn't download $BASE_URL/$archive"

@@ -9,6 +9,7 @@ decides whether the new version stays.
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 import tarfile
 import threading
@@ -269,11 +270,19 @@ def test_a_manual_daemon_that_was_not_running_is_not_started_by_an_update(
 # --- rollback ---------------------------------------------------------------------------------
 
 
-def test_an_unhealthy_new_version_is_rolled_back(installed, served, monkeypatch) -> None:
+def _health(*rounds):
+    """Scripted health verdicts: the pre-update read first, then the post-update one."""
+    answers = iter(rounds)
+    return lambda platform=None: next(answers)
+
+
+def test_a_version_that_breaks_something_is_rolled_back(installed, served, monkeypatch) -> None:
     root, base = served
     build_release(root, "0.2.0")
     monkeypatch.setattr(
-        healthcheck, "run_checks", lambda platform=None: [checks.fail("daemon", "not running")]
+        healthcheck,
+        "run_checks",
+        _health([checks.ok("daemon", "up")], [checks.fail("daemon", "not running")]),
     )
     lines = []
 
@@ -283,7 +292,24 @@ def test_an_unhealthy_new_version_is_rolled_back(installed, served, monkeypatch)
     assert materialize.current_version() == "0.1.0"
     # The failed version stays on disk: it is the evidence for why it failed.
     assert (paths.versions_dir() / "0.2.0").is_dir()
-    assert any("rolling back" in line for line in lines)
+    assert any("broke daemon" in line for line in lines)
+
+
+def test_a_problem_that_predates_the_update_does_not_undo_it(
+    installed, served, monkeypatch
+) -> None:
+    # A machine that never provisioned the rail, or whose claude session expired, fails those
+    # checks before and after. Rolling back for that would make every future update fail the
+    # same way forever, for a reason the update neither caused nor can fix.
+    root, base = served
+    build_release(root, "0.2.0")
+    already_broken = [checks.ok("daemon", "up"), checks.fail("carousell.ai key", "missing")]
+    monkeypatch.setattr(healthcheck, "run_checks", _health(already_broken, already_broken))
+
+    rc = update_mod.perform(Args(url=base), Config(), lambda line: None, platform=installed)
+
+    assert rc == 0
+    assert materialize.current_version() == "0.2.0"
 
 
 def test_a_rollback_restores_the_database_only_when_the_new_version_migrated_it(
@@ -302,7 +328,9 @@ def test_a_rollback_restores_the_database_only_when_the_new_version_migrated_it(
 
     monkeypatch.setattr(update_mod, "_start_daemon", start_and_migrate)
     monkeypatch.setattr(
-        healthcheck, "run_checks", lambda platform=None: [checks.fail("daemon", "wedged")]
+        healthcheck,
+        "run_checks",
+        _health([checks.ok("daemon", "up")], [checks.fail("daemon", "wedged")]),
     )
     lines = []
 
@@ -322,7 +350,9 @@ def test_a_rollback_without_a_migration_leaves_the_database_alone(
     write_db(paths.backups_dir() / "selly-1000-pre-0008.db", "an older snapshot")
 
     monkeypatch.setattr(
-        healthcheck, "run_checks", lambda platform=None: [checks.fail("daemon", "wedged")]
+        healthcheck,
+        "run_checks",
+        _health([checks.ok("daemon", "up")], [checks.fail("daemon", "wedged")]),
     )
 
     update_mod.perform(Args(url=base), Config(), lambda line: None, platform=installed)
@@ -426,3 +456,85 @@ def test_a_failure_mid_swap_puts_the_running_version_back(installed, served, mon
 
     assert restarted == ["login-start"]  # back up, in the mode it was in
     assert any("still running" in line for line in lines)
+
+
+def test_a_manual_rollback_restores_a_database_the_old_code_can_read(
+    installed, served, monkeypatch
+) -> None:
+    # The failure mode this exists for: update succeeds and migrates, and the rollback a day
+    # later flips the symlink but leaves the database on the newer schema.
+    root, base = served
+    build_release(root, "0.2.0")
+    paths.ensure_state_dirs()
+    write_db(paths.selly_db(), "migrated by 0.2.0")
+
+    def start_and_migrate(mode, *, platform=None):
+        write_db(paths.backups_dir() / "selly-3000-pre-0009.db", "as 0.1.0 left it")
+        return True
+
+    monkeypatch.setattr(update_mod, "_start_daemon", start_and_migrate)
+    update_mod.perform(Args(url=base), Config(), lambda line: None, platform=installed)
+    assert materialize.current_version() == "0.2.0"
+
+    lines = []
+    update_mod.rollback(Args(rollback=True), Config(), lines.append, platform=installed)
+
+    assert materialize.current_version() == "0.1.0"
+    assert read_db(paths.selly_db()) == "as 0.1.0 left it"
+    assert any("Restored the database" in line for line in lines)
+
+
+def test_a_manual_rollback_with_no_migration_since_leaves_the_database_alone(
+    installed, served, monkeypatch
+) -> None:
+    root, base = served
+    build_release(root, "0.2.0")
+    paths.ensure_state_dirs()
+    write_db(paths.selly_db(), "current data")
+    # A snapshot from an update long before the version we are returning to.
+    old_snapshot = paths.backups_dir() / "selly-1-pre-0001.db"
+    write_db(old_snapshot, "ancient")
+    os.utime(old_snapshot, (1, 1))
+
+    update_mod.perform(Args(url=base), Config(), lambda line: None, platform=installed)
+    update_mod.rollback(Args(rollback=True), Config(), lambda line: None, platform=installed)
+
+    assert read_db(paths.selly_db()) == "current data"
+
+
+def test_pre_release_versions_sort_below_their_release() -> None:
+    assert update_mod.is_newer("1.2.3", "1.2.3-rc1")
+    assert not update_mod.is_newer("1.2.3-rc1", "1.2.3")
+    assert update_mod.is_newer("1.2.3.4", "1.2.3")
+    assert update_mod.is_newer("1.2.3", "1.2.3b2")
+    assert not update_mod.is_newer("1.2.3", "1.2.4-rc1")
+
+
+def test_a_release_channel_must_be_https(xdg_tmp) -> None:
+    # Everything fetched here is executed, and the checksums travel the same channel as the
+    # archive they vouch for — so whoever controls an unencrypted channel controls both.
+    with pytest.raises(UpdateError) as caught:
+        update_mod._base_url(Args(url="http://releases.example.test"), Config())
+    assert "https" in str(caught.value)
+    # Loopback is exempt: there is no network in between to intercept.
+    assert update_mod._base_url(Args(url="http://127.0.0.1:9/x"), Config())
+
+
+def test_updating_with_nothing_installed_says_so_instead_of_crashing(xdg_tmp, served) -> None:
+    with pytest.raises(UpdateError) as caught:
+        update_mod.perform(Args(url=served[1]), Config(), lambda line: None)
+    assert "no installed version" in str(caught.value)
+
+
+def test_a_successful_update_clears_the_download_cache(installed, served) -> None:
+    root, base = served
+    build_release(root, "0.2.0")
+    stale = paths.cache_dir()
+    stale.mkdir(parents=True, exist_ok=True)
+    (stale / "selly-agent-0.0.9.tar.gz").write_text("an old download")
+
+    update_mod.perform(Args(url=base), Config(), lambda line: None, platform=installed)
+
+    assert not (stale / "selly-agent-0.0.9.tar.gz").exists()
+    assert not (stale / "unpacked").exists()
+    assert (stale / "selly-agent-0.2.0.tar.gz").exists()

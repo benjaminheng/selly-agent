@@ -69,11 +69,14 @@ def _list(port: int, token: str) -> int:
 
 def _decide(port: int, token: str, action: str, change_id: str) -> int:
     try:
-        _status, result = control.post(
+        status, result = control.post(
             port, token, "/control/settings-decide", {"action": action, "change_id": change_id}
         )
     except control.DaemonUnreachable as exc:
         print(f"selly-agent: could not reach the daemon: {exc}", file=sys.stderr)
+        return 1
+    if status != 200:
+        print(f"selly-agent: {result.get('error', 'that was refused')}", file=sys.stderr)
         return 1
     print(result.get("message", result.get("status", "done")))
     return 0 if result.get("status") in ("applied", "cancelled", "undone") else 1

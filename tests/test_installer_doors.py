@@ -58,6 +58,14 @@ def browser():
 
 
 @pytest.fixture
+def chrome_up(monkeypatch):
+    """Chrome already answering, which is what lets a read probe run at all."""
+    from selly_agent.browser import chrome
+
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kwargs: True)
+
+
+@pytest.fixture
 def server(bus, store, xdg_tmp, browser):
     def context_factory(session):
         return ToolContext(
@@ -262,7 +270,7 @@ def test_connect_market_opens_the_regional_site_and_reports_the_probe(
     assert browser.visited == ["https://www.carousell.sg/"]
 
 
-def test_the_three_login_states_come_back_verbatim(server, store, browser) -> None:
+def test_the_three_login_states_come_back_verbatim(server, store, browser, chrome_up) -> None:
     store.set_seller_config_section("basics", {"region": "SG"})
     for state in ("logged_in", "logged_out", "unknown"):
         browser.state = state
@@ -270,7 +278,9 @@ def test_the_three_login_states_come_back_verbatim(server, store, browser) -> No
         assert body["state"] == state
 
 
-def test_an_unreadable_probe_answers_unknown_never_logged_out(server, store, browser) -> None:
+def test_an_unreadable_probe_answers_unknown_never_logged_out(
+    server, store, browser, chrome_up
+) -> None:
     # A false logged_out tells a signed-in seller to re-authenticate and stops their market.
     store.set_seller_config_section("basics", {"region": "SG"})
     browser.state = None
@@ -386,3 +396,45 @@ def test_market_logins_filters_to_what_is_still_publishable(
     _status, body = _call(server, "GET", "/control/market-logins")
 
     assert body["enabled"] == []
+
+
+def test_a_login_read_never_opens_a_window_when_chrome_is_closed(server, store, browser) -> None:
+    # Probing acquires the browser, and acquiring starts Chrome. A read must not do that.
+    store.set_seller_config_section("basics", {"region": "SG"})
+    _status, body = _call(server, "GET", "/control/market-login?market=carousell")
+    assert body["state"] == "unknown"
+    assert "Chrome isn't running" in body["detail"]
+    assert browser.visited == []
+
+
+def test_a_login_read_yields_to_a_pass_already_driving_the_browser(
+    server, store, browser, chrome_up
+) -> None:
+    # One tab, one driver: navigating it mid-pass would move the page out from under the pass.
+    store.set_seller_config_section("basics", {"region": "SG"})
+    store.enqueue_pass("publish", {"item_id": "itm_1", "market": "carousell"})
+
+    _status, body = _call(server, "GET", "/control/market-login?market=carousell")
+
+    assert body["state"] == "unknown"
+    assert "a pass is using the browser" in body["detail"]
+    assert browser.visited == []
+
+
+def test_connect_market_still_opens_a_window_because_that_is_what_it_is_for(
+    server, store, browser
+) -> None:
+    # The read routes decline when Chrome is closed; the connect route is the one that may start
+    # it, because being asked to open a marketplace is being asked for a window.
+    store.set_seller_config_section("basics", {"region": "SG"})
+    _status, body = _call(server, "POST", "/control/connect-market", body={"market": "carousell"})
+    assert body["state"] == "logged_in"
+    assert browser.visited == ["https://www.carousell.sg/"]
+
+
+def test_a_structurally_invalid_timezone_is_refused_not_shrugged_at(server) -> None:
+    status, body = _call(
+        server, "POST", "/control/seller-basics", body={"timezone": "../../etc/passwd"}
+    )
+    assert status == 400
+    assert "not a valid timezone" in body["error"]

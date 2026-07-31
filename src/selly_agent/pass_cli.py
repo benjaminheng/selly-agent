@@ -29,11 +29,14 @@ def run(args) -> int:
     if getattr(args, "market", None):
         payload["market"] = args.market
     try:
-        _status, resp = control.post(
+        status, resp = control.post(
             port, token, "/control/enqueue-pass", {"type": args.pass_type, "payload": payload}
         )
     except control.DaemonUnreachable as exc:
         print(f"selly-agent: could not reach the daemon: {exc}", file=sys.stderr)
+        return 1
+    if status != 200:
+        print(f"selly-agent: {resp.get('error', 'could not enqueue that pass')}", file=sys.stderr)
         return 1
     pass_id = resp["pass_id"]
     print(pass_id)

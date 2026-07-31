@@ -66,16 +66,28 @@ def validate_basics(basics: dict) -> dict:
 
 
 def _require_known_timezone(name: str) -> None:
+    """Refuse a timezone the zone database does not have — unless there is no database at all.
+
+    "Not found" and "no database" look identical from one lookup, so a name known to exist is
+    tried first: if even UTC cannot be resolved there is nothing to check against and the shape
+    is all we can vouch for. A structurally invalid name (an absolute path, a `..` component)
+    raises ValueError and is always refused — it is malformed, not merely unknown.
+    """
     import zoneinfo
 
     try:
         zoneinfo.ZoneInfo(name)
-    except zoneinfo.ZoneInfoNotFoundError as exc:
-        raise BasicsError(f"unknown timezone {name!r} (e.g. Asia/Singapore)") from exc
-    except (ValueError, OSError):
-        # No usable zone database on this machine — the name's shape is all we can vouch for,
-        # and refusing every timezone would be worse than accepting an unverified one.
         return
+    except zoneinfo.ZoneInfoNotFoundError:
+        pass
+    except (ValueError, OSError) as exc:
+        raise BasicsError(f"{name!r} is not a valid timezone name (e.g. Asia/Singapore)") from exc
+
+    try:
+        zoneinfo.ZoneInfo("UTC")
+    except Exception:  # noqa: BLE001 — no usable zone database; nothing to validate against
+        return
+    raise BasicsError(f"unknown timezone {name!r} (e.g. Asia/Singapore)")
 
 
 def _get_seller_config(ctx: ToolContext, params: dict) -> dict:

@@ -250,3 +250,65 @@ def test_layout_preview_names_every_root_it_will_write(xdg_tmp) -> None:
         paths.shim_path(),
     ):
         assert str(location) in text
+
+
+def test_the_shim_from_a_dev_install_is_still_ours_to_remove(xdg_tmp, tree) -> None:
+    # A dev shim resolves into the checkout, not the data root, so ownership cannot be decided
+    # by where it lands — it is decided by what we wrote.
+    materialize.install_dev(tree)
+    materialize.install_shim()
+    assert materialize.remove_shim() is True
+    assert not paths.shim_path().exists()
+
+
+def test_install_refuses_to_take_a_name_a_foreign_symlink_already_holds(
+    xdg_tmp, tree, tmp_path
+) -> None:
+    # The mirror of uninstall's care not to delete someone else's shim: taking it in the first
+    # place is the half that cannot be given back.
+    materialize.install_version(tree, "1.0.0")
+    theirs = tmp_path / "their-tool"
+    theirs.write_text("")
+    paths.shim_path().parent.mkdir(parents=True, exist_ok=True)
+    paths.shim_path().symlink_to(theirs)
+
+    with pytest.raises(LayoutError):
+        materialize.install_shim()
+    assert os.readlink(paths.shim_path()) == str(theirs)
+
+
+def test_an_unterminated_block_is_left_alone_rather_than_eating_the_file(tmp_path) -> None:
+    # Someone edited their rc file and lost the closing fence. Skipping to end-of-file would
+    # silently delete everything they wrote after our block.
+    rc = tmp_path / ".zshrc"
+    rc.write_text(f"first\n{materialize.RC_MARKER_START}\nexport PATH=x\nalias ll='ls -l'\nlater\n")
+    original = rc.read_text()
+
+    assert materialize.remove_rc_block(rc) is False
+    assert rc.read_text() == original
+
+
+def test_prune_keeps_a_full_set_when_there_is_no_live_version(xdg_tmp, tree) -> None:
+    for index in range(5):
+        materialize.stage_version(tree, f"1.0.{index}")
+        os.utime(paths.versions_dir() / f"1.0.{index}", (1000 + index, 1000 + index))
+
+    materialize.prune_versions(keep=3)
+
+    assert sorted(p.name for p in materialize.installed_versions()) == ["1.0.2", "1.0.3", "1.0.4"]
+
+
+def test_a_leftover_from_a_crashed_swap_is_swept(xdg_tmp, tree) -> None:
+    materialize.install_version(tree, "1.0.0")
+    orphan = paths.versions_dir() / "0.9.0.old"
+    orphan.mkdir()
+    (orphan / "junk").write_text("")
+
+    materialize.stage_version(tree, "1.0.1")
+
+    assert not orphan.exists()
+
+
+def test_rc_candidates_cover_every_shell_we_might_have_written_to(xdg_tmp) -> None:
+    names = {path.name for path in materialize.rc_candidates()}
+    assert {".zshrc", ".bash_profile", ".profile"} <= names

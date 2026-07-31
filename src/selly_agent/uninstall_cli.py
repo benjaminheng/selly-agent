@@ -49,8 +49,11 @@ def _run(args, ui: Ui) -> int:
 
     if materialize.remove_shim():
         ui.say(f"Removed {paths.shim_path()}.")
-    if materialize.remove_rc_block(materialize.shell_rc_target()):
-        ui.say(f"Removed the PATH line from {materialize.shell_rc_target()}.")
+    for rc_file in materialize.rc_candidates():
+        # Every shell we might have written to, not just the one running now: install under zsh
+        # and uninstall from bash, and checking only the current shell leaves the block behind.
+        if materialize.remove_rc_block(rc_file):
+            ui.say(f"Removed the PATH line from {rc_file}.")
 
     for target in _roots_to_remove(preserve):
         _remove(target)

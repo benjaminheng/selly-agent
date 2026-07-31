@@ -246,3 +246,31 @@ def test_an_unavailable_browser_exits_3_with_the_hint(
     stub_market_daemon["post_body"] = {"error": "browser_unavailable", "detail": "start Chrome…"}
     assert connect_cli.market_flow(9999, "mcp-tok", "carousell", interactive=False) == 3
     assert "start Chrome" in capsys.readouterr().err
+
+
+def test_a_refused_enqueue_is_reported_not_a_traceback(monkeypatch, capsys) -> None:
+    # control.post returns (status, body) for HTTP errors rather than raising, so a caller that
+    # ignores the status reads a missing key out of an error body.
+    from selly_agent import config as config_mod
+    from selly_agent import pass_cli
+
+    monkeypatch.setattr(control, "require_token", lambda: "tok")
+    monkeypatch.setattr(config_mod, "load", lambda path=None: config_mod.Config())
+    monkeypatch.setattr(control, "post", lambda *a, **k: (400, {"error": "no such item"}))
+
+    class Args:
+        pass_type = "publish"
+        item = "itm_missing"
+        market = None
+        follow = False
+
+    assert pass_cli.run(Args()) == 1
+    assert "no such item" in capsys.readouterr().err
+
+
+def test_a_refused_settings_decision_is_not_reported_as_done(monkeypatch, capsys) -> None:
+    from selly_agent import settings_cli
+
+    monkeypatch.setattr(control, "post", lambda *a, **k: (400, {"error": "unknown change id"}))
+    assert settings_cli._decide(9999, "tok", "approve", "chg_nope") == 1
+    assert "unknown change id" in capsys.readouterr().err

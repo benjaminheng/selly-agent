@@ -62,7 +62,10 @@ def _find_installed(platform: Platform, label: str) -> Path | None:
 
 def install(*, mode: str, label: str | None = None, platform: Platform | None = None) -> int:
     platform = _resolve_platform(platform)
-    label = label or platform.default_label()
+    # The recorded label, not the default one — otherwise an install with a custom label writes
+    # and registers a *second* job under the default name, leaving the original loaded and two
+    # daemons writing one database.
+    label = _resolve_label(platform, label)
     locations = _plist_locations(platform, label)
 
     # Refuse if a foreign plist with our label already occupies either target location.

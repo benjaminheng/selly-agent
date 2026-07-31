@@ -132,3 +132,25 @@ def test_it_refuses_to_run_anywhere_but_macos(release) -> None:
     result = run_install(base_url=base)
     assert result.returncode == 1
     assert "runs on macOS" in result.stderr
+
+
+def test_dev_is_refused_because_the_tree_it_would_point_at_is_temporary(
+    macos_shims, release
+) -> None:
+    _served, base, receipt = release
+    result = run_install("--dev", base_url=base, path=macos_shims)
+    assert result.returncode == 1
+    assert "--dev needs a checkout" in result.stderr
+    assert not receipt.exists()
+
+
+def test_an_ambiguous_checksum_file_is_refused_rather_than_guessed(macos_shims, release) -> None:
+    served, base, receipt = release
+    sums = served / "SHA256SUMS"
+    sums.write_text(sums.read_text() + f"{'a' * 64}  selly-agent-9.9.9.tar.gz\n")
+
+    result = run_install(base_url=base, path=macos_shims)
+
+    assert result.returncode == 1
+    assert "more than one archive" in result.stderr
+    assert not receipt.exists()
