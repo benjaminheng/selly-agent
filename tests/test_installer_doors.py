@@ -438,3 +438,21 @@ def test_a_structurally_invalid_timezone_is_refused_not_shrugged_at(server) -> N
     )
     assert status == 400
     assert "not a valid timezone" in body["error"]
+
+
+def test_a_country_the_rail_does_not_serve_is_refused_at_the_door(server, store) -> None:
+    status, body = _call(server, "POST", "/control/seller-basics", body={"region": "MY"})
+    assert status == 400
+    assert "MY isn't a country selly-agent works in yet" in body["error"]
+    assert "SG, US" in body["error"]
+    assert store.seller_region() is None
+
+
+def test_the_model_is_held_to_the_same_region_rule_as_the_installer(make_ctx) -> None:
+    # One validator behind both writers, so the LLM cannot record what the door refuses.
+    from selly_agent.tools.registry import ToolError, dispatch
+
+    ctx = make_ctx("attended")
+    with pytest.raises(ToolError) as caught:
+        dispatch("update_seller_config", {"basics": {"region": "MY"}}, ctx)
+    assert "isn't a country selly-agent works in yet" in str(caught.value)

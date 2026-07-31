@@ -9,6 +9,7 @@ never enters the computation or the output.
 
 from __future__ import annotations
 
+from selly_agent import marketplaces
 from selly_agent.engines import shipping as shipping_engine
 from selly_agent.tools.registry import (
     TIER_ATTENDED,
@@ -48,6 +49,15 @@ def validate_basics(basics: dict) -> dict:
     if "region" in basics:
         if len(region) != 2 or not region.isalpha():
             raise BasicsError(f"region must be a two-letter country code (e.g. SG), got {region!r}")
+        supported = marketplaces.supported_regions()
+        if region.upper() not in supported:
+            # Refused rather than stored, because storing it produces a seller who looks
+            # configured and is not: provisioning has no country to ask for, and every listing
+            # goes on the rail, so nothing they list can go anywhere.
+            raise BasicsError(
+                f"{region.upper()} isn't a country selly-agent works in yet — "
+                f"currently {', '.join(supported)}"
+            )
         out["region"] = region.upper()
 
     currency = str(basics.get("currency", "")).strip()

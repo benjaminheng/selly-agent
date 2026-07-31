@@ -371,18 +371,23 @@ def _basics_from_flag(args) -> dict:
 
 
 def _ask_basics(ui: Ui):
-    """Ask for the three values outright. Answers nothing when there is nobody to ask."""
+    """Ask which country outright. Answers nothing when there is nobody to ask.
+
+    Only the countries the rail serves are offered, and an answer outside them is refused here
+    rather than three questions later at the door — the currency and timezone are not worth
+    collecting for a region that cannot be stored.
+    """
     if not ui.interactive:
         return None
-    code = ui.ask("Which country do you sell in? (two-letter code, e.g. SG)").strip().upper()
-    if len(code) != 2 or not code.isalpha():
-        return None
-    currency = (
-        region_guess.CURRENCIES.get(code)
-        or ui.ask("And the currency you price in? (three-letter code, e.g. SGD)").strip().upper()
-    )
+    supported = region_guess.supported()
+    code = ui.choose("Which country do you sell in?", supported)
+    region = supported[code]
     timezone = ui.ask("Your timezone?", default=region_guess.system_timezone()).strip()
-    basics = {"region": code, "currency": currency, "timezone": timezone}
+    basics = {
+        "region": region,
+        "currency": region_guess.CURRENCIES.get(region, ""),
+        "timezone": timezone,
+    }
     return {key: value for key, value in basics.items() if value}
 
 

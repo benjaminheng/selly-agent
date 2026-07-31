@@ -4,72 +4,65 @@ Region is the first thing the agent needs and the least interesting thing to ask
 which regional marketplace sites exist for this seller and which currency their prices are in.
 The machine already knows its timezone, so setup proposes an answer and asks for a yes.
 
-A guess is only ever a default. Everything here is pure and every answer is overridable, because
-a wrong guess accepted in silence is worse than a question: it would price in the wrong currency
-and compose URLs for a site the seller does not use.
+The table covers only the countries the rail serves, because those are the only ones the product
+works in — a guess outside them would hand someone a confident answer that setup then has to
+refuse. Anything unmapped produces no guess at all, and setup asks instead: one extra question is
+cheaper than a wrong default, and far cheaper than a seller configured for a country where
+nothing they list can go anywhere.
 """
 
 from __future__ import annotations
 
 import os
 
-# Currency per region we can name one for. Wrong currency means wrong prices, so an unlisted
-# region is asked about rather than defaulted.
+from selly_agent import marketplaces
+
+# What a region prices in. Only the regions the rail serves are here; `supported()` is the
+# authority on which those are, and this must not get ahead of it.
 CURRENCIES = {
     "SG": "SGD",
-    "MY": "MYR",
-    "HK": "HKD",
-    "TW": "TWD",
-    "PH": "PHP",
-    "ID": "IDR",
-    "AU": "AUD",
     "US": "USD",
-    "CA": "CAD",
-    "GB": "GBP",
-    "NZ": "NZD",
-    "JP": "JPY",
 }
 
-# IANA zone → region, for the zones our marketplaces actually serve. Exact names first; anything
-# else falls back to the continent-level prefixes below.
+# Timezones that identify a region unambiguously. US zones are listed rather than matched by an
+# `America/*` prefix: that prefix also covers Toronto, Mexico City and São Paulo, and answering
+# "US" for those would be wrong in a way the seller has no reason to double-check.
 _ZONE_REGIONS = {
     "Asia/Singapore": "SG",
-    "Asia/Kuala_Lumpur": "MY",
-    "Asia/Kuching": "MY",
-    "Asia/Hong_Kong": "HK",
-    "Asia/Taipei": "TW",
-    "Asia/Manila": "PH",
-    "Asia/Jakarta": "ID",
-    "Asia/Pontianak": "ID",
-    "Asia/Makassar": "ID",
-    "Asia/Jayapura": "ID",
-    "Asia/Tokyo": "JP",
-    "Pacific/Auckland": "NZ",
+    "America/New_York": "US",
+    "America/Detroit": "US",
+    "America/Chicago": "US",
+    "America/Denver": "US",
+    "America/Phoenix": "US",
+    "America/Los_Angeles": "US",
+    "America/Anchorage": "US",
+    "America/Boise": "US",
+    "America/Juneau": "US",
+    "America/Nome": "US",
+    "America/Sitka": "US",
+    "Pacific/Honolulu": "US",
 }
 
-_ZONE_PREFIX_REGIONS = (
-    ("Australia/", "AU"),
-    ("America/Toronto", "CA"),
-    ("America/Vancouver", "CA"),
-    ("America/Edmonton", "CA"),
-    ("America/Winnipeg", "CA"),
-    ("America/Halifax", "CA"),
-    ("Europe/London", "GB"),
-    ("America/", "US"),
-    ("US/", "US"),
-)
+# The legacy `US/Eastern`-style aliases, still what some machines report.
+_ZONE_PREFIX_REGIONS = (("US/", "US"), ("America/Indiana/", "US"), ("America/Kentucky/", "US"))
+
+
+def supported() -> list:
+    """The regions setup will accept, straight from the registry."""
+    return marketplaces.supported_regions()
 
 
 def region_for_zone(zone: str):
-    """The region a timezone implies, or None when it implies nothing we can name."""
+    """The region a timezone implies, or None when it implies nothing we support."""
     if not zone:
         return None
-    if zone in _ZONE_REGIONS:
-        return _ZONE_REGIONS[zone]
-    for prefix, region in _ZONE_PREFIX_REGIONS:
-        if zone.startswith(prefix):
-            return region
-    return None
+    found = _ZONE_REGIONS.get(zone)
+    if found is None:
+        for prefix, region in _ZONE_PREFIX_REGIONS:
+            if zone.startswith(prefix):
+                found = region
+                break
+    return found if found in supported() else None
 
 
 def system_timezone() -> str:

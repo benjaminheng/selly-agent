@@ -19,6 +19,9 @@ SCAM_REGISTRY_PATH = PACKAGE_DATA_DIR / "scam_registry.json"
 
 _ANY = "*"
 
+# The rail: the marketplace every listing goes on, whatever else the seller enables.
+RAIL = "carousell-ai"
+
 
 @lru_cache(maxsize=1)
 def _registry() -> dict:
@@ -93,6 +96,17 @@ def market_url(market: str, key: str, region: str | None = None, **fields) -> st
     except (KeyError, IndexError):
         return None
     return f"https://{host}{path}"
+
+
+def supported_regions() -> list:
+    """Where the agent can be used at all — the regions the rail serves, in registry order.
+
+    Every listing goes on the rail, so a seller the rail has no site for cannot be sold for,
+    whatever browser marketplaces might exist around them. Derived from the registry rather than
+    listed a second time here: the day the rail opens a country, this answers with it and no code
+    changes.
+    """
+    return sorted((get_marketplace(RAIL) or {}).get("domains") or {})
 
 
 def market_home(market: str, region: str | None = None) -> str | None:

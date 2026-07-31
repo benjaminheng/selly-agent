@@ -62,7 +62,7 @@ class PassPayloadError(Exception):
     """A pass's payload is missing/invalid — a loud, ledgered spawn_error, never a silent skip."""
 
 
-DEFAULT_PUBLISH_MARKET = "carousell-ai"
+DEFAULT_PUBLISH_MARKET = marketplaces.RAIL
 
 # The browser tools a publish pass may call — the diet, not the whole Playwright surface. Every tool
 # schema rides every turn of the pass, so a name that no recipe step uses is paid for on every run.

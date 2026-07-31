@@ -64,7 +64,13 @@ def world(monkeypatch, xdg_tmp, tree):
     def fake_post(port, token, route, body, **kwargs):
         calls["posts"].append((route, body))
         if route == "/control/seller-basics":
-            calls["basics"] = {**calls["basics"], **body}
+            from selly_agent.tools.seller import BasicsError, validate_basics
+
+            try:
+                checked = validate_basics(body)
+            except BasicsError as exc:
+                return 400, {"error": str(exc)}
+            calls["basics"] = {**calls["basics"], **checked}
             return 200, {"basics": calls["basics"]}
         return 200, {}
 
@@ -361,9 +367,19 @@ def test_the_region_is_proposed_from_the_machines_timezone(world, capsys) -> Non
 
 
 def test_the_region_flag_wins_over_the_guess(world) -> None:
-    assert setup_main("--yes", "--manual", "--region", "my") == 0
-    assert world.calls["basics"]["region"] == "MY"
-    assert world.calls["basics"]["currency"] == "MYR"
+    assert setup_main("--yes", "--manual", "--region", "us") == 0
+    assert world.calls["basics"]["region"] == "US"
+    assert world.calls["basics"]["currency"] == "USD"
+
+
+def test_a_country_the_rail_does_not_serve_is_refused(world, capsys) -> None:
+    # Storing it would produce a seller who looks configured and is not: nothing they list can
+    # reach the rail, and the rail is where every listing goes.
+    assert setup_main("--yes", "--manual", "--region", "my") == 1
+    assert world.calls["basics"] == {}
+    err = capsys.readouterr().err
+    assert "MY isn't a country selly-agent works in yet" in err
+    assert "SG, US" in err
 
 
 def test_a_re_run_leaves_a_recorded_region_alone(world, capsys) -> None:
@@ -373,10 +389,12 @@ def test_a_re_run_leaves_a_recorded_region_alone(world, capsys) -> None:
     assert "unchanged" in capsys.readouterr().out
 
 
-def test_an_unrecognised_timezone_leaves_the_region_unset_and_says_what_that_costs(
+def test_a_timezone_outside_the_supported_countries_makes_no_guess(
     world, monkeypatch, capsys
 ) -> None:
-    monkeypatch.setattr(region_guess, "system_timezone", lambda: "Antarctica/Troll")
+    # Kuala Lumpur is a real timezone the rail does not serve. Proposing "MY · MYR" would be a
+    # confident answer setup then has to refuse, so it proposes nothing and asks instead.
+    monkeypatch.setattr(region_guess, "system_timezone", lambda: "Asia/Kuala_Lumpur")
     assert setup_main("--yes", "--manual") == 0
     assert world.calls["basics"] == {}
     out = capsys.readouterr().out
