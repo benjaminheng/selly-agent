@@ -440,11 +440,12 @@ def _summarise(result) -> str:
 def _roll_back_to(target, mode: str, out, *, migrated_after: float, platform=None) -> None:
     """Put the previous version back, and with it the database that version can read.
 
-    `migrated_after` is the moment past which a pre-migration snapshot means "the version being
-    backed out of migrated the database". Auto-rollback knows that moment exactly — it is when
-    the update started. A rollback asked for later has to infer it, and uses when the version
-    being returned to was installed: a snapshot newer than that was taken by something that ran
-    after it, which is precisely the migration being undone.
+    `migrated_after` is the moment the version being backed out arrived: a snapshot newer than
+    that was taken by that version's own startup migration, which is the one being undone. A
+    snapshot from before it was taken by an earlier version — possibly the target's own first
+    start — and restoring one of those would throw away everything written since, for a schema
+    change that never happened. Auto-rollback knows the moment exactly (when the update started);
+    a rollback asked for later uses when the version being left was installed.
     """
     _stop_daemon(platform)
     materialize.swap_current(target)
@@ -467,14 +468,18 @@ def rollback(args, cfg, out, *, platform=None) -> int:
     target = materialize.previous_version()
     if target is None:
         raise UpdateError("there is no previous version retained to roll back to")
-    leaving = materialize.current_version()
-    out(f"Rolling back {leaving} → {target.name}.")
+    leaving = materialize.current_target()
+    out(f"Rolling back {materialize.current_version()} → {target.name}.")
     status = supervisor.gather_status(platform=platform)
     _roll_back_to(
         target,
         status.mode,
         out,
-        migrated_after=target.stat().st_mtime,
+        # When the version being *left* was installed — not the one being returned to. The
+        # target's own first start took a snapshot moments after the target's directory
+        # appeared, and measuring from the target would mistake that snapshot for a migration
+        # of the version being undone, restoring a database from before everything since.
+        migrated_after=leaving.stat().st_mtime,
         platform=platform,
     )
     out(f"Now on {materialize.current_version()}.")

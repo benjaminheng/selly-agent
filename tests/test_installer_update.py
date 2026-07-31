@@ -9,7 +9,6 @@ decides whether the new version stays.
 from __future__ import annotations
 
 import hashlib
-import os
 import sqlite3
 import tarfile
 import threading
@@ -487,19 +486,23 @@ def test_a_manual_rollback_restores_a_database_the_old_code_can_read(
 def test_a_manual_rollback_with_no_migration_since_leaves_the_database_alone(
     installed, served, monkeypatch
 ) -> None:
+    # The snapshot here is the one 0.1.0's own first start took: written moments after 0.1.0
+    # was installed, holding almost nothing. 0.2.0 migrated nothing, so rolling back to 0.1.0
+    # must not "restore" that near-empty day-one file over everything written since — which is
+    # exactly what measuring from the *target's* install time would do.
     root, base = served
     build_release(root, "0.2.0")
     paths.ensure_state_dirs()
-    write_db(paths.selly_db(), "current data")
-    # A snapshot from an update long before the version we are returning to.
-    old_snapshot = paths.backups_dir() / "selly-1-pre-0001.db"
-    write_db(old_snapshot, "ancient")
-    os.utime(old_snapshot, (1, 1))
+    write_db(paths.backups_dir() / "selly-1000-pre-0001.db", "as 0.1.0 first found it")
+    write_db(paths.selly_db(), "weeks of listings and threads")
 
     update_mod.perform(Args(url=base), Config(), lambda line: None, platform=installed)
-    update_mod.rollback(Args(rollback=True), Config(), lambda line: None, platform=installed)
+    lines = []
+    update_mod.rollback(Args(rollback=True), Config(), lines.append, platform=installed)
 
-    assert read_db(paths.selly_db()) == "current data"
+    assert materialize.current_version() == "0.1.0"
+    assert read_db(paths.selly_db()) == "weeks of listings and threads"
+    assert not any("Restored the database" in line for line in lines)
 
 
 def test_pre_release_versions_sort_below_their_release() -> None:
