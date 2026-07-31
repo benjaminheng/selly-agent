@@ -39,7 +39,9 @@ surfaces:
   the seller to sign in, probe one market's login, and report every enabled market
   at once for the healthcheck. The plural read declines to probe when Chrome is
   closed: acquiring the browser starts it, and a status read that opens a window
-  on someone's screen is not a status read.
+  on someone's screen is not a status read. The connect route may start Chrome —
+  that is what it is for — but answers 409 while a pass is driving the shared
+  tab, rather than navigating it out from under a half-filled composer.
 
 Every one of these is called through `control.py`, the one client for them —
 which is also why the stdlib guard grants socket capability to that module rather

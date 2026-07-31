@@ -248,6 +248,20 @@ def test_an_unavailable_browser_exits_3_with_the_hint(
     assert "start Chrome" in capsys.readouterr().err
 
 
+def test_a_busy_browser_says_try_again_rather_than_failing_opaquely(
+    monkeypatch, stub_market_daemon, capsys
+) -> None:
+    stub_market_daemon["post_status"] = 409
+    stub_market_daemon["post_body"] = {
+        "error": "browser_busy",
+        "detail": "a pass is using the browser right now",
+    }
+    assert connect_cli.market_flow(9999, "mcp-tok", "carousell", interactive=False) == 3
+    err = capsys.readouterr().err
+    assert "a pass is using the browser" in err
+    assert "try again" in err
+
+
 def test_a_refused_enqueue_is_reported_not_a_traceback(monkeypatch, capsys) -> None:
     # control.post returns (status, body) for HTTP errors rather than raising, so a caller that
     # ignores the status reads a missing key out of an error body.

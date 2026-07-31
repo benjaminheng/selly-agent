@@ -450,6 +450,19 @@ def test_connect_market_still_opens_a_window_because_that_is_what_it_is_for(
     assert browser.visited == ["https://www.carousell.sg/"]
 
 
+def test_connect_market_waits_its_turn_behind_a_pass(server, store, browser) -> None:
+    # Chrome closed is the connect route's job to fix; a pass mid-drive is not. Navigating the
+    # shared tab now would pull the page out from under a half-filled composer.
+    store.set_seller_config_section("basics", {"region": "SG"})
+    store.enqueue_pass("publish", {"item_id": "itm_1", "market": "carousell"})
+
+    status, body = _call(server, "POST", "/control/connect-market", body={"market": "carousell"})
+
+    assert status == 409
+    assert "a pass is using the browser" in body["detail"]
+    assert browser.visited == []
+
+
 def test_a_structurally_invalid_timezone_is_refused_not_shrugged_at(server) -> None:
     status, body = _call(
         server, "POST", "/control/seller-basics", body={"timezone": "../../etc/passwd"}

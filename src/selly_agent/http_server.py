@@ -485,6 +485,14 @@ class _Handler(BaseHTTPRequestHandler):
         adapter = self._market_adapter(market)
         if adapter is None:
             return
+        if self._app.store.active_passes_of_types(_BROWSER_PASS_TYPES):
+            # Unlike Chrome being closed — which this route exists to fix — a pass mid-drive
+            # owns the tab. Navigating it now would pull the page out from under a half-filled
+            # composer, and the seller asked to sign in, not to lose a listing.
+            self._send_json(
+                409, {"error": "browser_busy", "detail": "a pass is using the browser right now"}
+            )
+            return
         try:
             state, url = self._open_and_probe(adapter)
         except _BrowserDown as exc:

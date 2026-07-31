@@ -99,6 +99,13 @@ def market_flow(port: int, mcp_token: str, market: str, *, interactive: bool | N
     except control.DaemonUnreachable as exc:
         print(f"selly-agent: could not reach the daemon: {exc}", file=sys.stderr)
         return 3
+    if status == 409:
+        print(
+            f"selly-agent: {body.get('detail', 'the browser is busy')} — "
+            "try again in a minute or two.",
+            file=sys.stderr,
+        )
+        return 3
     if status == 503:
         print(f"selly-agent: {body.get('detail', 'the browser is unavailable')}", file=sys.stderr)
         return 3
