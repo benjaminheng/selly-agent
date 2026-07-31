@@ -63,6 +63,9 @@ mid-flow for something else; never switch to one.
     `record_published_listing_url`: until you do, nobody who messages about this listing can be
     answered, so the publish is not finished. No readable permalink means the publish failed: say so,
     rather than reporting a listing as live.
+11. **Close your tab.** `browser_tabs`, action `close`, once the URL is recorded — including when
+    the publish failed. A tab left behind outlives this pass, and the agent's own inbox reads can
+    end up driving it: leaving the composer open is how a finished publish blinds the reply loop.
 
 ## Never spend money
 

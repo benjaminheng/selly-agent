@@ -55,6 +55,18 @@ _ERROR_SECTION = "Error"
 # What the server writes for a function that returned nothing — the one body that is not JSON.
 _UNDEFINED = "undefined"
 
+# How the server refuses every page-level tool — evaluate, snapshot, click — while the tab it is
+# pointed at carries "modal state": an open dialog or an open file chooser.
+#
+# That state is per tab, in the server's own memory, and only the tool that owns it clears it
+# (`browser_handle_dialog`, `browser_file_upload`). A second server attached to the same Chrome
+# wraps every tab in it, not only the ones it opened, so it records the same dialogs and file
+# choosers — and never clears them, because it is not the one handling them. A file chooser a
+# publish pass opened and consumed therefore leaves *our* view of that tab refusing every read,
+# permanently: the state outlives the page, so navigating does not clear it, and the tool that
+# would is one we must never call on a flow that is not ours.
+_MODAL_STATE_MARKER = "does not handle the modal state"
+
 
 class BrowserError(Exception):
     """Base for browser failures. Messages are caller-facing and carry no secret."""
@@ -228,6 +240,12 @@ class BrowserClient:
         self._stderr: deque = deque(maxlen=_STDERR_LINES)
         self._next_id = 0
         self._tab_opened = False
+        # The page our tab was last sent to, so a tab given up mid-operation is replaced by one
+        # showing what the caller had already navigated to.
+        self._last_url: str | None = None
+        # Set while replacing a tab, so the calls that do the replacing cannot themselves trigger
+        # another replacement.
+        self._reopening = False
 
     # --- lifecycle ----------------------------------------------------------------------------
 
@@ -304,9 +322,10 @@ class BrowserClient:
                 return
             if proc.poll() is None and self._tab_opened:
                 # Leave the warm Chrome as we found it: our tab is ours to clean up. A hard kill
-                # skips this and leaves one tab behind, which is untidy but harmless.
+                # skips this and leaves one tab behind, which is untidy but harmless. Called without
+                # recovery, because nothing on the way out should be opening a tab.
                 try:
-                    self.call_tool("browser_tabs", {"action": "close"})
+                    self._call_once("browser_tabs", {"action": "close"})
                 except BrowserError:
                     pass
             self._proc = None
@@ -368,7 +387,31 @@ class BrowserClient:
     # --- tools --------------------------------------------------------------------------------
 
     def call_tool(self, name: str, arguments: dict) -> str:
-        """Call one Playwright tool and return its response text. Raises rather than retrying."""
+        """Call one Playwright tool and return its response text. Raises rather than retrying.
+
+        The one exception is a tool refused because the tab carries modal state, which is retried
+        once on a tab of our own — see `_reopen_after_modal_state` for why that is a recovery and
+        not a retry in the sense this client otherwise forbids. Everything else raises on the first
+        failure: a hot retry against a marketplace is the anti-automation tell, so backing off is
+        the lane's job.
+
+        Repeating that one call is safe even under the send path, where a repeat would mean a buyer
+        hearing from us twice: the refusal comes from a gate the server applies *before* running the
+        tool, so a call it refuses has had no effect on the page to repeat.
+        """
+        with self._lock:
+            try:
+                return self._call_once(name, arguments)
+            except BrowserToolError as exc:
+                if self._reopening or _MODAL_STATE_MARKER not in str(exc):
+                    raise
+                log.warning("browser: %s — taking a fresh tab", exc)
+            self._reopen_after_modal_state()
+            # Deliberately not through `call_tool`: one recovery per call, so a tab that somehow
+            # reports modal state again surfaces the failure instead of reopening tabs in a loop.
+            return self._call_once(name, arguments)
+
+    def _call_once(self, name: str, arguments: dict) -> str:
         with self._lock:
             self._start()
             payload = self._rpc("tools/call", {"name": name, "arguments": arguments})
@@ -377,6 +420,27 @@ class BrowserClient:
                 detail = sections(text).get(_ERROR_SECTION) or text
                 raise BrowserToolError(f"{name} failed: {detail.strip()[:300]}")
             return text
+
+    def _reopen_after_modal_state(self) -> None:
+        """Give up the tab we were driving and take a fresh one, back on the page we were reading.
+
+        A tab that reports modal state is unusable to us from here (see `_MODAL_STATE_MARKER`), and
+        a tab we have only just opened cannot carry any — so recovery is a new tab rather than a
+        repair. Without it the daemon reads that tab as an unreadable market on every tick until it
+        restarts, which is a market reporting itself blind for a reason that has nothing to do with
+        the market.
+
+        The replacement is sent to the page the caller had navigated to, so the read it was in the
+        middle of resumes on what it expected rather than on `about:blank`.
+        """
+        self._reopening = True
+        self._tab_opened = False  # what we held is not a tab we can drive any more
+        try:
+            self.ensure_tab()
+            if self._last_url is not None:
+                self._call_once("browser_navigate", {"url": self._last_url})
+        finally:
+            self._reopening = False
 
     def evaluate(self, function: str, *, target: str | None = None, element: str | None = None):
         """Run a JS function in the page and return its value.
@@ -396,14 +460,21 @@ class BrowserClient:
         with self._lock:
             self.ensure_tab()
             self.call_tool("browser_navigate", {"url": url})
+            self._last_url = url
 
     def ensure_tab(self) -> None:
         """Make sure this client is driving its own tab, creating it once.
 
-        The daemon owns this server process exclusively, so the tab it opens stays the current one —
-        that is the handle. Nothing here selects a tab by index or guesses one by host: indices
-        renumber whenever any tab opens or closes, and a tab picked by host could be one a pass is
-        mid-flow on.
+        The daemon owns this server process exclusively, so the tab it opens stays the one its calls
+        act on. Nothing here selects a tab by index or guesses one by host: indices renumber
+        whenever any tab opens or closes, and a tab picked by host could be one a pass is mid-flow
+        on.
+
+        The handle is a claim, not a guarantee. The server names no tab in a call — every tool acts
+        on whatever it currently considers the current tab, and it re-points that silently when a
+        tab closes, so a tab of ours that the seller closes hands our calls to whatever tab is left.
+        Nothing here can see that; what it costs, and how the client gets out of it, is
+        `_reopen_after_modal_state`.
         """
         with self._lock:
             self._start()

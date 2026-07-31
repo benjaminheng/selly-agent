@@ -184,7 +184,8 @@ def test_a_server_that_exits_mid_call_is_a_transport_error(make_client) -> None:
 
 def test_the_client_never_retries_a_failed_call(make_client) -> None:
     """A hot retry against a marketplace is the anti-automation tell, so backing off is the lane's
-    job — the client raises once and calls once."""
+    job — the client raises once and calls once. The one exception is a tab that reports modal
+    state: a tab to replace rather than an action to repeat. See the tab-ownership tests."""
     script = {"tools": {"browser_click": [{"error": "first failure"}, {"text": "second call"}]}}
     client = make_client(script)
     with pytest.raises(BrowserToolError, match="first failure"):
@@ -192,6 +193,8 @@ def test_the_client_never_retries_a_failed_call(make_client) -> None:
 
 
 # --- tab ownership -------------------------------------------------------------------------------
+
+_URL = "https://www.carousell.sg/inbox/12/"
 
 
 def test_the_client_opens_its_own_tab_once(make_client) -> None:
@@ -216,9 +219,81 @@ def test_the_client_opens_its_own_tab_once(make_client) -> None:
     assert "select" not in json.dumps(tool_calls(client))  # never re-selected by index
 
 
+# --- a tab that carries modal state --------------------------------------------------------------
+
+# What the real server answers with while the tab it is pointed at has a dialog or a file chooser
+# open. Only the tool that owns that state clears it, and a second server on the same Chrome records
+# the same states on its own copy of every tab without ever clearing them — so a file chooser a
+# publish pass opened and consumed refuses our reads on that tab from then on.
+_MODAL_STATE = {"error": 'Error: Tool "browser_evaluate" does not handle the modal state.'}
+
+
+def test_a_tab_that_reports_modal_state_is_given_up_for_a_fresh_one(make_client) -> None:
+    """The recovery is a new tab, not a repair: the state outlives the page, so navigating does not
+    clear it, and the tool that would clear it belongs to whoever opened the dialog. Left
+    unrecovered, the market reads as unreadable on every tick until the daemon restarts."""
+    client = make_client(
+        {
+            "tools": {
+                "browser_tabs": {"text": "ok"},
+                "browser_navigate": {"text": "ok"},
+                "browser_evaluate": [_MODAL_STATE, {"result": {"conversations": []}}],
+            }
+        }
+    )
+    client.navigate(_URL)
+    assert client.evaluate("() => 1") == {"conversations": []}
+    assert [(call["tool"], call["arguments"]) for call in tool_calls(client)] == [
+        ("browser_tabs", {"action": "new"}),
+        ("browser_navigate", {"url": _URL}),
+        ("browser_evaluate", {"function": "() => 1"}),
+        ("browser_tabs", {"action": "new"}),
+        ("browser_navigate", {"url": _URL}),  # the replacement resumes on the page we were reading
+        ("browser_evaluate", {"function": "() => 1"}),
+    ]
+
+
+def test_a_replacement_that_also_reports_modal_state_fails_rather_than_looping(make_client) -> None:
+    """One recovery per call. A tab we have just opened cannot carry modal state, so a second
+    refusal is something else entirely and belongs to the caller, not to another new tab."""
+    client = make_client(
+        {
+            "tools": {
+                "browser_tabs": {"text": "ok"},
+                "browser_navigate": {"text": "ok"},
+                "browser_evaluate": [_MODAL_STATE, _MODAL_STATE, {"result": "unreached"}],
+            }
+        }
+    )
+    client.navigate(_URL)
+    with pytest.raises(BrowserToolError, match="modal state"):
+        client.evaluate("() => 1")
+    tools = [call["tool"] for call in tool_calls(client)]
+    assert tools.count("browser_tabs") == 2  # the tab we opened, and its one replacement
+    assert tools.count("browser_evaluate") == 2
+
+
+def test_a_refusal_before_any_navigation_takes_a_tab_and_nothing_else(make_client) -> None:
+    """Nothing to resume: a read that has not navigated anywhere has no page to be sent back to, and
+    inventing one would be navigating on a caller's behalf."""
+    client = make_client(
+        {
+            "tools": {
+                "browser_tabs": {"text": "ok"},
+                "browser_evaluate": [_MODAL_STATE, {"result": True}],
+            }
+        }
+    )
+    assert client.evaluate("() => 1") is True
+    assert [call["tool"] for call in tool_calls(client)] == [
+        "browser_evaluate",
+        "browser_tabs",
+        "browser_evaluate",
+    ]
+
+
 # --- bringing our own tab forward ----------------------------------------------------------------
 
-_URL = "https://www.carousell.sg/inbox/12/"
 _TAB_LIST = {"text": "### Open tabs\n- 0: [a](x)\n- 1: (current) [b](y)"}
 
 

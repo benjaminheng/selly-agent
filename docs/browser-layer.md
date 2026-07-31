@@ -39,7 +39,8 @@ can connect to it. Nothing else can do so.
 
 The shape follows `rail/client.py` — typed errors, timeouts as named constants,
 and **no internal retry** (a lane backs off; a hot retry against a marketplace
-is the anti-automation tell).
+is the anti-automation tell). The single exception is a tab that reports modal
+state, which is recovered from rather than retried — see below.
 
 Errors are three kinds because the responses differ:
 
@@ -57,8 +58,29 @@ Notable client behaviors:
 
 - **One tab, held by identity, not index.** `ensure_tab` opens the client's own
   tab once; because the daemon owns the server process exclusively, that tab stays
-  the current one. Nothing ever selects a tab by index or guesses one by host —
-  indices renumber whenever any tab opens or closes.
+  the one its calls act on. Nothing ever selects a tab by index or guesses one by
+  host — indices renumber whenever any tab opens or closes.
+- **That handle is a claim, not a guarantee, and modal state is how it breaks.**
+  The server names no tab in a call: every tool acts on whatever it currently
+  considers the current tab, and it re-points that silently when a tab closes.
+  So a tab of ours that the seller closes hands our calls to whatever tab is
+  left — including one a pass opened. That matters because Playwright MCP
+  refuses every page-level tool (`browser_evaluate`, `browser_snapshot`,
+  `browser_click`) while the tab it is pointed at carries **modal state**: an
+  open dialog or file chooser. The state is per tab, in the server's own memory,
+  and only the tool that owns it clears it — and a server attached over CDP
+  wraps *every* tab, so it records the same dialogs and file choosers as any
+  other client on that Chrome and never clears them. A file chooser a publish
+  pass opened and consumed therefore leaves our view of that tab refusing every
+  read, for good: the state outlives the page, so navigating does not clear it,
+  and the tool that would clear it must never be called on a flow that is not
+  ours. `call_tool` recovers by giving the tab up, opening a fresh one (which
+  cannot carry any), sending it back to the page the caller had navigated to,
+  and retrying the call **once**. Left unrecovered this is a market reporting
+  itself blind every tick until the daemon restarts, for a reason that has
+  nothing to do with the market. Note also `browser_navigate` and `browser_tabs`
+  are *not* modal-gated, so a poisoned tab still navigates — the reads are what
+  fail.
 - **`ensure_frontmost` before certain key events.** Chrome routes certain key
   events (like Enter) only to a visible renderer, and a tab is visible only
   when it is its window's active tab. Ergo, a tab must be active for it to
