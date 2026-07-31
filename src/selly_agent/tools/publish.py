@@ -11,6 +11,7 @@ transaction, so the DB lock is never held across network I/O.
 from __future__ import annotations
 
 from selly_agent import settings
+from selly_agent.browser.client import BrowserUnavailable
 from selly_agent.engines import pacing as pacing_engine
 from selly_agent.money import to_price_cents
 from selly_agent.rail.client import RailUnprovisioned
@@ -29,6 +30,8 @@ from selly_agent.tools.verify import verify_market_url
 _MARKET = "carousell-ai"
 # The rail's media-kind discriminator; it refuses an entry without one ("media type must be image").
 _MEDIA_TYPE_IMAGE = 1
+# Pass statuses that mean an attempt is still coming — a second one would be a duplicate listing.
+_UNSETTLED = ("queued", "running")
 
 
 def _publish(ctx: ToolContext, params: dict) -> dict:
@@ -169,5 +172,100 @@ register(
         },
         handler=_record_published_listing_url,
         tiers=frozenset({TIER_PASS_PUBLISH, TIER_ATTENDED}),
+    )
+)
+
+
+def _queued_for(store, item_id: str, market: str) -> bool:
+    """Whether a publish of this item to this market is already waiting or running. Without this,
+    a seller asking twice would get two live listings for one item — public, on their own account,
+    and theirs to delete."""
+    return any(
+        row["item_id"] == item_id and row["market"] == market and row["status"] in _UNSETTLED
+        for row in store.publish_pass_index()
+    )
+
+
+def _queue_marketplace_publish(ctx: ToolContext, params: dict) -> dict:
+    """Queue a browser publish the fan-out will not queue by itself.
+
+    The fan-out spends one automatic attempt per item and marketplace, because an attempt is
+    minutes of browser work that an automatic retry could burn on a repeat of the same failure.
+    But plenty of failures say nothing about the next attempt, and the item is then stranded with
+    no way back. This is the way back, and it is the seller's to ask for: every condition the lane
+    checks still holds here, and only the one-shot is skipped — a seller asking for another go has
+    decided to spend it.
+
+    What it does not skip is the guard against listing the same thing twice, which is the failure
+    that would actually cost them something.
+    """
+    # Imported here rather than at module scope: crosslist reaches passes, which imports this
+    # package back for its tier lists.
+    from selly_agent import crosslist
+
+    item_id, market = params["item_id"], params["market"]
+    item = ctx.store.get_item(item_id)
+    if item is None:
+        raise ToolError(f"no item with id {item_id!r}")
+
+    # Enabling a marketplace is an approval-gated settings change, because it lets the agent post
+    # publicly as the seller. A publish here rides on that approval rather than standing in for it.
+    if market not in settings.crosslist_markets(ctx.store):
+        raise ToolError(f"{market!r} is not an enabled marketplace")
+
+    urls = item["listing_urls"]
+    if urls.get(market):
+        return {
+            "status": "already_listed",
+            "item_id": item_id,
+            "market": market,
+            "url": urls[market],
+        }
+    if not urls.get(_MARKET):
+        raise ToolError("item is not published on carousell.ai")
+    if item_id in ctx.store.sold_item_ids():
+        return {"status": "sold", "item_id": item_id, "market": market}
+    if ctx.store.is_paused():
+        raise ToolError("the agent is paused — resume before publishing")
+    if _queued_for(ctx.store, item_id, market):
+        return {"status": "already_queued", "item_id": item_id, "market": market}
+
+    # Checked before queueing, so "I can't drive a browser right now" is answered in the
+    # conversation asking for it rather than by a pass that dies seconds later with nobody there.
+    if ctx.browser_factory is None:
+        raise ToolError("this session has no browser to publish with")
+    try:
+        ctx.browser_factory()
+    except BrowserUnavailable as exc:
+        raise ToolError(str(exc)) from exc
+
+    # The same origin marker the lane uses: it means the daemon owes the seller a report, which is
+    # as true of a publish they asked for in passing as of one nobody watched at all.
+    pass_id = ctx.store.enqueue_pass(
+        "publish", {"item_id": item_id, "market": market, "origin": crosslist.ORIGIN}
+    )
+    ctx.bus.publish("crosslist.queued", {"item_id": item_id, "market": market}, pass_id=pass_id)
+    return {"status": "queued", "pass_id": pass_id, "item_id": item_id, "market": market}
+
+
+register(
+    ToolSpec(
+        name="queue_marketplace_publish",
+        description="Queue a publish of an item to one of the marketplaces the seller has turned "
+        "on, for when the automatic cross-post failed and they ask you to try again. The publish "
+        "runs in the background and reports its own outcome, so tell the seller it has started — "
+        "never that the listing is up. Refuses a marketplace they have not turned on, and will "
+        "not queue a second publish of something already listed there or already under way.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "string"},
+                "market": {"type": "string"},
+            },
+            "required": ["item_id", "market"],
+            "additionalProperties": False,
+        },
+        handler=_queue_marketplace_publish,
+        tiers=frozenset({TIER_ATTENDED, TIER_PASS_CHANNEL}),
     )
 )

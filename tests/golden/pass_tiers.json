@@ -23,6 +23,7 @@
     "negotiate_release",
     "negotiate_status",
     "propose_setting_change",
+    "queue_marketplace_publish",
     "quote_shipping",
     "record_manual_reply",
     "record_scam_signature",

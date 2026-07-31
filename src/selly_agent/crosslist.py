@@ -45,8 +45,7 @@ NO_BROWSER_NOTICE = (
 PUBLISHED_NOTICE = "{item} is now listed on {market}: {url}"
 FAILED_NOTICE = (
     "I couldn't list {item} on {market}. Everything else about it is fine, including its "
-    "carousell.ai listing. To try again: selly-agent pass run publish --item {item_id} "
-    "--market {market_id}"
+    "carousell.ai listing. Ask me and I'll have another go at it."
 )
 
 
@@ -207,9 +206,7 @@ def report_settled(deps: CrosslistDeps) -> int:
         if url:
             text = PUBLISHED_NOTICE.format(item=title, market=market_name, url=url)
         else:
-            text = FAILED_NOTICE.format(
-                item=title, market=market_name, item_id=row["item_id"], market_id=market
-            )
+            text = FAILED_NOTICE.format(item=title, market=market_name)
         if not deps.store.report_crosslist_pass(row["pass_id"], text, ref=row["item_id"]):
             continue
         reported += 1

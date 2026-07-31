@@ -262,7 +262,8 @@ def test_a_clean_exit_without_a_url_is_reported_as_a_failure(store, bus, enabled
     assert crosslist.report_settled(_deps(store, bus)) == 1
     text = _notices(store)[0]
     assert "couldn't list Teak lamp on Carousell" in text
-    assert f"--item {enabled['id']} --market carousell" in text  # the retry, spelled out
+    # The retry is something to ask for, not a command to run: the notice lands on a phone.
+    assert "Ask me" in text
 
 
 def test_a_failure_names_the_retry_and_reassures_about_the_rail(store, bus, enabled) -> None:
@@ -328,16 +329,26 @@ def test_enabling_a_market_picks_up_items_listed_before(store, bus) -> None:
 # --- what the seller conversation says about it ------------------------------------------------
 
 
-def test_the_listing_flow_names_the_destinations_and_claims_no_tool() -> None:
-    """The one thing the recipe is asked to do here is set expectations — the fan-out itself is the
-    daemon's, and a recipe that thought it had to trigger it would look for a tool that isn't there.
-    """
+def test_the_listing_flow_names_the_destinations_without_claiming_the_fan_out() -> None:
+    """Listing something sets expectations and stops there — the fan-out is the daemon's, and a
+    recipe that thought it had to trigger it would fire a publish per listing."""
     from selly_agent import skills
 
     recipe = skills.load("listing-flow")
     assert "crosslist_markets" in recipe
     assert "not your job" in recipe
     assert "background" in recipe
+    assert "Never trigger it as part of listing something" in recipe
+
+
+def test_the_listing_flow_points_a_retry_at_the_tool() -> None:
+    """The other half: after a failure, asking is what restarts it, so the recipe has to know the
+    tool exists — otherwise the model repeats the "nothing for me to trigger" line at a seller who
+    is asking for exactly that."""
+    from selly_agent import skills
+
+    recipe = skills.load("listing-flow")
+    assert "queue_marketplace_publish" in recipe
 
 
 def test_the_channel_pass_can_see_the_setting_it_is_told_to_name(store, bus, enabled) -> None:

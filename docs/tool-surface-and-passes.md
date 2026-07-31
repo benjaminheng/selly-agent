@@ -114,7 +114,7 @@ runner:
 |---|---|---|---|---|---|
 | `publish` | `pass:publish` — `get_item`, the photo/publish pair, `record_published_listing_url` (how a browser publish's result gets back at all), `send_message`, and the selector cache (`ui_cache_*`, `probe_selector`) | conventions + the market's own recipe | no | for a browser market only | full |
 | `reply` | `pass:reply` — its own threads and items, `negotiate_offer`/`status`, `search_qa_bank`, `send_reply`, `hold_thread`, `escalate`, `quote_shipping`, the checkout link, `scam_scan` | conventions, voice-and-style, buyer-conversation, scam-guard | no | no | its claimed threads + items |
-| `channel` | `pass:channel` — the broad seller-conversation set (items, photos, floors, threads, negotiate, checkout, escalations, settings, the Q&A bank, `carousell_ai_update_listing`, `send_message`, …) | conventions, voice-and-style, seller-comms, listing-flow | yes | no | full |
+| `channel` | `pass:channel` — the broad seller-conversation set (items, photos, floors, threads, negotiate, checkout, escalations, settings, the Q&A bank, `carousell_ai_update_listing`, `queue_marketplace_publish`, `send_message`, …) | conventions, voice-and-style, seller-comms, listing-flow | yes | no | full |
 
 All three tiers are pinned by a golden (`tests/golden/pass_tiers.json`), so
 widening one is a deliberate diff. Membership follows what the skills instruct: a

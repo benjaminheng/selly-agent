@@ -352,6 +352,17 @@ whatever its outcome — an attempt is minutes of browser work and a vision-pric
 bill. The cheap preconditions (Node installed, Chrome up) retry every tick and are
 checked *before* queueing, so a condition that fixes itself never spends the attempt.
 
+**Asking is what restarts it.** Plenty of failures say nothing about whether the next
+attempt would work — the harness running out of credit is the one that prompted this —
+and the one shot leaves the item stranded with no way back. `queue_marketplace_publish`
+is that way back, on the channel and attended tiers, so the seller can ask for another go
+from wherever the failure notice reached them. It queues what the lane would have queued
+and skips only the one-shot: a seller who asks has chosen to spend the attempt. Every
+other condition still holds, and one it adds — no second publish of an item already
+listed on that marketplace or already under way, which is the mistake that would leave
+two live listings on the seller's own account. Quiet hours do not apply; they hold
+unprompted work, and this was prompted.
+
 The lane holds off while paused, while another publish is queued or running (passes run
 one at a time), and inside quiet hours — a publish is a visible burst on the seller's
 real account. Quiet hours hold the *start* of work; nothing running is interrupted.
@@ -359,7 +370,8 @@ real account. Quiet hours hold the *start* of work; nothing running is interrupt
 **The outcome is read off the rows, not off the pass.** A recorded URL becomes a success
 notice with the link. Anything else — including a pass that exited clean having recorded
 nothing, which leaves no listing anyone can find — becomes a failure notice naming the
-item, the market and the CLI retry. `passes.reported` flips in the same transaction as
+item and the market, and inviting the seller to ask for another go. `passes.reported`
+flips in the same transaction as
 the notice, so a crash mid-sweep neither announces twice nor swallows. Publishes run by
 hand carry no `crosslist` origin and are not reported.
 
