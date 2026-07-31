@@ -110,10 +110,13 @@ def _claude_md(skills_dir: Path) -> str:
     return _CLAUDE_MD.format(skill_lines=lines)
 
 
-def harness_config(args) -> int:
+def harness_config(directory=None) -> int:
     """`selly-agent harness config --attended [--dir DIR]` — write the attended session's config:
     a .mcp.json pointed at the daemon's MCP server with the attended token, the slash commands,
     and a CLAUDE.md.
+
+    Takes the destination directly rather than a parsed-args object, so the installer can
+    generate the same workspace at its own fixed location without fabricating one.
 
     No .claude/settings.json: an attended session is the seller's own, and its permissions are
     theirs to set. Command bodies reference the skill files by path rather than inlining them, so
@@ -123,7 +126,7 @@ def harness_config(args) -> int:
     if not token:
         return 1
     port = config.load().http_port
-    dest = Path(args.dir) if args.dir else Path.cwd()
+    dest = Path(directory) if directory else Path.cwd()
     dest.mkdir(parents=True, exist_ok=True)
     mcp = {
         "mcpServers": {

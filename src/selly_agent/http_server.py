@@ -271,6 +271,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_settings_list(parsed)
         elif parsed.path == "/control/market-login":
             self._handle_market_login(parsed)
+        elif parsed.path == "/control/seller-basics":
+            self._handle_seller_basics_read(parsed)
         elif parsed.path == "/tail":
             self._handle_tail()
         else:
@@ -457,6 +459,14 @@ class _Handler(BaseHTTPRequestHandler):
         self._app.store.set_seller_config_section("basics", merged)
         self._app.bus.publish("seller.basics_set", {"region": merged.get("region")})
         self._send_json(200, {"status": "written", "basics": merged})
+
+    def _handle_seller_basics_read(self, parsed) -> None:
+        # The read half, so a caller that needs the region asks the daemon for it rather than
+        # opening the database a live process owns.
+        if self._attended_query(parsed) is None:
+            return
+        basics = self._app.store.get_seller_config_section("basics") or {}
+        self._send_json(200, {"basics": basics})
 
     def _handle_connect_market(self) -> None:
         # Open the marketplace in the agent's own Chrome so the seller can sign in there. We

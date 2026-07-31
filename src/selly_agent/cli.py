@@ -220,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "harness":
         from selly_agent import pass_cli
 
-        return pass_cli.harness_config(args)
+        return pass_cli.harness_config(args.dir)
 
     if args.command == "connect":
         from selly_agent import connect_cli

@@ -123,6 +123,15 @@ def test_multiselect_without_a_terminal_selects_nothing() -> None:
     assert ui.multiselect("Which?", ["a", "b"]) == []
 
 
+def test_multiselect_under_assume_yes_selects_nothing_rather_than_everything() -> None:
+    # "Take the default" for a list of things to opt into means take none of them.
+    def explode():
+        raise AssertionError("must not read stdin")
+
+    ui, _, _ = make_ui(interactive=True, assume_yes=True, input_fn=explode)
+    assert ui.multiselect("Which?", ["a", "b"]) == []
+
+
 def test_an_interrupted_prompt_aborts_rather_than_returning_a_default() -> None:
     def interrupted():
         raise KeyboardInterrupt

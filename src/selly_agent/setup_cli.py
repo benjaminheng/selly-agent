@@ -13,10 +13,26 @@ than writing state behind its back.
 
 from __future__ import annotations
 
+import json
 import time
 
-from selly_agent import __version__, config, heartbeat, passes, paths, supervisor
+from selly_agent import (
+    __version__,
+    config,
+    connect_cli,
+    control,
+    heartbeat,
+    marketplaces,
+    pass_cli,
+    passes,
+    paths,
+    secrets,
+    settings_cli,
+    supervisor,
+)
+from selly_agent.browser import markets as market_adapters
 from selly_agent.installer import checks, materialize, preflight
+from selly_agent.installer import region as region_guess
 from selly_agent.installer.ui import Abort, Ui
 from selly_agent.platform import get_platform
 
@@ -54,6 +70,20 @@ def _run(args, ui: Ui) -> None:
     _install_layout(ui, args, tree)
     _start_daemon(ui, args, platform)
 
+    # Everything past here talks to the running daemon, so it needs the token minted at its
+    # first start. Read now rather than at import: before this line there was none.
+    port = config.load().http_port
+    token = secrets.read_mcp_token()
+    if not token:
+        raise Abort("the daemon is running but minted no attended token", _daemon_diagnostics())
+
+    region = _seller_region(ui, args, port, token)
+    _provision_rail(ui, region)
+    _connect_markets(ui, args, port, token, region)
+    _offer_telegram(ui, args, port, token)
+    _attended_workspace(ui)
+    _finish(ui)
+
 
 # --- what this is, and what it will touch ---------------------------------------------------
 
@@ -67,6 +97,9 @@ def _intro(ui: Ui, platform) -> None:
     ui.say("  • Checks — Node, Chrome, and the claude CLI (installed and signed in)")
     ui.say("  • Install — this version into place, plus the `selly-agent` command")
     ui.say("  • Background worker — started, and whether it comes back at login")
+    ui.say("  • Where you sell — the region, currency and timezone I price in")
+    ui.say("  • Marketplaces — I open my browser once so you can sign in to the ones you want")
+    ui.say("  • Telegram — optional; where buyer chats reach you on your phone")
     ui.say("")
     ui.say("Everything I write goes in these places, and nowhere else:")
     for line in materialize.layout_preview(platform=platform):
@@ -268,6 +301,188 @@ def _wait_for_daemon(started_after: float) -> bool:
         newer_than=started_after,
         timeout_sec=DAEMON_READY_TIMEOUT_SEC,
     )
+
+
+# --- where the seller sells ------------------------------------------------------------------
+
+
+def _seller_region(ui: Ui, args, port: int, token: str):
+    """Record region, currency and timezone, and answer with the region the daemon now holds.
+
+    The machine's timezone already implies all three, so this confirms a proposal rather than
+    conducting an interview. A machine that implies nothing (or a seller who says no) is asked.
+    Provisioning and the marketplace list both key off the answer, so it is read back from the
+    daemon rather than assumed — on a re-run the region may already be there.
+    """
+    known = _stored_basics(port, token)
+    if known.get("region") and not args.region:
+        ui.say(f"You sell in {region_guess.render(known)} — unchanged.")
+        return known["region"]
+
+    basics = _basics_from_flag(args) if args.region else region_guess.guess()
+    if basics and not args.region:
+        if not ui.confirm(f"You sell in {region_guess.render(basics)}, right?", default=True):
+            basics = None
+    if basics is None:
+        basics = _ask_basics(ui)
+    if not basics:
+        ui.warn("No region recorded, so I can't set up carousell.ai or name your marketplaces.")
+        ui.note("Tell me later in a session and I'll finish those two steps.")
+        return None
+
+    status, body = control.post(port, token, "/control/seller-basics", basics)
+    if status != 200:
+        raise Abort(f"could not record your region: {body.get('error', status)}")
+    ui.say(f"Set — {region_guess.render(body['basics'])}.")
+    return body["basics"].get("region")
+
+
+def _stored_basics(port: int, token: str) -> dict:
+    try:
+        return control.get(port, token, "/control/seller-basics").get("basics") or {}
+    except control.DaemonUnreachable:
+        return {}
+
+
+def _basics_from_flag(args) -> dict:
+    code = str(args.region).strip().upper()
+    basics = {"region": code, "timezone": region_guess.system_timezone()}
+    currency = region_guess.CURRENCIES.get(code)
+    if currency:
+        basics["currency"] = currency
+    return {key: value for key, value in basics.items() if value}
+
+
+def _ask_basics(ui: Ui):
+    """Ask for the three values outright. Answers nothing when there is nobody to ask."""
+    if not ui.interactive:
+        return None
+    code = ui.ask("Which country do you sell in? (two-letter code, e.g. SG)").strip().upper()
+    if len(code) != 2 or not code.isalpha():
+        return None
+    currency = (
+        region_guess.CURRENCIES.get(code)
+        or ui.ask("And the currency you price in? (three-letter code, e.g. SGD)").strip().upper()
+    )
+    timezone = ui.ask("Your timezone?", default=region_guess.system_timezone()).strip()
+    basics = {"region": code, "currency": currency, "timezone": timezone}
+    return {key: value for key, value in basics.items() if value}
+
+
+# --- the rail ----------------------------------------------------------------------------------
+
+
+def _provision_rail(ui: Ui, region) -> None:
+    """Get the carousell.ai guest key. Quiet on success, and never fatal.
+
+    A provisioning hiccup is a network problem, not an install problem: everything except the
+    rail works without it, and the key can be obtained later. Saying so beats stopping.
+    """
+    from selly_agent.rail import provision
+
+    if not region:
+        return
+    status = provision.ensure(region, api_base=config.load().carousell_ai_api_base)
+    if status.get("status") == "ok":
+        ui.say("carousell.ai is ready — it's on by default, nothing to sign in to.")
+        return
+    ui.warn(f"Couldn't set up carousell.ai just now ({status.get('error')}).")
+    ui.note("Re-run `selly-agent provision carousell-ai` once you're back online.")
+
+
+# --- marketplaces ---------------------------------------------------------------------------
+
+
+def _connect_markets(ui: Ui, args, port: int, token: str, region) -> None:
+    """Offer the marketplaces this seller could list on, and sign in to the ones they pick.
+
+    This step *is* the opt-in to cross-listing: what they choose here becomes the setting the
+    fan-out reads. carousell.ai is never in the list — it is the rail every listing goes on, with
+    nothing to sign in to.
+    """
+    if args.skip_markets or not region:
+        return
+    available = market_adapters.publishable_markets(region)
+    if not available:
+        ui.say("No other marketplaces are available for your region yet — carousell.ai only.")
+        return
+
+    ui.say("I can also list on these. Signing in happens in my own Chrome window, and I never")
+    ui.say("sign in for you — you can skip this and do it later with `selly-agent connect <name>`.")
+    names = [marketplaces.display_name(market) for market in available]
+    picked = [available[index] for index in ui.multiselect("Which should I list on?", names)]
+    if not picked:
+        ui.say("Sticking to carousell.ai. Change that any time from the /selly menu.")
+        return
+
+    # The setting first: it is what the seller opted into, and it holds even if a sign-in is
+    # interrupted — the fan-out re-checks the login every time it publishes anyway.
+    if settings_cli.set_setting(port, token, "crosslist_markets", json.dumps(picked)) != 0:
+        ui.warn("Couldn't record those marketplaces — carousell.ai only for now.")
+        return
+
+    for market in picked:
+        ui.say(f"Opening {marketplaces.display_name(market)}…")
+        connect_cli.market_flow(port, token, market, interactive=ui.interactive)
+
+
+# --- Telegram ---------------------------------------------------------------------------------
+
+
+def _offer_telegram(ui: Ui, args, port: int, token: str) -> None:
+    """Offer the phone channel. Declining is a first-class answer — the agent runs without it,
+    and everything it would push is queued and shown at the start of an attended session."""
+    if args.skip_telegram:
+        return
+    if _channel_bound(port, token):
+        ui.say("Telegram is already connected.")
+        return
+
+    ui.say("Want buyer chats on your phone? I can connect a Telegram bot (about two minutes).")
+    ui.say("Skip it and I'll still run — I'll just keep everything for your next session here.")
+    if not ui.interactive or not ui.confirm("Connect Telegram now?", default=True):
+        ui.say("Skipped. Connect it later with: selly-agent connect telegram")
+        return
+
+    ui.say("Handing over to the Telegram setup —")
+    code = connect_cli.bind_flow(port, token, interactive=ui.interactive)
+    if code != 0:
+        ui.say("Not connected yet. Pick it up later with: selly-agent connect telegram")
+
+
+def _channel_bound(port: int, token: str) -> bool:
+    try:
+        return bool(control.get(port, token, "/control/channel-status").get("bound"))
+    except control.DaemonUnreachable:
+        return False
+
+
+# --- the attended session ----------------------------------------------------------------------
+
+
+def _attended_workspace(ui: Ui) -> None:
+    """Generate the Claude Code workspace at a fixed, documented place.
+
+    A fixed location rather than wherever the terminal happened to be: this is the directory the
+    seller will be told to `cd` into for months afterwards, so it has to have a name.
+    """
+    dest = paths.data_root() / "attended"
+    if pass_cli.harness_config(dest) != 0:
+        ui.warn("Couldn't write the attended workspace — `selly-agent harness config` will.")
+        return
+    ui.say("To talk to me in a terminal:")
+    ui.plain(f"  cd {dest} && claude")
+
+
+# --- the last word ------------------------------------------------------------------------------
+
+
+def _finish(ui: Ui) -> None:
+    ui.say("")
+    ui.say("Done — I'm running.")
+    ui.say("  • Change settings any time: `/selly` in the attended session")
+    ui.say("  • Check on me:              selly-agent daemon status")
+    ui.say("  • Update:                   selly-agent update")
 
 
 def _daemon_diagnostics() -> str:

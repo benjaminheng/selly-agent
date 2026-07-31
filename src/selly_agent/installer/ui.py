@@ -192,8 +192,11 @@ class Ui:
         """
         if not options:
             return []
-        if not self.interactive:
-            self.say(f"{question} (skipped — no terminal to ask at)")
+        if not self.interactive or self.assume_yes:
+            # Unlike a yes/no question, this one's default is *none*: every caller of it opts the
+            # seller into something public, and choosing that for them because they passed --yes
+            # is not a default, it is a decision.
+            self.say(f"{question} (skipped — nothing selected)")
             return []
         self.say(question)
         for number, option in enumerate(options, start=1):

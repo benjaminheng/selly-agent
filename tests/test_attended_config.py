@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from argparse import Namespace
 
 import pytest
 
@@ -16,7 +15,7 @@ def configured(xdg_tmp, tmp_path):
     paths.ensure_config_dir()
     secrets.write_secret(paths.mcp_token_path(), "ATTENDEDTOKEN")
     dest = tmp_path / "project"
-    assert pass_cli.harness_config(Namespace(attended=True, dir=str(dest))) == 0
+    assert pass_cli.harness_config(dest) == 0
     return dest
 
 
@@ -73,13 +72,13 @@ def test_no_settings_json_is_written(configured) -> None:
 def test_rerunning_refreshes_rather_than_duplicates(configured) -> None:
     stale = configured / ".claude" / "commands" / "sell.md"
     stale.write_text("stale content")
-    assert pass_cli.harness_config(Namespace(attended=True, dir=str(configured))) == 0
+    assert pass_cli.harness_config(configured) == 0
     assert stale.read_text() != "stale content"
 
 
 def test_without_a_token_nothing_is_written(xdg_tmp, tmp_path, capsys) -> None:
     dest = tmp_path / "project"
-    assert pass_cli.harness_config(Namespace(attended=True, dir=str(dest))) == 1
+    assert pass_cli.harness_config(dest) == 1
     assert not dest.exists()
     assert "daemon" in capsys.readouterr().err
 

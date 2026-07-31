@@ -10,8 +10,21 @@ from __future__ import annotations
 import pytest
 from tests.test_supervisor import FakePlatform
 
-from selly_agent import cli, config, heartbeat, passes, paths, setup_cli
+from selly_agent import (
+    cli,
+    config,
+    connect_cli,
+    control,
+    heartbeat,
+    pass_cli,
+    passes,
+    paths,
+    secrets,
+    settings_cli,
+    setup_cli,
+)
 from selly_agent.installer import checks, materialize, preflight
+from selly_agent.installer import region as region_guess
 
 
 @pytest.fixture
@@ -41,11 +54,63 @@ def world(monkeypatch, xdg_tmp, tree):
     # A PATH that already has ~/.local/bin, so the rc-file offer stays out of the way unless a
     # test is about it.
     monkeypatch.setenv("PATH", f"/usr/bin:{paths.user_bin_dir()}")
+
+    # The daemon half: a token as if one had been minted at first start, and control routes that
+    # record rather than serve.
+    paths.ensure_config_dir()
+    secrets.write_secret(paths.mcp_token_path(), "attended-secret")
+    calls = {"posts": [], "basics": {}, "markets": [], "settings": {}, "bound": False}
+
+    def fake_post(port, token, route, body, **kwargs):
+        calls["posts"].append((route, body))
+        if route == "/control/seller-basics":
+            calls["basics"] = {**calls["basics"], **body}
+            return 200, {"basics": calls["basics"]}
+        return 200, {}
+
+    def fake_get(port, token, route, params=None, **kwargs):
+        if route == "/control/seller-basics":
+            return {"basics": calls["basics"]}
+        if route == "/control/channel-status":
+            return {"bound": calls["bound"]}
+        return {}
+
+    def fake_set_setting(port, token, key, value):
+        calls["settings"][key] = value
+        return 0
+
+    def fake_market_flow(port, token, market, **kwargs):
+        calls["markets"].append(market)
+        return 0
+
+    monkeypatch.setattr(control, "post", fake_post)
+    monkeypatch.setattr(control, "get", fake_get)
+    monkeypatch.setattr(settings_cli, "set_setting", fake_set_setting)
+    monkeypatch.setattr(connect_cli, "market_flow", fake_market_flow)
+    monkeypatch.setattr(connect_cli, "bind_flow", lambda *a, **k: calls.get("bind_rc", 0))
+    monkeypatch.setattr(pass_cli, "harness_config", lambda directory=None: 0)
+    monkeypatch.setattr(
+        setup_cli, "_provision_rail", lambda ui, region: calls.__setitem__("provisioned", region)
+    )
+    monkeypatch.setattr(region_guess, "system_timezone", lambda: "Asia/Singapore")
+
+    platform.calls = calls
     return platform
 
 
 def setup_main(*argv) -> int:
     return cli.main(["selly-agent", "setup", *argv])
+
+
+def _answer(monkeypatch, replies):
+    """Drive the prompts with a script, as a person at a real terminal would.
+
+    Exhausting the script raises rather than blocking, so a prompt nobody anticipated shows up as
+    a failure instead of a hung suite.
+    """
+    monkeypatch.setattr(setup_cli.Ui, "_detect_interactive", lambda self: True)
+    answers = iter(replies)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
 
 # --- the happy path ----------------------------------------------------------------------------
@@ -280,3 +345,119 @@ def test_a_piped_run_that_never_said_yes_gets_the_line_not_an_edit(
 
     assert not materialize.shell_rc_target("/bin/zsh").exists()
     assert materialize.RC_BLOCK_BODY in capsys.readouterr().out
+
+
+# --- where the seller sells -------------------------------------------------------------------
+
+
+def test_the_region_is_proposed_from_the_machines_timezone(world, capsys) -> None:
+    assert setup_main("--yes", "--manual") == 0
+    assert world.calls["basics"] == {
+        "region": "SG",
+        "currency": "SGD",
+        "timezone": "Asia/Singapore",
+    }
+    assert "You sell in SG · SGD · Asia/Singapore, right?" in capsys.readouterr().out
+
+
+def test_the_region_flag_wins_over_the_guess(world) -> None:
+    assert setup_main("--yes", "--manual", "--region", "my") == 0
+    assert world.calls["basics"]["region"] == "MY"
+    assert world.calls["basics"]["currency"] == "MYR"
+
+
+def test_a_re_run_leaves_a_recorded_region_alone(world, capsys) -> None:
+    setup_main("--yes", "--manual")
+    capsys.readouterr()
+    assert setup_main("--yes", "--manual") == 0
+    assert "unchanged" in capsys.readouterr().out
+
+
+def test_an_unrecognised_timezone_leaves_the_region_unset_and_says_what_that_costs(
+    world, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(region_guess, "system_timezone", lambda: "Antarctica/Troll")
+    assert setup_main("--yes", "--manual") == 0
+    assert world.calls["basics"] == {}
+    out = capsys.readouterr().out
+    assert "can't set up carousell.ai" in out
+
+
+def test_provisioning_gets_the_region_that_was_recorded(world) -> None:
+    setup_main("--yes", "--manual")
+    assert world.calls["provisioned"] == "SG"
+
+
+def test_nothing_is_provisioned_without_a_region(world, monkeypatch) -> None:
+    monkeypatch.setattr(region_guess, "system_timezone", lambda: "Antarctica/Troll")
+    setup_main("--yes", "--manual")
+    assert world.calls["provisioned"] is None
+
+
+# --- marketplaces --------------------------------------------------------------------------------
+
+
+def test_picking_a_marketplace_records_the_setting_then_signs_in(world, monkeypatch) -> None:
+    _answer(monkeypatch, ["y", "1", "n"])  # region confirmed, Carousell picked, Telegram declined
+
+    assert setup_main("--manual") == 0
+
+    # The opt-in is recorded before the sign-in, so an interrupted sign-in still leaves the
+    # seller's choice standing.
+    assert world.calls["settings"] == {"crosslist_markets": '["carousell"]'}
+    assert world.calls["markets"] == ["carousell"]
+
+
+def test_skipping_the_marketplace_offer_enables_nothing(world, monkeypatch, capsys) -> None:
+    _answer(monkeypatch, ["y", "", "n"])  # region confirmed, no marketplace picked
+
+    assert setup_main("--manual") == 0
+
+    assert world.calls["settings"] == {}
+    assert world.calls["markets"] == []
+    assert "Sticking to carousell.ai" in capsys.readouterr().out
+
+
+def test_skip_markets_never_offers(world) -> None:
+    assert setup_main("--yes", "--manual", "--skip-markets") == 0
+    assert world.calls["markets"] == []
+
+
+def test_a_region_with_no_marketplaces_says_so_rather_than_offering_an_empty_list(
+    world, capsys
+) -> None:
+    assert setup_main("--yes", "--manual", "--region", "US") == 0
+    assert "No other marketplaces are available" in capsys.readouterr().out
+
+
+# --- Telegram ------------------------------------------------------------------------------------
+
+
+def test_telegram_is_offered_and_declining_points_at_the_verb(world, capsys) -> None:
+    # Not interactive, so the offer is declined for us — the path a piped install takes.
+    assert setup_main("--manual") == 0
+    assert "selly-agent connect telegram" in capsys.readouterr().out
+
+
+def test_an_already_bound_channel_is_not_offered_again(world, capsys) -> None:
+    world.calls["bound"] = True
+    assert setup_main("--yes", "--manual") == 0
+    assert "already connected" in capsys.readouterr().out
+
+
+def test_skip_telegram_never_offers(world, capsys) -> None:
+    assert setup_main("--yes", "--manual", "--skip-telegram") == 0
+    assert "Connect Telegram now?" not in capsys.readouterr().out
+
+
+# --- the attended workspace ----------------------------------------------------------------------
+
+
+def test_the_attended_workspace_lands_at_a_documented_path(world, monkeypatch, capsys) -> None:
+    written = []
+    monkeypatch.setattr(
+        pass_cli, "harness_config", lambda directory=None: written.append(directory) or 0
+    )
+    assert setup_main("--yes", "--manual") == 0
+    assert written == [paths.data_root() / "attended"]
+    assert f"cd {paths.data_root() / 'attended'} && claude" in capsys.readouterr().out
