@@ -545,11 +545,13 @@ class _Handler(BaseHTTPRequestHandler):
         if self._attended_query(parsed) is None:
             return
         enabled = settings.crosslist_markets(self._app.store)
+        # The *reason* travels with the answer: "Chrome isn't running" and "a pass is using the
+        # browser" both stop a probe, but a reader told the first while watching Chrome run a
+        # publish learns to distrust the report.
         blocked = self._probe_blocked()
-        chrome_ready = not blocked
 
         results = []
-        if chrome_ready:
+        if not blocked:
             for market in enabled:
                 adapter = market_adapters.get_adapter(market)
                 if adapter is None:
@@ -560,7 +562,7 @@ class _Handler(BaseHTTPRequestHandler):
                     results.append({"market": market, "state": "unknown", "detail": str(exc)})
                     continue
                 results.append({"market": market, "state": state})
-        self._send_json(200, {"enabled": enabled, "chrome_ready": chrome_ready, "markets": results})
+        self._send_json(200, {"enabled": enabled, "blocked": blocked, "markets": results})
 
     def _market_adapter(self, market):
         """The adapter for a market id, or None once this has replied with why there isn't one."""

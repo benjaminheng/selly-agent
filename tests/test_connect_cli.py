@@ -26,7 +26,7 @@ def stub_daemon(monkeypatch):
         )
 
     def fake_get(port, token, route, params=None, **kwargs):
-        return {"bound": calls.get("bound", True), "bot_username": "sellybot"}
+        return 200, {"bound": calls.get("bound", True), "bot_username": "sellybot"}
 
     monkeypatch.setattr(control, "post", fake_post)
     monkeypatch.setattr(control, "get", fake_get)
@@ -190,7 +190,7 @@ def stub_market_daemon(monkeypatch):
 
     def fake_get(port, token, route, params=None, **kwargs):
         calls["gets"].append((route, params))
-        return {"state": calls["state"]}
+        return calls.get("get_status", 200), {"state": calls["state"]}
 
     monkeypatch.setattr(control, "post", fake_post)
     monkeypatch.setattr(control, "get", fake_get)

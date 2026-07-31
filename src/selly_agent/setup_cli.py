@@ -356,9 +356,10 @@ def _seller_region(ui: Ui, args, port: int, token: str):
 
 def _stored_basics(port: int, token: str) -> dict:
     try:
-        return control.get(port, token, "/control/seller-basics").get("basics") or {}
+        status, body = control.get(port, token, "/control/seller-basics")
     except control.DaemonUnreachable:
         return {}
+    return (body.get("basics") or {}) if status == 200 else {}
 
 
 def _basics_from_flag(args) -> dict:
@@ -474,9 +475,10 @@ def _offer_telegram(ui: Ui, args, port: int, token: str) -> None:
 
 def _channel_bound(port: int, token: str) -> bool:
     try:
-        return bool(control.get(port, token, "/control/channel-status").get("bound"))
+        status, body = control.get(port, token, "/control/channel-status")
     except control.DaemonUnreachable:
         return False
+    return status == 200 and bool(body.get("bound"))
 
 
 # --- the attended session ----------------------------------------------------------------------

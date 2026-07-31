@@ -111,7 +111,11 @@ def _update_seller_config(ctx: ToolContext, params: dict) -> dict:
             basics = validate_basics(params["basics"])
         except BasicsError as exc:
             raise ToolError(str(exc)) from exc
-        ctx.store.set_seller_config_section("basics", basics)
+        # Merged, the same way the installer's door writes it: validate_basics accepts partial
+        # updates, and a currency tweak that silently dropped the stored region would leave a
+        # seller nothing can publish for — with no error anywhere near the cause.
+        current = ctx.store.get_seller_config_section("basics") or {}
+        ctx.store.set_seller_config_section("basics", {**current, **basics})
         written.append("basics")
     if "shipping" in params:
         shipping = params["shipping"]

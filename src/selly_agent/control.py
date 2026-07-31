@@ -80,16 +80,24 @@ def post(port: int, token: str, route: str, body: dict, *, timeout: float = DEFA
         raise DaemonUnreachable(str(exc)) from exc
 
 
-def get(
-    port: int, token: str, route: str, params=None, *, timeout: float = DEFAULT_TIMEOUT_SEC
-) -> dict:
-    """GET a control route. Raises DaemonUnreachable when nothing answers."""
+def get(port: int, token: str, route: str, params=None, *, timeout: float = DEFAULT_TIMEOUT_SEC):
+    """GET a control route, answering (status, parsed body) — the same contract as `post`.
+
+    DaemonUnreachable is reserved for nothing answering at all. An HTTP error *is* the daemon
+    answering — a stale token's 401, a busy browser's 503 — and reporting one as "the daemon
+    isn't running" sends whoever reads the message off to debug the wrong thing entirely.
+    """
     query = dict(params or {})
     query["token"] = token
     url = f"{base_url(port)}{route}?{urllib.parse.urlencode(query)}"
     request = urllib.request.Request(url, headers={"Origin": _LOCALHOST_ORIGIN})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+        except (ValueError, OSError):
+            return exc.code, {}
     except (urllib.error.URLError, OSError) as exc:
         raise DaemonUnreachable(str(exc)) from exc

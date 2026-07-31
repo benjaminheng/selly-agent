@@ -130,10 +130,12 @@ def market_flow(port: int, mcp_token: str, market: str, *, interactive: bool | N
 
 def _probe_market(port: int, mcp_token: str, market: str):
     try:
-        answer = control.get(port, mcp_token, "/control/market-login", {"market": market})
+        status, answer = control.get(port, mcp_token, "/control/market-login", {"market": market})
     except control.DaemonUnreachable:
         return "unknown"
-    return answer.get("state")
+    # A refusal (the browser went away, a pass took the tab) is not an answer about the login,
+    # and "unknown" is the honest reading — never "logged_out", which would alarm for nothing.
+    return answer.get("state") if status == 200 else "unknown"
 
 
 def _display_name(market: str) -> str:
@@ -219,7 +221,7 @@ def _await_bind(port: int, token: str, *, timeout: int, interactive: bool) -> in
         if remaining <= 0:
             break
         try:
-            status = control.get(port, token, "/control/channel-status")
+            _, status = control.get(port, token, "/control/channel-status")
         except control.DaemonUnreachable:
             status = {}
         if status.get("bound"):
@@ -239,9 +241,12 @@ def _await_bind(port: int, token: str, *, timeout: int, interactive: bool) -> in
 
 def _print_status(port: int, token: str) -> int:
     try:
-        status = control.get(port, token, "/control/channel-status")
+        code, status = control.get(port, token, "/control/channel-status")
     except control.DaemonUnreachable as exc:
         print(f"selly-agent: could not reach the daemon: {exc}", file=sys.stderr)
+        return 3
+    if code != 200:
+        print(f"selly-agent: {status.get('error', f'HTTP {code}')}", file=sys.stderr)
         return 3
     if status.get("bound"):
         print(f"bound to @{status.get('bot_username')}")

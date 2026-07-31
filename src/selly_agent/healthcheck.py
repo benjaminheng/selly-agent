@@ -68,20 +68,21 @@ def channel_check(*, bound: bool) -> checks.Check:
     )
 
 
-def browser_check(*, enabled, cdp_ready: bool, states) -> checks.Check:
+def browser_check(*, enabled, blocked: str, states) -> checks.Check:
     """Can we drive the marketplaces the seller enabled, and are they still signed in?
 
     With no external marketplaces there is nothing to check and nothing wrong: the rail needs no
-    browser. With Chrome closed there is nothing wrong either — the daemon opens it when it needs
-    it — but the sign-ins cannot be confirmed until then, which is worth saying.
+    browser. A probe the daemon declined to run is nothing wrong either — Chrome being closed or
+    a pass mid-publish are both ordinary — but the report must say which reason held it up: the
+    person reading it may be looking straight at a Chrome the report claims isn't there.
     """
     if not enabled:
         return checks.ok("browser", "no external marketplaces — carousell.ai only")
-    if not cdp_ready:
+    if blocked:
         return checks.warn(
             "browser",
-            f"Chrome isn't running, so I can't check {len(enabled)} marketplace sign-in(s) yet",
-            "Nothing to do — I start it when I need it.",
+            f"{blocked}, so I can't check {len(enabled)} marketplace sign-in(s) right now",
+            "Nothing to do — I'll check the next time I use the browser.",
         )
     logged_out = [row["market"] for row in states if row.get("state") == "logged_out"]
     unknown = [row["market"] for row in states if row.get("state") == "unknown"]
@@ -138,12 +139,14 @@ def _browser_probe(cfg) -> checks.Check:
     if not token:
         return _browser_unknown("the daemon has never run here")
     try:
-        answer = control.get(cfg.http_port, token, "/control/market-logins")
+        status, answer = control.get(cfg.http_port, token, "/control/market-logins")
     except control.DaemonUnreachable:
         return _browser_unknown("the daemon isn't answering")
+    if status != 200:
+        return _browser_unknown(f"the daemon refused the read ({answer.get('error', status)})")
     return browser_check(
         enabled=answer.get("enabled") or [],
-        cdp_ready=bool(answer.get("chrome_ready")),
+        blocked=answer.get("blocked") or "",
         states=answer.get("markets") or [],
     )
 

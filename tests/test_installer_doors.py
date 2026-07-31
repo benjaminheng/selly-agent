@@ -356,7 +356,7 @@ def test_market_logins_reports_the_enabled_set_and_probes_when_chrome_is_up(
     _status, body = _call(server, "GET", "/control/market-logins")
 
     assert body["enabled"] == ["carousell"]
-    assert body["chrome_ready"] is True
+    assert body["blocked"] == ""
     assert body["markets"] == [{"market": "carousell", "state": "logged_in"}]
 
 
@@ -376,7 +376,25 @@ def test_market_logins_never_opens_a_window_just_to_answer(
     _status, body = _call(server, "GET", "/control/market-logins")
 
     assert body["enabled"] == ["carousell"]
-    assert body["chrome_ready"] is False
+    assert "Chrome isn't running" in body["blocked"]
+    assert body["markets"] == []
+    assert browser.visited == []
+
+
+def test_market_logins_names_the_pass_as_the_reason_not_a_closed_chrome(
+    server, store, browser, chrome_up
+) -> None:
+    # Both reasons stop the probe, but they must not be conflated: a report claiming "Chrome
+    # isn't running" while Chrome is visibly mid-publish teaches the reader to distrust it.
+    from tests.conftest import seed_setting
+
+    store.set_seller_config_section("basics", {"region": "SG"})
+    seed_setting(store, "crosslist_markets", ["carousell"])
+    store.enqueue_pass("publish", {"item_id": "itm_1", "market": "carousell"})
+
+    _status, body = _call(server, "GET", "/control/market-logins")
+
+    assert "a pass is using the browser" in body["blocked"]
     assert body["markets"] == []
     assert browser.visited == []
 
@@ -456,3 +474,67 @@ def test_the_model_is_held_to_the_same_region_rule_as_the_installer(make_ctx) ->
     with pytest.raises(ToolError) as caught:
         dispatch("update_seller_config", {"basics": {"region": "MY"}}, ctx)
     assert "isn't a country selly-agent works in yet" in str(caught.value)
+
+
+def test_the_model_updating_one_basics_key_keeps_the_rest(make_ctx, store) -> None:
+    # Merged like the door writes it. validate_basics accepts partial updates, so a currency
+    # tweak that replaced the whole section would silently drop the region the installer
+    # recorded — after which nothing can publish and nothing says why.
+    from selly_agent.tools.registry import dispatch
+
+    store.set_seller_config_section(
+        "basics", {"region": "SG", "currency": "SGD", "timezone": "Asia/Singapore"}
+    )
+    dispatch("update_seller_config", {"basics": {"currency": "USD"}}, make_ctx("attended"))
+
+    assert store.get_seller_config_section("basics") == {
+        "region": "SG",
+        "currency": "USD",
+        "timezone": "Asia/Singapore",
+    }
+
+
+# --- the control client, against the real routes ---------------------------------------------
+
+
+def test_the_control_client_speaks_the_server_dialect_end_to_end(server, store) -> None:
+    # Every CLI verb funnels through control.post/get, and every CLI test stubs them — so this
+    # is the one place a drift between client and server (the token in the wrong place, an
+    # error body dropped) shows up before a live daemon does.
+    from selly_agent import control
+
+    status, body = control.post(
+        server.port, "attended-secret", "/control/seller-basics", {"region": "SG"}
+    )
+    assert (status, body["basics"]["region"]) == (200, "SG")
+
+    status, body = control.get(server.port, "attended-secret", "/control/seller-basics")
+    assert (status, body["basics"]["region"]) == (200, "SG")
+
+
+def test_the_control_client_returns_a_refusal_rather_than_calling_the_daemon_down(server) -> None:
+    # A 4xx is the daemon *answering*. Reporting it as unreachable sends whoever reads the
+    # message off to restart a daemon that is running fine.
+    from selly_agent import control
+
+    status, body = control.post(
+        server.port, "attended-secret", "/control/seller-basics", {"region": "ZZ"}
+    )
+    assert status == 400
+    assert "isn't a country" in body["error"]
+
+    status, _body = control.get(server.port, "wrong-token", "/control/seller-basics")
+    assert status == 401
+
+
+def test_the_control_client_reserves_unreachable_for_nothing_answering() -> None:
+    import socket
+
+    from selly_agent import control
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]  # released on close; nothing will be listening there
+
+    with pytest.raises(control.DaemonUnreachable):
+        control.get(port, "tok", "/control/seller-basics", timeout=2)

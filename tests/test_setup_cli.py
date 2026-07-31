@@ -76,10 +76,10 @@ def world(monkeypatch, xdg_tmp, tree):
 
     def fake_get(port, token, route, params=None, **kwargs):
         if route == "/control/seller-basics":
-            return {"basics": calls["basics"]}
+            return 200, {"basics": calls["basics"]}
         if route == "/control/channel-status":
-            return {"bound": calls["bound"]}
-        return {}
+            return 200, {"bound": calls["bound"]}
+        return 200, {}
 
     def fake_set_setting(port, token, key, value):
         calls["settings"][key] = value

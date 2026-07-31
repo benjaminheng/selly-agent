@@ -49,10 +49,17 @@ def _follow(port: int, token: str, pass_id: str) -> None:
     after = 0
     while True:
         try:
-            data = control.get(port, token, "/events.json", {"pass": pass_id, "after_seq": after})
+            status, data = control.get(
+                port, token, "/events.json", {"pass": pass_id, "after_seq": after}
+            )
         except control.DaemonUnreachable:
             time.sleep(1.0)
             continue
+        if status != 200:
+            # The daemon answered and said no — a stale token, a bad pass id. Unlike a daemon
+            # that is momentarily down, retrying will get the same refusal forever.
+            print(f"selly-agent: {data.get('error', f'HTTP {status}')}", file=sys.stderr)
+            return
         for event in data["events"]:
             print(f"{event['kind']:<16} {json.dumps(event['payload'], sort_keys=True)}", flush=True)
             after = event["seq"]

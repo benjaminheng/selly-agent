@@ -58,21 +58,34 @@ def test_a_bound_channel_passes_and_an_unbound_one_only_warns() -> None:
 
 
 def test_no_external_marketplaces_is_a_pass_with_the_reason() -> None:
-    result = healthcheck.browser_check(enabled=[], cdp_ready=False, states=[])
+    result = healthcheck.browser_check(enabled=[], blocked="Chrome isn't running", states=[])
     assert result.status == checks.OK
     assert "carousell.ai only" in result.detail
 
 
 def test_a_closed_chrome_with_markets_enabled_is_a_note_not_a_fault() -> None:
-    result = healthcheck.browser_check(enabled=["carousell"], cdp_ready=False, states=[])
+    result = healthcheck.browser_check(
+        enabled=["carousell"], blocked="Chrome isn't running", states=[]
+    )
     assert result.status == checks.WARN
-    assert "I start it when I need it" in result.fix
+    assert "Chrome isn't running" in result.detail
+
+
+def test_a_pass_holding_the_browser_is_reported_as_that_never_as_chrome_down() -> None:
+    # The reader may be watching Chrome run the publish; telling them it isn't running is how
+    # the report loses their trust.
+    result = healthcheck.browser_check(
+        enabled=["carousell"], blocked="a pass is using the browser", states=[]
+    )
+    assert result.status == checks.WARN
+    assert "a pass is using the browser" in result.detail
+    assert "Chrome isn't running" not in result.detail
 
 
 def test_being_signed_out_of_an_enabled_market_fails_with_the_command_to_fix_it() -> None:
     result = healthcheck.browser_check(
         enabled=["carousell"],
-        cdp_ready=True,
+        blocked="",
         states=[{"market": "carousell", "state": "logged_out"}],
     )
     assert result.status == checks.FAIL
@@ -82,7 +95,7 @@ def test_being_signed_out_of_an_enabled_market_fails_with_the_command_to_fix_it(
 def test_an_unconfirmable_login_warns_rather_than_claiming_signed_out() -> None:
     result = healthcheck.browser_check(
         enabled=["carousell"],
-        cdp_ready=True,
+        blocked="",
         states=[{"market": "carousell", "state": "unknown"}],
     )
     assert result.status == checks.WARN
@@ -91,7 +104,7 @@ def test_an_unconfirmable_login_warns_rather_than_claiming_signed_out() -> None:
 def test_every_enabled_market_signed_in_passes() -> None:
     result = healthcheck.browser_check(
         enabled=["carousell"],
-        cdp_ready=True,
+        blocked="",
         states=[{"market": "carousell", "state": "logged_in"}],
     )
     assert result.status == checks.OK

@@ -49,9 +49,12 @@ def set_setting(port: int, token: str, key: str, value: str) -> int:
 
 def _list(port: int, token: str) -> int:
     try:
-        data = control.get(port, token, "/control/settings-list")
+        status, data = control.get(port, token, "/control/settings-list")
     except control.DaemonUnreachable as exc:
         print(f"selly-agent: could not reach the daemon: {exc}", file=sys.stderr)
+        return 1
+    if status != 200:
+        print(f"selly-agent: {data.get('error', f'HTTP {status}')}", file=sys.stderr)
         return 1
     pending = data.get("pending", [])
     if pending:
