@@ -233,6 +233,7 @@ def _install_layout(ui: Ui, args, platform, tree) -> None:
     ui.say(f"The `selly-agent` command is at {shim}.")
     _offer_path(ui, args)
     _record_claude_bin(ui)
+    _record_node_bin_dir(ui)
 
 
 def _offer_path(ui: Ui, args) -> None:
@@ -299,6 +300,21 @@ def _record_claude_bin(ui: Ui) -> None:
         return
     config.merge_into_file({"claude_bin": resolved})
     ui.note(f"claude: {resolved}")
+
+
+def _record_node_bin_dir(ui: Ui) -> None:
+    """Pin the directory holding node and npx into config.
+
+    Same reason as the harness path: the background worker is started by the supervisor with a
+    minimal PATH, which carries no version manager's shims. Resolved here, in a real shell, where
+    the answer is actually available — and it is the supervisor's job definition that carries it,
+    so the worker's browser server can be spawned at all.
+    """
+    resolved = preflight.node_bin_dir()
+    if not resolved:
+        return
+    config.merge_into_file({"node_bin_dir": resolved})
+    ui.note(f"node: {resolved}")
 
 
 # --- the daemon -----------------------------------------------------------------------------

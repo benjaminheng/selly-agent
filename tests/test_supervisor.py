@@ -61,6 +61,28 @@ def test_the_plist_pins_the_xdg_overrides_the_installer_ran_under(xdg_tmp) -> No
         assert f"<string>{os.environ[var]}</string>" in plist
 
 
+def test_the_plist_puts_the_recorded_node_directory_on_the_jobs_path(xdg_tmp) -> None:
+    # A supervised job's PATH holds none of a version manager's directories, so `npx` — and so the
+    # whole browser layer — is unreachable unless the installer's answer is carried here.
+    config.merge_into_file({"node_bin_dir": "/opt/node-versions/v22/bin"})
+    fake = FakePlatform()
+    assert supervisor.install(mode="manual", platform=fake) == 0
+
+    plist = (paths.config_dir() / "com.selly.agent.plist").read_text()
+    assert "<key>PATH</key>" in plist
+    assert f"<string>/opt/node-versions/v22/bin:{supervisor._SUPERVISED_PATH}</string>" in plist
+
+
+def test_no_recorded_node_directory_leaves_the_jobs_path_alone(xdg_tmp) -> None:
+    # Nothing recorded means nothing known: naming a PATH here would replace the default with a
+    # guess, and a daemon started from a shell already has the right one.
+    fake = FakePlatform()
+    assert supervisor.install(mode="manual", platform=fake) == 0
+
+    plist = (paths.config_dir() / "com.selly.agent.plist").read_text()
+    assert "<key>PATH</key>" not in plist
+
+
 # --- mode logic ---------------------------------------------------------------------------
 
 

@@ -198,3 +198,25 @@ def test_render_and_exit_code() -> None:
     assert rendered[-1] == "   → selly-agent connect telegram"
     assert checks.exit_code([checks.ok("a", "b"), checks.warn("c", "d")]) == 0
     assert checks.exit_code([checks.ok("a", "b"), checks.fail("c", "d")]) == 1
+
+
+def test_the_node_directory_is_recorded_at_a_path_that_outlives_the_shell(
+    tmp_path, monkeypatch
+) -> None:
+    # fnm hands out a directory named after the shell's pid, which is gone once that shell is.
+    # Recording it verbatim would leave the worker pointed at nothing after the next logout.
+    installation = tmp_path / "node-versions" / "v22" / "installation"
+    (installation / "bin").mkdir(parents=True)
+    (installation / "bin" / "npx").write_text("#!/bin/sh\n")
+    per_shell = tmp_path / "fnm_multishells" / "52166_1785491228033"
+    per_shell.parent.mkdir(parents=True)
+    per_shell.symlink_to(installation)
+
+    monkeypatch.setattr(preflight.shutil, "which", lambda name: str(per_shell / "bin" / "npx"))
+
+    assert preflight.node_bin_dir() == str(installation / "bin")
+
+
+def test_no_npx_records_nothing_rather_than_a_guess(monkeypatch) -> None:
+    monkeypatch.setattr(preflight.shutil, "which", lambda name: None)
+    assert preflight.node_bin_dir() == ""

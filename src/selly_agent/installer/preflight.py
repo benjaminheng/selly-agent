@@ -146,6 +146,23 @@ def binary_arch(path: str) -> str:
     return parse_binary_arch(out) if code == 0 else "unknown"
 
 
+def node_bin_dir() -> str:
+    """The directory holding node and npx, at a path that will still exist tomorrow.
+
+    Resolved through symlinks rather than taken as `which` reports it: a version manager may hand
+    out a per-shell directory — fnm names one after the shell's pid — which stops existing when
+    that shell does. What it points at is the installation itself, which persists.
+
+    A directory rather than the npx path, because `npx` is usually a wrapper whose shebang looks
+    `node` up on PATH: naming the binary absolutely would still leave it unable to find its own
+    interpreter. Both live in this directory, so putting it on PATH answers for both.
+    """
+    npx = shutil.which("npx")
+    if not npx:
+        return ""
+    return os.path.realpath(str(Path(npx).parent))
+
+
 def homebrew_path() -> str:
     """Homebrew's binary, or "" when it is not installed.
 

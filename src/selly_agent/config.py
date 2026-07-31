@@ -57,6 +57,12 @@ class Config:
     # Explicit path to the harness CLI; null means resolve from PATH (plus the
     # conventional user install locations) at spawn time.
     claude_bin: str | None = None
+    # The directory holding `node` and `npx`, recorded by the installer. A supervised daemon is
+    # given a minimal PATH that contains no version manager's shims, so without this the browser
+    # server cannot be spawned at all; it goes on the PATH of the job the supervisor installs.
+    # Null means the daemon relies on whatever PATH it inherits, which is right when it is started
+    # from a shell.
+    node_bin_dir: str | None = None
     carousell_ai_api_base: str = "https://api.carousell.ai"
     carousell_ai_web_base_url: str = "https://www.carousell.ai"
     # The Telegram Bot API base. Overridable so the channel tests point the real transport at a
@@ -193,6 +199,16 @@ def _validate(raw: dict) -> Config:
         if claude_bin is not None and (not isinstance(claude_bin, str) or not claude_bin.strip()):
             raise ConfigError(f"claude_bin must be a non-empty string or null, got {claude_bin!r}")
         values["claude_bin"] = claude_bin
+
+    if "node_bin_dir" in raw:
+        node_bin_dir = raw["node_bin_dir"]
+        if node_bin_dir is not None and (
+            not isinstance(node_bin_dir, str) or not node_bin_dir.strip()
+        ):
+            raise ConfigError(
+                f"node_bin_dir must be a directory path or null, got {node_bin_dir!r}"
+            )
+        values["node_bin_dir"] = node_bin_dir.strip() if node_bin_dir is not None else None
 
     for key in ("carousell_ai_api_base", "carousell_ai_web_base_url", "telegram_api_base"):
         if key in raw:
