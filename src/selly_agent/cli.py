@@ -17,6 +17,44 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("version", help="print the version and exit")
 
+    setup = sub.add_parser("setup", help="install selly-agent on this machine")
+    setup.add_argument(
+        "--dev",
+        action="store_true",
+        help="point the install at this working tree instead of copying it into versions/",
+    )
+    setup.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="take the default answer to every question",
+    )
+    setup_mode = setup.add_mutually_exclusive_group()
+    setup_mode.add_argument(
+        "--login-start",
+        dest="mode",
+        action="store_const",
+        const="login-start",
+        help="don't ask: start the daemon at login",
+    )
+    setup_mode.add_argument(
+        "--manual",
+        dest="mode",
+        action="store_const",
+        const="manual",
+        help="don't ask: start the daemon only on demand",
+    )
+    setup.add_argument("--region", default=None, help="two-letter region code (e.g. SG)")
+    setup.add_argument(
+        "--skip-markets", action="store_true", help="don't offer marketplace sign-in"
+    )
+    setup.add_argument("--skip-telegram", action="store_true", help="don't offer Telegram")
+    setup.add_argument(
+        "--no-modify-path",
+        action="store_true",
+        help="never edit a shell rc file; print the PATH line instead",
+    )
+
     daemon = sub.add_parser("daemon", help="daemon lifecycle")
     dsub = daemon.add_subparsers(dest="daemon_command", required=True)
 
@@ -145,6 +183,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "version":
         print(__version__)
         return 0
+
+    if args.command == "setup":
+        from selly_agent import setup_cli
+
+        return setup_cli.run(args)
 
     if args.command == "daemon":
         from selly_agent import daemon_cli

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from selly_agent import config, paths, supervisor
@@ -136,3 +137,36 @@ def test_label_override_is_recorded_and_used(xdg_tmp) -> None:
     assert (paths.launch_agents_dir(platform=fake) / "com.selly.agent.dev.plist").exists()
     assert config.load().daemon_label == "com.selly.agent.dev"
     assert supervisor.gather_status(platform=fake).label == "com.selly.agent.dev"
+
+
+# --- the layout `daemon install` provisions -------------------------------------------------
+
+
+def test_install_leaves_an_existing_versioned_current_alone(xdg_tmp) -> None:
+    # `update` swaps current to the new version and then re-runs `daemon install` to re-render
+    # the plist. If install re-pointed current at the tree its own code lives in, the update
+    # would silently undo its own swap.
+    fake = FakePlatform()
+    version = paths.versions_dir() / "9.9.9"
+    (version / "bin").mkdir(parents=True)
+    paths.ensure_runtime_dirs()
+    paths.current().symlink_to(version)
+
+    assert supervisor.install(mode="manual", platform=fake) == 0
+    assert Path(os.path.realpath(paths.current())) == version.resolve()
+
+
+def test_install_points_current_at_the_checkout_when_nothing_is_installed(xdg_tmp) -> None:
+    fake = FakePlatform()
+    assert supervisor.install(mode="manual", platform=fake) == 0
+    assert paths.current().is_symlink()
+    assert (paths.current() / "bin" / "selly-agent").is_file()
+
+
+def test_install_refuses_a_real_directory_at_current(xdg_tmp) -> None:
+    fake = FakePlatform()
+    paths.ensure_runtime_dirs()
+    paths.current().mkdir(parents=True)
+
+    assert supervisor.install(mode="manual", platform=fake) == 2
+    assert fake.register_calls == []
