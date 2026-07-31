@@ -15,7 +15,7 @@ needs-me item naming the listing to close by hand.
 from __future__ import annotations
 
 from selly_agent import marketplaces
-from selly_agent.rail.client import RailError, RailUnprovisioned
+from selly_agent.rail.client import RailError, RailUnprovisioned, listing_id_from_url
 from selly_agent.store import StoreError
 from selly_agent.tools.registry import (
     TIER_ATTENDED,
@@ -37,10 +37,7 @@ MANUAL_TAKE_DOWN_NOTICE = (
 
 
 def _listing_id(item: dict) -> str:
-    url = str((item.get("listing_urls") or {}).get(_MARKET) or "")
-    if "/listing/" not in url:
-        return ""
-    return url.split("/listing/", 1)[1].split("/", 1)[0].split("?", 1)[0].strip()
+    return listing_id_from_url((item.get("listing_urls") or {}).get(_MARKET))
 
 
 def _update_listing(ctx: ToolContext, params: dict) -> dict:

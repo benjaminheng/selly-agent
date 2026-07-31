@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 
 from selly_agent.money import to_price_cents
-from selly_agent.rail.client import RailError, RailUnprovisioned
+from selly_agent.rail.client import RailError, RailUnprovisioned, listing_id_from_url
 from selly_agent.store import StoreError
 from selly_agent.tools.registry import (
     TIER_ATTENDED,
@@ -34,11 +34,7 @@ def _sale_id(item_id: str, thread_id: str, price) -> str:
 
 
 def _listing_id(item: dict) -> str:
-    url = str((item.get("listing_urls") or {}).get(_MARKET) or "")
-    if "/listing/" not in url:
-        return ""
-    tail = url.split("/listing/", 1)[1]
-    return tail.split("/", 1)[0].split("?", 1)[0].strip()
+    return listing_id_from_url((item.get("listing_urls") or {}).get(_MARKET))
 
 
 def _checkout_base(ctx: ToolContext) -> str:

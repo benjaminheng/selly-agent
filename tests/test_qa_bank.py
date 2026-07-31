@@ -18,7 +18,7 @@ class FakeRail:
         self.fail = fail
         self.updates: list = []
 
-    def update_listing(self, listing_id, *, status):
+    def update_listing(self, listing_id, *, status=None, external_urls=None):
         if self.fail:
             from selly_agent.rail.client import RailToolError
 

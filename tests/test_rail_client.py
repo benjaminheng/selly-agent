@@ -13,6 +13,7 @@ from selly_agent.rail.client import (
     RailClient,
     RailToolError,
     _text_content,
+    listing_id_from_url,
 )
 
 
@@ -217,6 +218,88 @@ def test_upload_photo_surfaces_a_rejected_upload(fake_rail) -> None:
     server.upload_status = 400
     with pytest.raises(RailToolError, match="400"):
         _client(base).upload_photo(b"x", "image/jpeg")
+
+
+# --- update_listing: what is passed is exactly what travels --------------------------------------
+
+
+class _ArgRecorder(_Handler):
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length))
+        if body.get("method") == "tools/call":
+            self.server.calls.append(body["params"])
+        self._send(200, {"jsonrpc": "2.0", "id": body["id"], "result": self.server.tool_result})
+
+
+@pytest.fixture
+def recording_rail(fake_rail):
+    server, base = fake_rail
+    server.calls = []
+    server.RequestHandlerClass = _ArgRecorder
+    return server, base
+
+
+def test_update_listing_with_status_only_does_not_mention_urls(recording_rail) -> None:
+    server, base = recording_rail
+    _client(base).update_listing("L1", status="archived")
+    (call,) = server.calls
+    assert call["name"] == "update_listing"
+    assert call["arguments"] == {"id": "L1", "status": "archived"}
+
+
+def test_update_listing_with_urls_only_does_not_mention_status(recording_rail) -> None:
+    server, base = recording_rail
+    urls = {"urls": [{"platform": "EXTERNAL_PLATFORM_CAROUSELL", "url": "https://c.sg/p/1"}]}
+    _client(base).update_listing("L1", external_urls=urls)
+    (call,) = server.calls
+    assert call["arguments"] == {"id": "L1", "external_urls": urls}
+
+
+def test_update_listing_carries_both_when_both_are_passed(recording_rail) -> None:
+    server, base = recording_rail
+    _client(base).update_listing("L1", status="active", external_urls={"urls": []})
+    (call,) = server.calls
+    assert call["arguments"] == {"id": "L1", "status": "active", "external_urls": {"urls": []}}
+
+
+def test_update_listing_with_neither_raises_before_any_call(recording_rail) -> None:
+    server, base = recording_rail
+    with pytest.raises(ValueError):
+        _client(base).update_listing("L1")
+    assert server.calls == []
+
+
+def test_update_listing_sends_an_empty_set_as_present(recording_rail) -> None:
+    """{"urls": []} travels — present-but-empty replaces the rail's whole set with nothing, which
+    absent (unchanged) could never do."""
+    server, base = recording_rail
+    _client(base).update_listing("L1", external_urls={"urls": []})
+    (call,) = server.calls
+    assert call["arguments"]["external_urls"] == {"urls": []}
+
+
+# --- listing_id_from_url: the inverse of listing_url ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("https://www.carousell.ai/listing/abc123", "abc123"),
+        ("https://www.carousell.ai/listing/abc123/teak-lamp", "abc123"),
+        ("https://www.carousell.ai/listing/abc123?ref=share", "abc123"),
+        ("https://www.carousell.ai/u/chat", ""),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_listing_id_from_url(url, expected) -> None:
+    assert listing_id_from_url(url) == expected
+
+
+def test_listing_id_from_url_inverts_listing_url() -> None:
+    client = RailClient(api_base="https://api.x", api_key="k", web_base_url="https://www.x")
+    assert listing_id_from_url(client.listing_url("L9")) == "L9"
 
 
 def test_every_rpc_accepts_both_json_and_event_stream(fake_rail) -> None:

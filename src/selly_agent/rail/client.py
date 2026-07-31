@@ -180,10 +180,21 @@ class RailClient:
             raise RailToolError("photo upload returned no media reference")
         return encrypted
 
-    def update_listing(self, listing_id: str, *, status: str) -> dict:
-        """Flip a listing's status on the rail. PATCH semantics: only what is passed changes, so
-        this leaves the photos, price and text alone."""
-        return self.call_tool("update_listing", {"id": str(listing_id), "status": status})
+    def update_listing(
+        self, listing_id: str, *, status: str | None = None, external_urls: dict | None = None
+    ) -> dict:
+        """Change a listing on the rail. PATCH semantics all the way through: an argument not
+        passed is left out of the call and stays unchanged, so a status flip never touches the
+        cross-links and a cross-link push never touches status. `external_urls` replaces the
+        rail's whole set — `{"urls": []}` clears it, which is not the same as leaving it out."""
+        if status is None and external_urls is None:
+            raise ValueError("update_listing needs a status or an external_urls set")
+        args: dict = {"id": str(listing_id)}
+        if status is not None:
+            args["status"] = status
+        if external_urls is not None:
+            args["external_urls"] = external_urls
+        return self.call_tool("update_listing", args)
 
     def create_checkout(self, args: dict) -> dict:
         """Mint a checkout link for a listing at an agreed price. Returns {checkout_url}. Raises
@@ -211,6 +222,15 @@ class RailClient:
             raise RailToolError(f"listing page not reachable: {type(exc).__name__}") from exc
         if status != 200:
             raise RailToolError(f"listing page returned HTTP {status}")
+
+
+def listing_id_from_url(url) -> str:
+    """The id back out of a listing page URL — the inverse of RailClient.listing_url. Tolerates a
+    slug or query suffix after the id; returns "" when there is no /listing/ segment to read."""
+    url = str(url or "")
+    if _LISTING_PATH not in url:
+        return ""
+    return url.split(_LISTING_PATH, 1)[1].split("/", 1)[0].split("?", 1)[0].strip()
 
 
 def _text_content(result: dict) -> str:
