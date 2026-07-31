@@ -58,8 +58,12 @@ class Platform(ABC):
         stdout_path: Path,
         stderr_path: Path,
         marker: str,
+        environment: dict,
     ) -> str:
-        """Render the job definition (carries the marker so ours-vs-foreign is decidable)."""
+        """Render the job definition (carries the marker so ours-vs-foreign is decidable).
+
+        `environment` is pinned into the definition: a supervised job inherits nothing from the
+        shell that installed it, so anything the daemon must see (XDG overrides) goes here."""
 
     @abstractmethod
     def register(self, config_path: Path) -> None:

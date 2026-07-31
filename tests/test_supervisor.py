@@ -41,8 +41,24 @@ def test_plist_render_matches_golden() -> None:
         stdout_path=Path("/state/logs/agent.out.log"),
         stderr_path=Path("/state/logs/agent.err.log"),
         marker=supervisor.MARKER,
+        environment={},
     )
     assert text == GOLDEN.read_text()
+
+
+def test_the_plist_pins_the_xdg_overrides_the_installer_ran_under(xdg_tmp) -> None:
+    # launchd hands the job its own environment, not the installing shell's. Without these
+    # pinned, an install under XDG overrides provisions state in one world and boots a daemon
+    # that resolves every root in another — the daemon comes up healthy and heartbeats where
+    # nobody is looking.
+    fake = FakePlatform()
+    assert supervisor.install(mode="manual", platform=fake) == 0
+
+    plist = (paths.config_dir() / "com.selly.agent.plist").read_text()
+    assert "EnvironmentVariables" in plist
+    for var in ("XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"):
+        assert f"<key>{var}</key>" in plist
+        assert f"<string>{os.environ[var]}</string>" in plist
 
 
 # --- mode logic ---------------------------------------------------------------------------

@@ -36,6 +36,19 @@ def _xdg_base(var: str, default_rel: str) -> Path:
     return base / APP
 
 
+_XDG_VARS = ("XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME")
+
+
+def xdg_overrides() -> dict:
+    """The XDG overrides active in this process — for handing on to a supervised job.
+
+    A launchd (or systemd) job does not inherit the shell's environment. Without these pinned
+    into the job definition, an install run under overrides provisions its state in one place
+    and boots a daemon that resolves every root somewhere else — same code, different world.
+    """
+    return {var: os.environ[var] for var in _XDG_VARS if os.environ.get(var)}
+
+
 # --- XDG roots -----------------------------------------------------------------------------
 
 

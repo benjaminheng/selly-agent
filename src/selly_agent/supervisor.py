@@ -94,6 +94,10 @@ def install(*, mode: str, label: str | None = None, platform: Platform | None = 
         stdout_path=paths.logs_dir() / "agent.out.log",
         stderr_path=paths.logs_dir() / "agent.err.log",
         marker=MARKER,
+        # launchd hands the job its own environment, not this shell's. Any XDG override active
+        # right now shaped every path this install just provisioned — the daemon must resolve
+        # the same ones, or it boots against a different set of roots than setup prepared.
+        environment=paths.xdg_overrides(),
     )
 
     # Remove any of our own plists from the other location (a mode flip moves the plist).

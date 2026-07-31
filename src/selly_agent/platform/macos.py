@@ -74,8 +74,16 @@ class MacOSPlatform(Platform):
         stdout_path: Path,
         stderr_path: Path,
         marker: str,
+        environment: dict,
     ) -> str:
         args_xml = "\n".join(f"    <string>{escape(a)}</string>" for a in program_args)
+        env_xml = ""
+        if environment:
+            rows = "\n".join(
+                f"    <key>{escape(key)}</key>\n    <string>{escape(str(value))}</string>"
+                for key, value in sorted(environment.items())
+            )
+            env_xml = f"  <key>EnvironmentVariables</key>\n  <dict>\n{rows}\n  </dict>\n"
         return (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
@@ -98,6 +106,7 @@ class MacOSPlatform(Platform):
             "  </dict>\n"
             "  <key>ThrottleInterval</key>\n"
             "  <integer>30</integer>\n"
+            f"{env_xml}"
             "  <key>StandardOutPath</key>\n"
             f"  <string>{escape(str(stdout_path))}</string>\n"
             "  <key>StandardErrorPath</key>\n"
