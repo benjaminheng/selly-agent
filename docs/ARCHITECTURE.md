@@ -145,7 +145,10 @@ from one of them becomes a queued browser publish. Eligibility is a query over
 stored rows rather than a step in a recipe, which is what makes rail-first a
 precondition, the work idempotent, and the backlog free; each outcome is reported
 to the seller by the daemon, read off the row the pass wrote rather than off what
-the pass said about itself.
+the pass said about itself. The lane's third phase closes the loop the other way:
+it writes each item's browser-listing URLs onto its carousell.ai listing (rendered
+to buyers as "Also available on"), pushing only when the recorded URLs differ from
+what the rail last accepted and retrying silently until it does.
 
 ### Skills and prompt composition
 

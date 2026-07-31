@@ -375,12 +375,27 @@ flips in the same transaction as
 the notice, so a crash mid-sweep neither announces twice nor swallows. Publishes run by
 hand carry no `crosslist` origin and are not reported.
 
+**The push closes the loop the other way.** The lane's third phase writes each item's
+browser-listing URLs onto its carousell.ai listing (`external_urls`, which the listing
+page renders to buyers as "Also available on"). A push is owed when the set derived
+from the item's recorded listing URLs differs from what the rail last accepted — the
+`crosslink_pushes` marker table, written only after the rail says yes — so steady state
+costs nothing and backfill is just the first tick. Eligibility comes from where the
+item actually is, never from `crosslist_markets`: an attended publish outside the
+fan-out earns the link too. Failure is silent-retry — `crosslink.push_failed` and
+eligible again next tick, no needs-me notice (an unlinked listing costs
+discoverability, not a sale, and the seller cannot act on it). Unlike the enqueue
+phase, the push is *not* held by quiet hours and takes no pacing reserve: it is one
+API call on our own rail, not visible activity on the seller's marketplace account.
+
 ## Events
 
 | kind | when |
 | --- | --- |
 | `crosslist.queued` | a fan-out publish was queued for an item and market |
 | `crosslist.reported` | a settled fan-out publish was reported to the seller, with the URL and whether it worked |
+| `crosslink.pushed` | an item's cross-listing URLs were written onto its rail listing, with the platforms in the set |
+| `crosslink.push_failed` | a push the rail refused or never received; retried next tick |
 | `browser.chrome_launched` | the daemon started Chrome because an acquisition needed it |
 | `browser.read` | one market's tick: rows listed, threads opened, rows recorded, unreadable count, whether it was a full sweep |
 | `browser.inbound` | one message folded into a durable row, with its scam verdict |

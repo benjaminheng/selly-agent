@@ -65,6 +65,10 @@ the LLM surface: a stdlib MCP client over `urllib` (the guest key travels only i
 the Authorization header), a fail-closed live listing-URL verify, and guest-key
 provisioning. `mcp_proxy.py` is a stdio↔HTTP forwarder so a stdio-only harness
 reaches the same server — the HTTP server stays the single implementation.
+`rail.update_listing` has two callers with disjoint arguments: the
+`carousell_ai_update_listing` tool (take-down) passes status only, and the daemon's
+cross-link push passes `external_urls` only — that field is daemon-owned, and no
+tool writes it.
 
 ## The harness seam
 
