@@ -95,6 +95,17 @@ def market_url(market: str, key: str, region: str | None = None, **fields) -> st
     return f"https://{host}{path}"
 
 
+def market_home(market: str, region: str | None = None) -> str | None:
+    """The marketplace's front page for a seller in this region, or None when it has no site there.
+
+    The one page every marketplace has and no registry needs a template for. It is where a
+    sign-in starts: logged out it shows the login screen, logged in it shows the signed-in header
+    the login probe reads.
+    """
+    host = resolve_domain(market, region)
+    return f"https://{host}/" if host else None
+
+
 def resolve_domain(market: str, region: str | None = None) -> str | None:
     """The marketplace's site for a seller in this region, or None when it has none.
 

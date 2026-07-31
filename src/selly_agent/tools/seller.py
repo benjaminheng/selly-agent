@@ -53,9 +53,7 @@ def validate_basics(basics: dict) -> dict:
     currency = str(basics.get("currency", "")).strip()
     if "currency" in basics:
         if len(currency) != 3 or not currency.isalpha():
-            raise BasicsError(
-                f"currency must be a three-letter code (e.g. SGD), got {currency!r}"
-            )
+            raise BasicsError(f"currency must be a three-letter code (e.g. SGD), got {currency!r}")
         out["currency"] = currency.upper()
 
     timezone = str(basics.get("timezone", "")).strip()

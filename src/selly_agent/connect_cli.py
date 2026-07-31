@@ -1,8 +1,12 @@
-"""`selly-agent connect telegram` — bind a Telegram bot over the daemon's control route.
+"""`selly-agent connect <telegram|marketplace>` — the optional connections, over control routes.
 
-The token is a long-lived credential, so it never touches argv: it is read from stdin and POSTed to
-the running daemon, which validates it, stores it 0600, and mints a bind nonce. The CLI prints the
-deep link (open it on the phone that has Telegram) and polls channel-status until the chat binds.
+Two shapes behind one verb. Telegram binds a bot: a credential exchange, described below.
+A marketplace is a sign-in the seller does themselves in the agent's own Chrome — the daemon
+opens the page, the probe reads back whether it worked, and nothing about the session is stored.
+
+The Telegram token is a long-lived credential, so it never touches argv: it is read from stdin
+and POSTed to the running daemon, which validates it, stores it 0600, and mints a bind nonce. The
+CLI prints the deep link (open it on the phone that has Telegram) and polls until the chat binds.
 Exit codes: 0 bound · 1 awaiting /start (timed out, re-runnable) · 2 bad token · 3 daemon/API error.
 
 Interactive vs piped:
@@ -104,9 +108,85 @@ def run(args) -> int:
     if not token:
         return 3
     port = config.load().http_port
-    if getattr(args, "status", False):
-        return _print_status(port, token)
-    return bind_flow(port, token, timeout=getattr(args, "timeout", None))
+    if args.connect_command == "telegram":
+        if getattr(args, "status", False):
+            return _print_status(port, token)
+        return bind_flow(port, token, timeout=getattr(args, "timeout", None))
+    return market_flow(port, token, args.connect_command)
+
+
+# --- marketplaces ---------------------------------------------------------------------------
+#
+# Signing in to a marketplace happens in the agent's own Chrome, on a page the daemon opens, and
+# nothing about it is stored: the cookies in that profile are the state, and the probe re-derives
+# the answer every time it is asked. So this verb is re-runnable forever and has nothing to undo.
+
+_MARKET_STATE_MESSAGES = {
+    "logged_in": "✅ Signed in to {name}.",
+    "unknown": "I can't tell whether you're signed in to {name} — I'll confirm the first time I "
+    "list something there.",
+    "logged_out": "I still see a login screen on {name}. Sign in on that tab and re-run this "
+    "when you're done — I'll keep checking in the background too.",
+}
+
+
+def market_flow(port: int, mcp_token: str, market: str, *, interactive: bool | None = None) -> int:
+    """Open a marketplace for sign-in and report what the login probe then sees.
+
+    Exit codes mirror the Telegram flow: 0 signed in · 1 not yet (re-runnable) · 3 the daemon or
+    the browser could not do it. Shared with the installer's marketplace step, so both paths ask
+    in exactly one way.
+    """
+    if interactive is None:
+        interactive = sys.stdin.isatty()
+
+    url = f"{_base_url(port)}/control/connect-market"
+    try:
+        status, body = _post(url, mcp_token, {"market": market})
+    except (urllib.error.URLError, OSError) as exc:
+        print(f"selly-agent: could not reach the daemon: {exc}", file=sys.stderr)
+        return 3
+    if status == 503:
+        print(f"selly-agent: {body.get('detail', 'the browser is unavailable')}", file=sys.stderr)
+        return 3
+    if status != 200:
+        print(
+            f"selly-agent: {body.get('error', 'could not open that marketplace')}", file=sys.stderr
+        )
+        return 3
+
+    name = _display_name(market)
+    state = body.get("state")
+    if state == "logged_in":
+        print(_MARKET_STATE_MESSAGES["logged_in"].format(name=name))
+        return 0
+
+    print(f"Opened {name} in my Chrome window — sign in there. I never sign in for you.")
+    print(f"  {body.get('url', '')}")
+    if interactive:
+        try:
+            input("Press Enter once you've signed in (or Ctrl-C to skip)… ")
+        except (EOFError, KeyboardInterrupt):
+            print(file=sys.stderr)
+            return 1
+        state = _probe_market(port, mcp_token, market)
+
+    print(_MARKET_STATE_MESSAGES.get(state or "unknown", "").format(name=name))
+    return 0 if state == "logged_in" else 1
+
+
+def _probe_market(port: int, mcp_token: str, market: str):
+    try:
+        answer = _get(f"{_base_url(port)}/control/market-login?market={market}&token={mcp_token}")
+    except (urllib.error.URLError, OSError):
+        return "unknown"
+    return answer.get("state")
+
+
+def _display_name(market: str) -> str:
+    from selly_agent import marketplaces
+
+    return marketplaces.display_name(market)
 
 
 def bind_flow(

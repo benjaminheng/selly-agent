@@ -172,3 +172,78 @@ def test_token_never_printed_to_stdout(monkeypatch, stub_daemon, capsys) -> None
     connect_cli.bind_flow(9999, "mcp-tok", interactive=True)
     captured = capsys.readouterr()
     assert _TOKEN not in captured.out and _TOKEN not in captured.err
+
+
+# --- marketplace sign-in ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_market_daemon(monkeypatch):
+    """Stub the connect-market POST and the login probe. `state` drives both."""
+    calls = {"posts": [], "gets": [], "state": "logged_in", "post_status": 200}
+
+    def fake_post(url, token, body):
+        calls["posts"].append((url, body))
+        return calls["post_status"], calls.get(
+            "post_body",
+            {"market": body["market"], "url": "https://www.carousell.sg/", "state": calls["state"]},
+        )
+
+    def fake_get(url):
+        calls["gets"].append(url)
+        return {"state": calls["state"]}
+
+    monkeypatch.setattr(connect_cli, "_post", fake_post)
+    monkeypatch.setattr(connect_cli, "_get", fake_get)
+    return calls
+
+
+def test_an_already_signed_in_market_exits_0_without_asking(
+    monkeypatch, stub_market_daemon, capsys
+) -> None:
+    rc = connect_cli.market_flow(9999, "mcp-tok", "carousell", interactive=True)
+    assert rc == 0
+    assert stub_market_daemon["gets"] == []  # no second probe, nothing to wait for
+    assert "Signed in to Carousell" in capsys.readouterr().out
+
+
+def test_a_signed_out_market_waits_then_re_probes(monkeypatch, stub_market_daemon, capsys) -> None:
+    stub_market_daemon["state"] = "logged_out"
+    prompts = []
+    monkeypatch.setattr("builtins.input", lambda prompt="": prompts.append(prompt) or "")
+
+    rc = connect_cli.market_flow(9999, "mcp-tok", "carousell", interactive=True)
+
+    assert rc == 1
+    assert len(stub_market_daemon["gets"]) == 1
+    assert "sign in there. I never sign in for you" in capsys.readouterr().out
+    assert prompts  # it did wait for the person
+
+
+def test_an_unknown_probe_is_not_reported_as_signed_out(
+    monkeypatch, stub_market_daemon, capsys
+) -> None:
+    stub_market_daemon["state"] = "unknown"
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+    rc = connect_cli.market_flow(9999, "mcp-tok", "carousell", interactive=True)
+    assert rc == 1
+    assert "I'll confirm the first time I list" in capsys.readouterr().out
+
+
+def test_a_non_interactive_run_opens_the_tab_and_does_not_block(
+    monkeypatch, stub_market_daemon, capsys
+) -> None:
+    stub_market_daemon["state"] = "logged_out"
+    monkeypatch.setattr(
+        "builtins.input", lambda prompt="": pytest.fail("must not prompt with no terminal")
+    )
+    assert connect_cli.market_flow(9999, "mcp-tok", "carousell", interactive=False) == 1
+
+
+def test_an_unavailable_browser_exits_3_with_the_hint(
+    monkeypatch, stub_market_daemon, capsys
+) -> None:
+    stub_market_daemon["post_status"] = 503
+    stub_market_daemon["post_body"] = {"error": "browser_unavailable", "detail": "start Chrome…"}
+    assert connect_cli.market_flow(9999, "mcp-tok", "carousell", interactive=False) == 3
+    assert "start Chrome" in capsys.readouterr().err

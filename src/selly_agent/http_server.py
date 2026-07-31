@@ -412,6 +412,126 @@ class _Handler(BaseHTTPRequestHandler):
         )
         self._send_json(200, result)
 
+    def _handle_settings_set(self) -> None:
+        # The installer's and the CLI's way to set a setting outright. Typing it at your own
+        # terminal is the consent the approve door exists to collect, so there is no round-trip —
+        # but validation is the propose path's, seller-state check included, and the prior value
+        # is recorded so Undo still works.
+        from selly_agent import settings
+
+        body = self._attended_body()
+        if body is None:
+            return
+        key = body.get("key")
+        if not isinstance(key, str) or "value" not in body:
+            self._send_json(400, {"error": "key (string) and value are required"})
+            return
+        try:
+            result = settings.set_now(
+                self._app.store, self._app.bus, key=key, raw_value=body["value"]
+            )
+        except settings.SettingError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_json(200, result)
+
+    def _handle_seller_basics(self) -> None:
+        # Where the seller sells, which provisioning needs before it can ask for a key. The store
+        # is the daemon's to write, so the installer asks through this door rather than opening
+        # the database behind a running process.
+        from selly_agent.tools.seller import BasicsError, validate_basics
+
+        body = self._attended_body()
+        if body is None:
+            return
+        try:
+            basics = validate_basics(body)
+        except BasicsError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        if not basics:
+            self._send_json(400, {"error": "provide at least one of region, currency, timezone"})
+            return
+        current = self._app.store.get_seller_config_section("basics") or {}
+        merged = {**current, **basics}
+        self._app.store.set_seller_config_section("basics", merged)
+        self._app.bus.publish("seller.basics_set", {"region": merged.get("region")})
+        self._send_json(200, {"status": "written", "basics": merged})
+
+    def _handle_connect_market(self) -> None:
+        # Open the marketplace in the agent's own Chrome so the seller can sign in there. We
+        # never sign in for them, and nothing about their session is recorded: the cookies in
+        # that profile are the truth, and the probe re-derives the answer whenever it is asked.
+        body = self._attended_body()
+        if body is None:
+            return
+        market = body.get("market")
+        adapter = self._market_adapter(market)
+        if adapter is None:
+            return
+        try:
+            state, url = self._open_and_probe(adapter)
+        except _BrowserDown as exc:
+            self._send_json(503, {"error": "browser_unavailable", "detail": str(exc)})
+            return
+        self._app.bus.publish("browser.login", {"market": adapter.market, "state": state})
+        self._send_json(200, {"market": adapter.market, "url": url, "state": state})
+
+    def _handle_market_login(self, parsed) -> None:
+        qs = self._attended_query(parsed)
+        if qs is None:
+            return
+        adapter = self._market_adapter(qs.get("market", [None])[0])
+        if adapter is None:
+            return
+        try:
+            state, url = self._open_and_probe(adapter)
+        except _BrowserDown as exc:
+            self._send_json(503, {"error": "browser_unavailable", "detail": str(exc)})
+            return
+        self._send_json(200, {"market": adapter.market, "url": url, "state": state})
+
+    def _market_adapter(self, market):
+        """The adapter for a market id, or None once this has replied with why there isn't one."""
+        from selly_agent.browser import markets as market_adapters
+
+        adapter = market_adapters.get_adapter(market) if isinstance(market, str) else None
+        if adapter is None:
+            supported = ", ".join(market_adapters.supported_markets()) or "(none)"
+            self._send_json(
+                400, {"error": f"no marketplace {market!r} to sign in to — supported: {supported}"}
+            )
+            return None
+        return adapter
+
+    def _open_and_probe(self, adapter):
+        """Put the market's own page in front of the seller and read back whether they are in.
+
+        Held exclusively across the navigate and the probe: the read lane shares this one tab,
+        and a probe that ran after it moved on would be answering about a different page.
+        """
+        from selly_agent import marketplaces
+        from selly_agent.browser.client import BrowserError
+
+        region = self._app.store.seller_region()
+        url = marketplaces.market_home(adapter.market, region)
+        if url is None:
+            raise _BrowserDown(
+                f"{marketplaces.display_name(adapter.market)} has no site for "
+                f"{region or 'an unset region'}"
+            )
+        session = Session(tier="attended", pass_id=None)
+        ctx = self._app.context_factory(session)
+        try:
+            client = ctx.browser_factory()
+            with client.exclusive():
+                client.navigate(url)
+                answer = client.evaluate(adapter.login_js) or {}
+        except BrowserError as exc:
+            raise _BrowserDown(str(exc)) from exc
+        state = answer.get("state")
+        return (state if state in ("logged_in", "logged_out") else "unknown"), url
+
     def _handle_settings_list(self, parsed) -> None:
         from selly_agent import settings
 
@@ -464,6 +584,11 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(page)))
         self.end_headers()
         self.wfile.write(page)
+
+
+class _BrowserDown(Exception):
+    """The browser could not be driven for a connect/probe request — answered as a 503 with the
+    reason, so the CLI can print the by-hand hint instead of pretending the market is signed out."""
 
 
 class _RpcError(Exception):

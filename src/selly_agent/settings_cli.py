@@ -1,9 +1,14 @@
-"""`selly-agent settings list|approve|cancel|undo` — the attended settings door.
+"""`selly-agent settings list|set|approve|cancel|undo` — the attended settings door.
 
 Harness-independent: these verbs talk to the running daemon over its control routes (attended
 bearer from the config-dir secret), never writing selly.db directly. The door is the same trust as
 the channel buttons — an authenticated surface, a deterministic parse, a deterministic apply — so an
 unbound, attended-only install can still approve a held change (the id comes from `settings list`).
+
+`set` skips the approval round-trip that `propose_setting_change` goes through, and only that:
+the gate is there to keep the *model* from changing things unasked, and someone typing here has
+already given the signal it waits for. The value is JSON, so a list stays a list; a bare word is
+taken as text for the settings that hold text.
 """
 
 from __future__ import annotations
@@ -32,7 +37,9 @@ def _require_token() -> str | None:
     return token
 
 
-def _post(url: str, token: str, body: dict) -> dict:
+def _post(url: str, token: str, body: dict) -> tuple:
+    """POST and return (status, parsed body). A 4xx body is read too — it carries the reason a
+    value was refused, which is the whole point of validating at the door."""
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
@@ -43,8 +50,14 @@ def _post(url: str, token: str, body: dict) -> dict:
             "Origin": _LOCALHOST_ORIGIN,
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+        except (ValueError, OSError):
+            return exc.code, {}
 
 
 def _get(url: str) -> dict:
@@ -60,7 +73,26 @@ def run(args) -> int:
     port = config.load().http_port
     if args.settings_command == "list":
         return _list(port, token)
+    if args.settings_command == "set":
+        return set_setting(port, token, args.key, args.value)
     return _decide(port, token, args.settings_command, args.change_id)
+
+
+def set_setting(port: int, token: str, key: str, value: str) -> int:
+    """Apply one setting through the daemon. Shared with the installer, which sets the
+    marketplaces the seller opted into through this same door rather than writing them itself."""
+    try:
+        status, result = _post(
+            f"{_base_url(port)}/control/settings-set", token, {"key": key, "value": value}
+        )
+    except (urllib.error.URLError, OSError) as exc:
+        print(f"selly-agent: could not reach the daemon: {exc}", file=sys.stderr)
+        return 1
+    if status != 200:
+        print(f"selly-agent: {result.get('error', 'could not set that')}", file=sys.stderr)
+        return 1
+    print(result.get("message", result.get("status", "done")))
+    return 0
 
 
 def _list(port: int, token: str) -> int:
@@ -85,7 +117,7 @@ def _list(port: int, token: str) -> int:
 
 def _decide(port: int, token: str, action: str, change_id: str) -> int:
     try:
-        result = _post(
+        _status, result = _post(
             f"{_base_url(port)}/control/settings-decide",
             token,
             {"action": action, "change_id": change_id},

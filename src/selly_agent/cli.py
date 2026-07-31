@@ -143,7 +143,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     hconf.add_argument("--dir", default=None, help="destination directory (default: cwd)")
 
-    connect = sub.add_parser("connect", help="connect an optional channel")
+    connect = sub.add_parser("connect", help="connect a channel or sign in to a marketplace")
     consub = connect.add_subparsers(dest="connect_command", required=True)
     ctel = consub.add_parser("telegram", help="bind a Telegram bot (token read from stdin)")
     ctel.add_argument("--status", action="store_true", help="report bind status and exit")
@@ -153,10 +153,23 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="seconds to wait for /start (default: 300 interactive, 120 piped)",
     )
+    # One per marketplace we can actually drive, so `connect --help` lists what exists rather
+    # than accepting any word and failing at the door.
+    from selly_agent.browser import markets as _markets
 
-    settings_cmd = sub.add_parser("settings", help="view and decide seller settings changes")
+    for market in _markets.supported_markets():
+        consub.add_parser(market, help=f"sign in to {market} in the agent's browser")
+
+    settings_cmd = sub.add_parser("settings", help="view and change seller settings")
     ssub = settings_cmd.add_subparsers(dest="settings_command", required=True)
     ssub.add_parser("list", help="list current settings and any pending changes")
+    sset = ssub.add_parser("set", help="set a setting now (no approval round-trip)")
+    sset.add_argument("key", help="the setting key (from `settings list`)")
+    sset.add_argument(
+        "value",
+        help="the new value as JSON — e.g. '[\"carousell\"]' or '[2300, 800]'; "
+        "a bare word is taken as text",
+    )
     for verb, helptext in (
         ("approve", "approve a held settings change by id"),
         ("cancel", "cancel a held settings change by id"),

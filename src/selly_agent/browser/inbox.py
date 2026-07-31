@@ -50,7 +50,8 @@ BLIND_NOTICE = (
 )
 LOGGED_OUT_NOTICE = (
     "Your {market} session is logged out, so I've stopped reading that market. "
-    "Log back in in the agent's Chrome and I'll pick up where I left off."
+    "Run `selly-agent connect {market}` and I'll open it for you to sign in — then I'll pick up "
+    "where I left off."
 )
 UNAVAILABLE_NOTICE = (
     "I can't drive the browser at the moment, so browser marketplaces are paused. "

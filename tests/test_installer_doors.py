@@ -1,0 +1,329 @@
+"""The doors the installer needs: settings-set, seller-basics, and marketplace sign-in.
+
+All three are attended-only control routes — the seller reaching their own daemon — and all three
+validate exactly as the model-facing path does. What they skip is the approval round-trip, which
+exists to gate the model, not the person typing.
+"""
+
+from __future__ import annotations
+
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+
+import pytest
+
+import selly_agent.tools  # noqa: F401  tool registration
+from selly_agent import settings
+from selly_agent.browser.client import BrowserUnavailable
+from selly_agent.config import Config
+from selly_agent.http_server import HttpServer
+from selly_agent.tools.registry import ToolContext
+
+
+class FakeBrowser:
+    """A browser client that records where it was sent and answers a scripted login state."""
+
+    def __init__(self, state="logged_in"):
+        self.state = state
+        self.visited = []
+        self.exclusive_depth = 0
+
+    def exclusive(self):
+        client = self
+
+        class _Held:
+            def __enter__(self):
+                client.exclusive_depth += 1
+                return client
+
+            def __exit__(self, *exc):
+                client.exclusive_depth -= 1
+                return False
+
+        return _Held()
+
+    def navigate(self, url):
+        self.visited.append(url)
+
+    def evaluate(self, function, **kwargs):
+        assert self.exclusive_depth > 0, "the probe must run under the same hold as the navigate"
+        return {"state": self.state} if self.state else None
+
+
+@pytest.fixture
+def browser():
+    return FakeBrowser()
+
+
+@pytest.fixture
+def server(bus, store, xdg_tmp, browser):
+    def context_factory(session):
+        return ToolContext(
+            session=session,
+            store=store,
+            bus=bus,
+            config=Config(),
+            browser_factory=lambda: browser,
+            started_ts=1.0,
+        )
+
+    srv = HttpServer(
+        port=0,
+        bus=bus,
+        store=store,
+        events_db_path=bus.store.db.path,
+        context_factory=context_factory,
+        attended_token="attended-secret",
+    )
+    srv.start()
+    try:
+        yield srv
+    finally:
+        srv.stop()
+
+
+def _call(server, method, path, *, token="attended-secret", body=None):
+    url = f"http://127.0.0.1:{server.port}{path}"
+    if method == "GET" and token:
+        joiner = "&" if "?" in url else "?"
+        url = f"{url}{joiner}token={urllib.parse.quote(token)}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    if method != "GET" and token:
+        req.add_header("Authorization", f"Bearer {token}")
+    if body is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            raw = resp.read().decode()
+            return resp.status, (json.loads(raw) if raw else None)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode()
+        return exc.code, (json.loads(raw) if raw else None)
+
+
+# --- settings-set --------------------------------------------------------------------------
+
+
+def test_setting_a_value_applies_it_immediately(server, store) -> None:
+    status, body = _call(
+        server, "POST", "/control/settings-set", body={"key": "firmness", "value": "firm"}
+    )
+    assert status == 200
+    assert body["status"] == "applied"
+    assert settings.get(store, "firmness") == "firm"
+
+
+def test_a_json_encoded_list_arrives_as_a_list(server, store) -> None:
+    store.set_seller_config_section("basics", {"region": "SG"})
+    status, body = _call(
+        server,
+        "POST",
+        "/control/settings-set",
+        body={"key": "crosslist_markets", "value": '["carousell"]'},
+    )
+    assert status == 200
+    assert settings.get(store, "crosslist_markets") == ["carousell"]
+    assert body["rendered"] == "Carousell"
+
+
+def test_the_prior_value_is_recorded_so_undo_works(server, store, bus) -> None:
+    _call(server, "POST", "/control/settings-set", body={"key": "firmness", "value": "firm"})
+    status, body = _call(
+        server, "POST", "/control/settings-set", body={"key": "firmness", "value": "soft"}
+    )
+    change_id = body["change_id"]
+
+    result = settings.decide(store, bus, change_id=change_id, decision="undo", decided_via="cli")
+    assert result["status"] == "undone"
+    assert settings.get(store, "firmness") == "firm"
+
+
+def test_setting_the_current_value_changes_nothing(server, store) -> None:
+    status, body = _call(
+        server, "POST", "/control/settings-set", body={"key": "firmness", "value": "balanced"}
+    )
+    assert status == 200
+    assert body["status"] == "unchanged"
+    assert store.list_pending_changes() == []
+
+
+def test_a_value_the_registry_refuses_is_a_400_with_the_reason(server) -> None:
+    status, body = _call(
+        server, "POST", "/control/settings-set", body={"key": "firmness", "value": "ferocious"}
+    )
+    assert status == 400
+    assert "soft" in body["error"]  # names what is allowed
+
+
+def test_an_unknown_setting_is_a_400_naming_the_real_ones(server) -> None:
+    status, body = _call(
+        server, "POST", "/control/settings-set", body={"key": "nonsense", "value": 1}
+    )
+    assert status == 400
+    assert "quiet_hours" in body["error"]
+
+
+def test_the_seller_state_check_runs_at_this_door_too(server, store) -> None:
+    # A US seller cannot be listed on Carousell, which runs no US site. Refused here exactly as
+    # it is refused when the model proposes it.
+    store.set_seller_config_section("basics", {"region": "US"})
+    status, body = _call(
+        server,
+        "POST",
+        "/control/settings-set",
+        body={"key": "crosslist_markets", "value": ["carousell"]},
+    )
+    assert status == 400
+    assert "US" in body["error"]
+    assert settings.get(store, "crosslist_markets") == []
+
+
+def test_settings_set_needs_the_attended_token(server) -> None:
+    status, _ = _call(
+        server,
+        "POST",
+        "/control/settings-set",
+        token=None,
+        body={"key": "firmness", "value": "firm"},
+    )
+    assert status == 401
+
+
+# --- seller-basics --------------------------------------------------------------------------
+
+
+def test_basics_are_written_and_upper_cased(server, store) -> None:
+    status, body = _call(
+        server,
+        "POST",
+        "/control/seller-basics",
+        body={"region": "sg", "currency": "sgd", "timezone": "Asia/Singapore"},
+    )
+    assert status == 200
+    assert body["basics"] == {
+        "region": "SG",
+        "currency": "SGD",
+        "timezone": "Asia/Singapore",
+    }
+    # Normalized at the write, so the registry's exact-match region lookup finds a site.
+    assert store.seller_region() == "SG"
+
+
+def test_basics_merge_rather_than_replace(server, store) -> None:
+    _call(server, "POST", "/control/seller-basics", body={"region": "SG", "currency": "SGD"})
+    _call(server, "POST", "/control/seller-basics", body={"timezone": "Asia/Singapore"})
+    assert store.get_seller_config_section("basics") == {
+        "region": "SG",
+        "currency": "SGD",
+        "timezone": "Asia/Singapore",
+    }
+
+
+def test_a_malformed_region_is_refused(server, store) -> None:
+    status, body = _call(server, "POST", "/control/seller-basics", body={"region": "Singapore"})
+    assert status == 400
+    assert "two-letter" in body["error"]
+    assert store.seller_region() is None
+
+
+def test_an_unknown_timezone_is_refused(server) -> None:
+    status, body = _call(
+        server, "POST", "/control/seller-basics", body={"timezone": "Mars/Olympus_Mons"}
+    )
+    assert status == 400
+    assert "timezone" in body["error"]
+
+
+def test_an_empty_basics_body_says_so(server) -> None:
+    status, body = _call(server, "POST", "/control/seller-basics", body={})
+    assert status == 400
+    assert "at least one" in body["error"]
+
+
+def test_an_unknown_basics_key_is_refused(server) -> None:
+    status, body = _call(server, "POST", "/control/seller-basics", body={"county": "SG"})
+    assert status == 400
+    assert "county" in body["error"]
+
+
+# --- marketplace sign-in --------------------------------------------------------------------
+
+
+def test_connect_market_opens_the_regional_site_and_reports_the_probe(
+    server, store, browser
+) -> None:
+    store.set_seller_config_section("basics", {"region": "SG"})
+    status, body = _call(server, "POST", "/control/connect-market", body={"market": "carousell"})
+    assert status == 200
+    assert body == {"market": "carousell", "url": "https://www.carousell.sg/", "state": "logged_in"}
+    assert browser.visited == ["https://www.carousell.sg/"]
+
+
+def test_the_three_login_states_come_back_verbatim(server, store, browser) -> None:
+    store.set_seller_config_section("basics", {"region": "SG"})
+    for state in ("logged_in", "logged_out", "unknown"):
+        browser.state = state
+        _status, body = _call(server, "GET", "/control/market-login?market=carousell")
+        assert body["state"] == state
+
+
+def test_an_unreadable_probe_answers_unknown_never_logged_out(server, store, browser) -> None:
+    # A false logged_out tells a signed-in seller to re-authenticate and stops their market.
+    store.set_seller_config_section("basics", {"region": "SG"})
+    browser.state = None
+    _status, body = _call(server, "GET", "/control/market-login?market=carousell")
+    assert body["state"] == "unknown"
+
+
+def test_a_market_we_cannot_drive_is_refused_with_the_list_we_can(server, store) -> None:
+    store.set_seller_config_section("basics", {"region": "SG"})
+    status, body = _call(server, "POST", "/control/connect-market", body={"market": "ebay"})
+    assert status == 400
+    assert "carousell" in body["error"]
+
+
+def test_a_market_with_no_site_in_the_sellers_region_says_so(server, store) -> None:
+    store.set_seller_config_section("basics", {"region": "US"})
+    status, body = _call(server, "POST", "/control/connect-market", body={"market": "carousell"})
+    assert status == 503
+    assert "US" in body["detail"]
+
+
+def test_a_browser_that_will_not_start_is_a_503_with_the_hint(bus, store, xdg_tmp) -> None:
+    def context_factory(session):
+        def refuse():
+            raise BrowserUnavailable("start Chrome with: /Applications/…")
+
+        return ToolContext(
+            session=session,
+            store=store,
+            bus=bus,
+            config=Config(),
+            browser_factory=refuse,
+            started_ts=1.0,
+        )
+
+    srv = HttpServer(
+        port=0,
+        bus=bus,
+        store=store,
+        events_db_path=bus.store.db.path,
+        context_factory=context_factory,
+        attended_token="attended-secret",
+    )
+    srv.start()
+    try:
+        store.set_seller_config_section("basics", {"region": "SG"})
+        status, body = _call(srv, "POST", "/control/connect-market", body={"market": "carousell"})
+    finally:
+        srv.stop()
+    assert status == 503
+    assert "start Chrome" in body["detail"]
+
+
+def test_market_login_needs_the_attended_token(server) -> None:
+    status, _ = _call(server, "GET", "/control/market-login?market=carousell", token=None)
+    assert status == 401
