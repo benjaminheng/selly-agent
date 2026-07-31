@@ -324,7 +324,16 @@ def perform(args, cfg, out, *, platform=None) -> int:
     mode, was_running = status.mode, status.registered
     if was_running:
         supervisor.stop(label=status.label, platform=platform)
-    materialize.install_version(staged, release.version)
+    try:
+        materialize.install_version(staged, release.version)
+    except Exception:
+        # The daemon is already stopped at this point, and whatever went wrong here (no disk, an
+        # unmanaged `current`) is not a reason to leave the machine with no agent running. Put
+        # the version that was working back up before reporting the failure.
+        if was_running:
+            _start_daemon(mode, platform=platform)
+            out("Nothing was changed; the previous version is still running.")
+        raise
     out(f"Installed versions/{release.version}; current → {release.version}.")
 
     if not was_running:

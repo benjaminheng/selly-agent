@@ -403,3 +403,26 @@ def test_an_unreachable_release_host_is_not_an_error_the_seller_hears(installed)
         seen=set(),
     )
     assert recorder.notices == []
+
+
+def test_a_failure_mid_swap_puts_the_running_version_back(installed, served, monkeypatch) -> None:
+    # Between stopping the daemon and starting it again there is a window where a failure would
+    # otherwise leave the machine with no agent running at all.
+    root, base = served
+    build_release(root, "0.2.0")
+    monkeypatch.setattr(
+        materialize,
+        "install_version",
+        lambda tree, version: (_ for _ in ()).throw(OSError("no space left on device")),
+    )
+    restarted = []
+    monkeypatch.setattr(
+        update_mod, "_start_daemon", lambda mode, platform=None: restarted.append(mode) or True
+    )
+    lines = []
+
+    with pytest.raises(OSError):
+        update_mod.perform(Args(url=base), Config(), lines.append, platform=installed)
+
+    assert restarted == ["login-start"]  # back up, in the mode it was in
+    assert any("still running" in line for line in lines)
