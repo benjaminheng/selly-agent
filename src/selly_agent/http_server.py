@@ -271,6 +271,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_settings_list(parsed)
         elif parsed.path == "/control/market-login":
             self._handle_market_login(parsed)
+        elif parsed.path == "/control/market-logins":
+            self._handle_market_logins(parsed)
         elif parsed.path == "/control/seller-basics":
             self._handle_seller_basics_read(parsed)
         elif parsed.path == "/tail":
@@ -500,6 +502,41 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(503, {"error": "browser_unavailable", "detail": str(exc)})
             return
         self._send_json(200, {"market": adapter.market, "url": url, "state": state})
+
+    def _handle_market_logins(self, parsed) -> None:
+        """Every marketplace the seller enabled, and — only if Chrome is already up — whether
+        they are still signed in to each.
+
+        Both halves are answered here because both depend on state this side owns: the enabled
+        list comes from the store crossed with the seller's region, and the decision *not* to
+        probe comes from Chrome's port. Probing goes through the browser factory, which starts
+        Chrome when it is closed, and a status read that opens a window on someone's screen is
+        not a status read — so a closed Chrome is reported as such instead.
+        """
+        from selly_agent import config as config_module
+        from selly_agent import settings
+        from selly_agent.browser import chrome
+        from selly_agent.browser import markets as market_adapters
+
+        if self._attended_query(parsed) is None:
+            return
+        cfg = self._app.config or config_module.load()
+        enabled = settings.crosslist_markets(self._app.store)
+        chrome_ready = chrome.is_ready(cfg.chrome_cdp_port)
+
+        results = []
+        if chrome_ready:
+            for market in enabled:
+                adapter = market_adapters.get_adapter(market)
+                if adapter is None:
+                    continue
+                try:
+                    state, _url = self._open_and_probe(adapter)
+                except _BrowserDown as exc:
+                    results.append({"market": market, "state": "unknown", "detail": str(exc)})
+                    continue
+                results.append({"market": market, "state": state})
+        self._send_json(200, {"enabled": enabled, "chrome_ready": chrome_ready, "markets": results})
 
     def _market_adapter(self, market):
         """The adapter for a market id, or None once this has replied with why there isn't one."""

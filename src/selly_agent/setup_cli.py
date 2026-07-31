@@ -21,6 +21,7 @@ from selly_agent import (
     config,
     connect_cli,
     control,
+    healthcheck,
     heartbeat,
     marketplaces,
     pass_cli,
@@ -82,7 +83,7 @@ def _run(args, ui: Ui) -> None:
     _connect_markets(ui, args, port, token, region)
     _offer_telegram(ui, args, port, token)
     _attended_workspace(ui)
-    _finish(ui)
+    _finish(ui, platform)
 
 
 # --- what this is, and what it will touch ---------------------------------------------------
@@ -477,7 +478,11 @@ def _attended_workspace(ui: Ui) -> None:
 # --- the last word ------------------------------------------------------------------------------
 
 
-def _finish(ui: Ui) -> None:
+def _finish(ui: Ui, platform) -> None:
+    ui.say("")
+    ui.say("Checking everything over:")
+    for line in checks.render(healthcheck.run_checks(platform=platform)):
+        ui.plain(f"  {line}")
     ui.say("")
     ui.say("Done — I'm running.")
     ui.say("  • Change settings any time: `/selly` in the attended session")

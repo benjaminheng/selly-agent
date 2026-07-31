@@ -55,6 +55,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="never edit a shell rc file; print the PATH line instead",
     )
 
+    sub.add_parser("healthcheck", help="check the install (exit 1 if anything is wrong)")
+
     daemon = sub.add_parser("daemon", help="daemon lifecycle")
     dsub = daemon.add_subparsers(dest="daemon_command", required=True)
 
@@ -201,6 +203,11 @@ def main(argv: list[str] | None = None) -> int:
         from selly_agent import setup_cli
 
         return setup_cli.run(args)
+
+    if args.command == "healthcheck":
+        from selly_agent import healthcheck
+
+        return healthcheck.run(args)
 
     if args.command == "daemon":
         from selly_agent import daemon_cli

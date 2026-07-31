@@ -327,3 +327,62 @@ def test_a_browser_that_will_not_start_is_a_503_with_the_hint(bus, store, xdg_tm
 def test_market_login_needs_the_attended_token(server) -> None:
     status, _ = _call(server, "GET", "/control/market-login?market=carousell", token=None)
     assert status == 401
+
+
+# --- the healthcheck's market read -----------------------------------------------------------
+
+
+def test_market_logins_reports_the_enabled_set_and_probes_when_chrome_is_up(
+    server, store, browser, monkeypatch
+) -> None:
+    from tests.conftest import seed_setting
+
+    from selly_agent.browser import chrome
+
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kwargs: True)
+    store.set_seller_config_section("basics", {"region": "SG"})
+    seed_setting(store, "crosslist_markets", ["carousell"])
+
+    _status, body = _call(server, "GET", "/control/market-logins")
+
+    assert body["enabled"] == ["carousell"]
+    assert body["chrome_ready"] is True
+    assert body["markets"] == [{"market": "carousell", "state": "logged_in"}]
+
+
+def test_market_logins_never_opens_a_window_just_to_answer(
+    server, store, browser, monkeypatch
+) -> None:
+    # A status read that starts Chrome is not a status read: with the port silent, the enabled
+    # list still comes back and no probe is attempted.
+    from tests.conftest import seed_setting
+
+    from selly_agent.browser import chrome
+
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kwargs: False)
+    store.set_seller_config_section("basics", {"region": "SG"})
+    seed_setting(store, "crosslist_markets", ["carousell"])
+
+    _status, body = _call(server, "GET", "/control/market-logins")
+
+    assert body["enabled"] == ["carousell"]
+    assert body["chrome_ready"] is False
+    assert body["markets"] == []
+    assert browser.visited == []
+
+
+def test_market_logins_filters_to_what_is_still_publishable(
+    server, store, browser, monkeypatch
+) -> None:
+    # Carousell runs no US site, so a stored id stops counting when the region moves.
+    from tests.conftest import seed_setting
+
+    from selly_agent.browser import chrome
+
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kwargs: True)
+    store.set_seller_config_section("basics", {"region": "US"})
+    seed_setting(store, "crosslist_markets", ["carousell"])
+
+    _status, body = _call(server, "GET", "/control/market-logins")
+
+    assert body["enabled"] == []
