@@ -7,12 +7,11 @@ the CLI's own behaviour is isolated.
 from __future__ import annotations
 
 import io
-import urllib.error
 
 import pytest
 
 from fake_telegram_api import FAKE_TOKEN as _TOKEN
-from selly_agent import connect_cli
+from selly_agent import connect_cli, control
 
 
 @pytest.fixture
@@ -20,17 +19,17 @@ def stub_daemon(monkeypatch):
     """Stub the two HTTP calls. Records the POST body; channel-status replies per `bound`."""
     calls = {"posts": []}
 
-    def fake_post(url, token, body):
-        calls["posts"].append((url, token, body))
+    def fake_post(port, token, route, body, **kwargs):
+        calls["posts"].append((route, token, body))
         return calls.get("post_status", 200), calls.get(
             "post_body", {"bot_username": "sellybot", "start_url": "https://t.me/sellybot?start=n0"}
         )
 
-    def fake_get(url):
+    def fake_get(port, token, route, params=None, **kwargs):
         return {"bound": calls.get("bound", True), "bot_username": "sellybot"}
 
-    monkeypatch.setattr(connect_cli, "_post", fake_post)
-    monkeypatch.setattr(connect_cli, "_get", fake_get)
+    monkeypatch.setattr(control, "post", fake_post)
+    monkeypatch.setattr(control, "get", fake_get)
     return calls
 
 
@@ -121,9 +120,9 @@ def test_daemon_unreachable_exits_3(monkeypatch, capsys) -> None:
     _pipe_stdin(monkeypatch, _TOKEN + "\n")
 
     def boom(*a, **k):
-        raise urllib.error.URLError("connection refused")
+        raise control.DaemonUnreachable("connection refused")
 
-    monkeypatch.setattr(connect_cli, "_post", boom)
+    monkeypatch.setattr(control, "post", boom)
     rc = connect_cli.bind_flow(9999, "mcp-tok", interactive=False)
     assert rc == 3
     assert "could not reach the daemon" in capsys.readouterr().err
@@ -182,19 +181,19 @@ def stub_market_daemon(monkeypatch):
     """Stub the connect-market POST and the login probe. `state` drives both."""
     calls = {"posts": [], "gets": [], "state": "logged_in", "post_status": 200}
 
-    def fake_post(url, token, body):
-        calls["posts"].append((url, body))
+    def fake_post(port, token, route, body, **kwargs):
+        calls["posts"].append((route, body))
         return calls["post_status"], calls.get(
             "post_body",
             {"market": body["market"], "url": "https://www.carousell.sg/", "state": calls["state"]},
         )
 
-    def fake_get(url):
-        calls["gets"].append(url)
+    def fake_get(port, token, route, params=None, **kwargs):
+        calls["gets"].append((route, params))
         return {"state": calls["state"]}
 
-    monkeypatch.setattr(connect_cli, "_post", fake_post)
-    monkeypatch.setattr(connect_cli, "_get", fake_get)
+    monkeypatch.setattr(control, "post", fake_post)
+    monkeypatch.setattr(control, "get", fake_get)
     return calls
 
 

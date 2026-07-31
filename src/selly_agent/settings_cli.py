@@ -13,61 +13,13 @@ taken as text for the settings that hold text.
 
 from __future__ import annotations
 
-import json
 import sys
-import urllib.error
-import urllib.request
 
-from selly_agent import config, secrets
-
-_LOCALHOST_ORIGIN = "http://127.0.0.1"
-
-
-def _base_url(port: int) -> str:
-    return f"http://127.0.0.1:{port}"
-
-
-def _require_token() -> str | None:
-    token = secrets.read_mcp_token()
-    if not token:
-        print(
-            "selly-agent: no MCP token found — start the daemon first (selly-agent daemon run)",
-            file=sys.stderr,
-        )
-    return token
-
-
-def _post(url: str, token: str, body: dict) -> tuple:
-    """POST and return (status, parsed body). A 4xx body is read too — it carries the reason a
-    value was refused, which is the whole point of validating at the door."""
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-            "Origin": _LOCALHOST_ORIGIN,
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.status, json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        try:
-            return exc.code, json.loads(exc.read().decode("utf-8"))
-        except (ValueError, OSError):
-            return exc.code, {}
-
-
-def _get(url: str) -> dict:
-    req = urllib.request.Request(url, headers={"Origin": _LOCALHOST_ORIGIN})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+from selly_agent import config, control
 
 
 def run(args) -> int:
-    token = _require_token()
+    token = control.require_token()
     if not token:
         return 1
     port = config.load().http_port
@@ -82,10 +34,10 @@ def set_setting(port: int, token: str, key: str, value: str) -> int:
     """Apply one setting through the daemon. Shared with the installer, which sets the
     marketplaces the seller opted into through this same door rather than writing them itself."""
     try:
-        status, result = _post(
-            f"{_base_url(port)}/control/settings-set", token, {"key": key, "value": value}
+        status, result = control.post(
+            port, token, "/control/settings-set", {"key": key, "value": value}
         )
-    except (urllib.error.URLError, OSError) as exc:
+    except control.DaemonUnreachable as exc:
         print(f"selly-agent: could not reach the daemon: {exc}", file=sys.stderr)
         return 1
     if status != 200:
@@ -97,8 +49,8 @@ def set_setting(port: int, token: str, key: str, value: str) -> int:
 
 def _list(port: int, token: str) -> int:
     try:
-        data = _get(f"{_base_url(port)}/control/settings-list?token={token}")
-    except (urllib.error.URLError, OSError) as exc:
+        data = control.get(port, token, "/control/settings-list")
+    except control.DaemonUnreachable as exc:
         print(f"selly-agent: could not reach the daemon: {exc}", file=sys.stderr)
         return 1
     pending = data.get("pending", [])
@@ -117,12 +69,10 @@ def _list(port: int, token: str) -> int:
 
 def _decide(port: int, token: str, action: str, change_id: str) -> int:
     try:
-        _status, result = _post(
-            f"{_base_url(port)}/control/settings-decide",
-            token,
-            {"action": action, "change_id": change_id},
+        _status, result = control.post(
+            port, token, "/control/settings-decide", {"action": action, "change_id": change_id}
         )
-    except (urllib.error.URLError, OSError) as exc:
+    except control.DaemonUnreachable as exc:
         print(f"selly-agent: could not reach the daemon: {exc}", file=sys.stderr)
         return 1
     print(result.get("message", result.get("status", "done")))

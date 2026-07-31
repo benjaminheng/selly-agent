@@ -12,53 +12,14 @@ from __future__ import annotations
 import json
 import sys
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
-from selly_agent import config, paths, secrets, skills
-
-_LOCALHOST_ORIGIN = "http://127.0.0.1"
-
-
-def _base_url(port: int) -> str:
-    return f"http://127.0.0.1:{port}"
-
-
-def _post(url: str, token: str, body: dict) -> dict:
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-            "Origin": _LOCALHOST_ORIGIN,
-        },
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def _get(url: str) -> dict:
-    req = urllib.request.Request(url, headers={"Origin": _LOCALHOST_ORIGIN})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def _require_token() -> str | None:
-    token = secrets.read_mcp_token()
-    if not token:
-        print(
-            "selly-agent: no MCP token found — start the daemon first (selly-agent daemon run)",
-            file=sys.stderr,
-        )
-    return token
+from selly_agent import config, control, paths, skills
 
 
 def run(args) -> int:
     """`selly-agent pass run <type> --item <id> [--market <id>] [--follow]`."""
-    token = _require_token()
+    token = control.require_token()
     if not token:
         return 1
     port = config.load().http_port
@@ -68,12 +29,10 @@ def run(args) -> int:
     if getattr(args, "market", None):
         payload["market"] = args.market
     try:
-        resp = _post(
-            f"{_base_url(port)}/control/enqueue-pass",
-            token,
-            {"type": args.pass_type, "payload": payload},
+        _status, resp = control.post(
+            port, token, "/control/enqueue-pass", {"type": args.pass_type, "payload": payload}
         )
-    except (urllib.error.URLError, OSError) as exc:
+    except control.DaemonUnreachable as exc:
         print(f"selly-agent: could not reach the daemon: {exc}", file=sys.stderr)
         return 1
     pass_id = resp["pass_id"]
@@ -85,11 +44,10 @@ def run(args) -> int:
 
 def _follow(port: int, token: str, pass_id: str) -> None:
     after = 0
-    url = f"{_base_url(port)}/events.json"
     while True:
         try:
-            data = _get(f"{url}?token={token}&pass={pass_id}&after_seq={after}")
-        except (urllib.error.URLError, OSError):
+            data = control.get(port, token, "/events.json", {"pass": pass_id, "after_seq": after})
+        except control.DaemonUnreachable:
             time.sleep(1.0)
             continue
         for event in data["events"]:
@@ -161,7 +119,7 @@ def harness_config(args) -> int:
     theirs to set. Command bodies reference the skill files by path rather than inlining them, so
     an update changes what they say without the files being rewritten.
     """
-    token = _require_token()
+    token = control.require_token()
     if not token:
         return 1
     port = config.load().http_port
@@ -171,7 +129,7 @@ def harness_config(args) -> int:
         "mcpServers": {
             "selly": {
                 "type": "http",
-                "url": f"{_base_url(port)}/mcp",
+                "url": f"{control.base_url(port)}/mcp",
                 "headers": {"Authorization": f"Bearer {token}"},
             }
         }

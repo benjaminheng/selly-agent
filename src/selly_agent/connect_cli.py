@@ -24,15 +24,11 @@ phone?" offer shares one implementation of the UX.
 from __future__ import annotations
 
 import getpass
-import json
 import sys
 import time
-import urllib.error
-import urllib.request
 
-from selly_agent import config, secrets
+from selly_agent import config, control
 
-_LOCALHOST_ORIGIN = "http://127.0.0.1"
 _POLL_INTERVAL_SEC = 1.0
 # Getting the deep link onto a phone can take a while for a desktop operator, so the interactive
 # default is generous; the piped/scripted default stays tight (a script isn't waiting on a human).
@@ -49,48 +45,6 @@ _BOTFATHER_GUIDANCE = (
 )
 
 
-def _base_url(port: int) -> str:
-    return f"http://127.0.0.1:{port}"
-
-
-def _require_token() -> str | None:
-    token = secrets.read_mcp_token()
-    if not token:
-        print(
-            "selly-agent: no MCP token found — start the daemon first (selly-agent daemon run)",
-            file=sys.stderr,
-        )
-    return token
-
-
-def _post(url: str, token: str, body: dict) -> tuple:
-    """POST and return (status, parsed_json). A 4xx/5xx body is read too (it carries the error)."""
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-            "Origin": _LOCALHOST_ORIGIN,
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return resp.status, json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        try:
-            return exc.code, json.loads(exc.read().decode("utf-8"))
-        except (ValueError, OSError):
-            return exc.code, {}
-
-
-def _get(url: str) -> dict:
-    req = urllib.request.Request(url, headers={"Origin": _LOCALHOST_ORIGIN})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
 def _read_token(interactive: bool) -> str:
     """Read the BotFather token. Interactive: a non-echoed getpass prompt (a credential must stay
     off the scrollback). Piped: one readline, no prompt."""
@@ -104,7 +58,7 @@ def _read_token(interactive: bool) -> str:
 
 
 def run(args) -> int:
-    token = _require_token()
+    token = control.require_token()
     if not token:
         return 3
     port = config.load().http_port
@@ -140,10 +94,9 @@ def market_flow(port: int, mcp_token: str, market: str, *, interactive: bool | N
     if interactive is None:
         interactive = sys.stdin.isatty()
 
-    url = f"{_base_url(port)}/control/connect-market"
     try:
-        status, body = _post(url, mcp_token, {"market": market})
-    except (urllib.error.URLError, OSError) as exc:
+        status, body = control.post(port, mcp_token, "/control/connect-market", {"market": market})
+    except control.DaemonUnreachable as exc:
         print(f"selly-agent: could not reach the daemon: {exc}", file=sys.stderr)
         return 3
     if status == 503:
@@ -177,8 +130,8 @@ def market_flow(port: int, mcp_token: str, market: str, *, interactive: bool | N
 
 def _probe_market(port: int, mcp_token: str, market: str):
     try:
-        answer = _get(f"{_base_url(port)}/control/market-login?market={market}&token={mcp_token}")
-    except (urllib.error.URLError, OSError):
+        answer = control.get(port, mcp_token, "/control/market-login", {"market": market})
+    except control.DaemonUnreachable:
         return "unknown"
     return answer.get("state")
 
@@ -222,10 +175,11 @@ def bind_flow(
             print("selly-agent: no token on stdin — pipe the BotFather token in", file=sys.stderr)
         return 2
 
-    url = f"{_base_url(port)}/control/connect-telegram"
     try:
-        status, body = _post(url, mcp_token, {"token": bot_token})
-    except (urllib.error.URLError, OSError) as exc:
+        status, body = control.post(
+            port, mcp_token, "/control/connect-telegram", {"token": bot_token}, timeout=60
+        )
+    except control.DaemonUnreachable as exc:
         print(f"selly-agent: could not reach the daemon: {exc}", file=sys.stderr)
         return 3
     if status != 200:
@@ -259,15 +213,14 @@ def _print_bind_prompt(bot_username: str, start_url: str, *, timeout: int) -> No
 
 def _await_bind(port: int, token: str, *, timeout: int, interactive: bool) -> int:
     deadline = time.monotonic() + timeout
-    url = f"{_base_url(port)}/control/channel-status?token={token}"
     next_notice = timeout - _REMAINING_NOTICE_SEC
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         try:
-            status = _get(url)
-        except (urllib.error.URLError, OSError):
+            status = control.get(port, token, "/control/channel-status")
+        except control.DaemonUnreachable:
             status = {}
         if status.get("bound"):
             print(f"Connected as @{status.get('bot_username')}.")
@@ -286,8 +239,8 @@ def _await_bind(port: int, token: str, *, timeout: int, interactive: bool) -> in
 
 def _print_status(port: int, token: str) -> int:
     try:
-        status = _get(f"{_base_url(port)}/control/channel-status?token={token}")
-    except (urllib.error.URLError, OSError) as exc:
+        status = control.get(port, token, "/control/channel-status")
+    except control.DaemonUnreachable as exc:
         print(f"selly-agent: could not reach the daemon: {exc}", file=sys.stderr)
         return 3
     if status.get("bound"):
