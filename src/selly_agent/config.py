@@ -90,6 +90,11 @@ class Config:
     # it deliberately drops the account-safety disguise. The pacing engine reads this; the
     # stored knob values themselves are untouched, so tuned values survive a round-trip.
     pacing_mode: str = "normal"
+    # How often the daemon looks for a new release, and where it looks. The check is one small
+    # HTTP GET and it only ever queues a notice — nothing installs itself — so this is about how
+    # soon a seller hears, not about load. Null base URL means the published one.
+    update_check_interval_sec: float = 86400.0
+    update_base_url: str | None = None
     # Negotiation knobs (absent keys leave the engine defaults in force; a style/firmness
     # preset layer may later sit between these and the defaults).
     negotiation_max_counters: int = 2
@@ -268,6 +273,22 @@ def _validate(raw: dict) -> Config:
                 f"pacing_mode must be one of {sorted(_VALID_PACING_MODES)}, got {mode!r}"
             )
         values["pacing_mode"] = mode
+
+    if "update_check_interval_sec" in raw:
+        interval = raw["update_check_interval_sec"]
+        if not _is_real_number(interval) or interval <= 0:
+            raise ConfigError(
+                f"update_check_interval_sec must be a positive number, got {interval!r}"
+            )
+        values["update_check_interval_sec"] = float(interval)
+
+    if "update_base_url" in raw:
+        base = raw["update_base_url"]
+        if base is not None and (
+            not isinstance(base, str) or not base.startswith(("http://", "https://"))
+        ):
+            raise ConfigError(f"update_base_url must be an http(s) URL or null, got {base!r}")
+        values["update_base_url"] = base.rstrip("/") if base else None
 
     if "negotiation_max_counters" in raw:
         counters = raw["negotiation_max_counters"]

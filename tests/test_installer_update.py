@@ -1,0 +1,405 @@
+"""`selly-agent update`: discovery, the digest gate, the swap, and the rollback matrix.
+
+The release is real — a tarball built here and served from a local HTTP server — so the fetch,
+the checksum, the extraction and the version swap are all the production code. What is faked is
+everything a test cannot have: launchctl, a daemon that heartbeats, and the health verdict that
+decides whether the new version stays.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import sqlite3
+import tarfile
+import threading
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+import pytest
+from tests.test_supervisor import FakePlatform
+
+from selly_agent import healthcheck, heartbeat, paths, supervisor
+from selly_agent.config import Config
+from selly_agent.installer import checks, materialize
+from selly_agent.installer import update as update_mod
+from selly_agent.installer.update import Release, UpdateError
+
+
+def build_release(into, version: str, *, marker: str = "") -> str:
+    """Build a release tarball plus its SHA256SUMS in `into`, and answer the digest."""
+    into.mkdir(parents=True, exist_ok=True)
+    stage = into / f"stage-{version}"
+    root = stage / f"selly-agent-{version}"
+    (root / "bin").mkdir(parents=True)
+    (root / "bin" / "selly-agent").write_text("#!/usr/bin/env python3\n")
+    (root / "src" / "selly_agent").mkdir(parents=True)
+    (root / "src" / "selly_agent" / "__init__.py").write_text(
+        f"__version__ = {version!r}\n{marker}"
+    )
+
+    name = f"selly-agent-{version}.tar.gz"
+    with tarfile.open(into / name, "w:gz") as tar:
+        tar.add(root, arcname=root.name)
+    digest = hashlib.sha256((into / name).read_bytes()).hexdigest()
+    (into / "SHA256SUMS").write_text(f"{digest}  {name}\n")
+    return digest
+
+
+@pytest.fixture
+def served(tmp_path):
+    """A directory served over HTTP, as a release host would."""
+    root = tmp_path / "releases"
+    root.mkdir()
+    handler = partial(SimpleHTTPRequestHandler, directory=str(root))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield root, f"http://127.0.0.1:{httpd.server_address[1]}"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def write_db(path, marker: str) -> None:
+    """A real SQLite file carrying a marker, so a restore is asserted on content and not bytes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS marker (note TEXT)")
+        conn.execute("DELETE FROM marker")
+        conn.execute("INSERT INTO marker (note) VALUES (?)", (marker,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def read_db(path) -> str:
+    conn = sqlite3.connect(str(path))
+    try:
+        return conn.execute("SELECT note FROM marker").fetchone()[0]
+    finally:
+        conn.close()
+
+
+class Args:
+    def __init__(self, *, url=None, check=False, rollback=False):
+        self.url = url
+        self.check = check
+        self.rollback = rollback
+
+
+# --- pure ----------------------------------------------------------------------------------------
+
+
+def test_version_ordering_puts_a_dev_build_below_its_own_release() -> None:
+    assert update_mod.is_newer("0.2.0", "0.1.0.dev0")
+    assert update_mod.is_newer("0.1.0", "0.1.0.dev0")
+    assert not update_mod.is_newer("0.1.0.dev0", "0.1.0")
+    assert not update_mod.is_newer("0.1.0", "0.1.0")
+    assert not update_mod.is_newer("0.9.0", "1.0.0")
+    assert update_mod.is_newer("1.0.1", "1.0.0")
+
+
+def test_sums_parsing_ignores_anything_that_is_not_a_checksum_line() -> None:
+    text = "# a comment\n\n" + "a" * 64 + "  selly-agent-1.0.0.tar.gz\nnot a line\n"
+    assert update_mod.parse_sums(text) == {"selly-agent-1.0.0.tar.gz": "a" * 64}
+
+
+def test_the_release_is_read_out_of_its_own_checksum_file() -> None:
+    release = update_mod.release_from_sums("b" * 64 + "  selly-agent-2.3.4.tar.gz\n")
+    assert release == Release(version="2.3.4", filename="selly-agent-2.3.4.tar.gz", digest="b" * 64)
+
+
+def test_several_releases_in_one_sums_file_resolve_to_the_highest() -> None:
+    text = "a" * 64 + "  selly-agent-2.0.0.tar.gz\n" + "b" * 64 + "  selly-agent-10.0.0.tar.gz\n"
+    assert update_mod.release_from_sums(text).version == "10.0.0"
+
+
+def test_a_sums_file_with_no_archive_is_refused() -> None:
+    with pytest.raises(UpdateError):
+        update_mod.release_from_sums("c" * 64 + "  something-else.zip\n")
+
+
+# --- fetch and verify --------------------------------------------------------------------------
+
+
+def test_discovery_reads_the_version_from_the_host(xdg_tmp, served) -> None:
+    root, base = served
+    build_release(root, "3.0.0")
+    assert update_mod.discover(base).version == "3.0.0"
+
+
+def test_a_tampered_download_is_refused_and_left_for_inspection(xdg_tmp, served) -> None:
+    root, base = served
+    build_release(root, "3.0.0")
+    archive = root / "selly-agent-3.0.0.tar.gz"
+    archive.write_bytes(archive.read_bytes() + b"tampered")
+
+    release = update_mod.discover(base)
+    with pytest.raises(UpdateError) as caught:
+        update_mod.download(base, release, paths.cache_dir())
+
+    assert "does not match its published checksum" in str(caught.value)
+    assert (paths.cache_dir() / release.filename).exists()  # kept as evidence
+
+
+def test_an_archive_that_would_escape_its_destination_is_refused(xdg_tmp, tmp_path) -> None:
+    archive = tmp_path / "evil.tar.gz"
+    payload = tmp_path / "payload"
+    payload.write_text("x")
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(payload, arcname="../escaped")
+
+    with pytest.raises(UpdateError) as caught:
+        update_mod.unpack(archive, tmp_path / "out")
+    assert "outside" in str(caught.value)
+
+
+# --- --check ----------------------------------------------------------------------------------
+
+
+def test_check_exits_ten_when_there_is_something_to_install(xdg_tmp, served) -> None:
+    root, base = served
+    build_release(root, "9.9.9")
+    lines = []
+    assert update_mod.check(Args(url=base), Config(), lines.append) == 10
+    assert any("9.9.9" in line for line in lines)
+
+
+def test_check_exits_zero_when_current(xdg_tmp, served) -> None:
+    from selly_agent import __version__
+
+    root, base = served
+    build_release(root, __version__)
+    lines = []
+    assert update_mod.check(Args(url=base), Config(), lines.append) == 0
+    assert "Already up to date." in lines
+
+
+# --- the full update ------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def installed(xdg_tmp, tmp_path, monkeypatch):
+    """A machine with a version installed and a daemon that is running."""
+    tree = tmp_path / "installed"
+    (tree / "bin").mkdir(parents=True)
+    (tree / "bin" / "selly-agent").write_text("#!/usr/bin/env python3\n")
+    (tree / "src" / "selly_agent").mkdir(parents=True)
+    (tree / "src" / "selly_agent" / "__init__.py").write_text("__version__ = '0.1.0'\n")
+    materialize.install_version(tree, "0.1.0")
+
+    platform = FakePlatform()
+    supervisor.install(mode="login-start", platform=platform)
+    monkeypatch.setattr(heartbeat, "wait_fresh", lambda path, **kwargs: True)
+    monkeypatch.setattr(
+        healthcheck, "run_checks", lambda platform=None: [checks.ok("daemon", "up")]
+    )
+    return platform
+
+
+def test_a_successful_update_swaps_current_and_keeps_the_old_version(installed, served) -> None:
+    root, base = served
+    build_release(root, "0.2.0")
+    lines = []
+
+    assert update_mod.perform(Args(url=base), Config(), lines.append, platform=installed) == 0
+
+    assert materialize.current_version() == "0.2.0"
+    assert (paths.versions_dir() / "0.1.0").is_dir()  # rollback has somewhere to go
+    assert any("SHA256 verified" in line for line in lines)
+    assert any("--rollback to revert" in line for line in lines)
+
+
+def test_the_plist_is_re_rendered_so_it_names_the_new_version(installed, served) -> None:
+    root, base = served
+    build_release(root, "0.2.0")
+    update_mod.perform(Args(url=base), Config(), lambda line: None, platform=installed)
+
+    plist = (paths.launch_agents_dir(platform=installed) / "com.selly.agent.plist").read_text()
+    assert str(paths.current() / "bin" / "selly-agent") in plist
+    assert supervisor.MARKER in plist
+
+
+def test_updating_to_the_version_already_installed_does_nothing(installed, served) -> None:
+    from selly_agent import __version__
+
+    root, base = served
+    build_release(root, __version__)
+    lines = []
+    assert update_mod.perform(Args(url=base), Config(), lines.append, platform=installed) == 0
+    assert "Already up to date." in lines
+
+
+def test_a_dev_install_refuses_to_update(xdg_tmp, tmp_path, served) -> None:
+    tree = tmp_path / "checkout"
+    (tree / "bin").mkdir(parents=True)
+    (tree / "src").mkdir(parents=True)
+    materialize.install_dev(tree)
+
+    with pytest.raises(UpdateError) as caught:
+        update_mod.perform(Args(url=served[1]), Config(), lambda line: None)
+    assert "working tree" in str(caught.value)
+
+
+def test_a_manual_daemon_that_was_not_running_is_not_started_by_an_update(
+    xdg_tmp, tmp_path, monkeypatch, served
+) -> None:
+    tree = tmp_path / "installed"
+    (tree / "bin").mkdir(parents=True)
+    (tree / "src" / "selly_agent").mkdir(parents=True)
+    materialize.install_version(tree, "0.1.0")
+    platform = FakePlatform()
+    supervisor.install(mode="manual", platform=platform)  # manual: installed, not registered
+
+    root, base = served
+    build_release(root, "0.2.0")
+    lines = []
+    rc = update_mod.perform(
+        Args(url=base), Config(daemon_mode="manual"), lines.append, platform=platform
+    )
+
+    assert rc == 0
+    assert materialize.current_version() == "0.2.0"
+    assert not platform.is_registered("com.selly.agent")  # still off, as it was
+    assert any("Start it to finish" in line for line in lines)
+
+
+# --- rollback ---------------------------------------------------------------------------------
+
+
+def test_an_unhealthy_new_version_is_rolled_back(installed, served, monkeypatch) -> None:
+    root, base = served
+    build_release(root, "0.2.0")
+    monkeypatch.setattr(
+        healthcheck, "run_checks", lambda platform=None: [checks.fail("daemon", "not running")]
+    )
+    lines = []
+
+    rc = update_mod.perform(Args(url=base), Config(), lines.append, platform=installed)
+
+    assert rc == 1
+    assert materialize.current_version() == "0.1.0"
+    # The failed version stays on disk: it is the evidence for why it failed.
+    assert (paths.versions_dir() / "0.2.0").is_dir()
+    assert any("rolling back" in line for line in lines)
+
+
+def test_a_rollback_restores_the_database_only_when_the_new_version_migrated_it(
+    installed, served, monkeypatch
+) -> None:
+    root, base = served
+    build_release(root, "0.2.0")
+    paths.ensure_state_dirs()
+    write_db(paths.selly_db(), "after the migration")
+
+    # The migration runner snapshots the database when — and only when — something is pending.
+    # Simulate that happening during the new version's first start.
+    def start_and_migrate(mode, *, platform=None):
+        write_db(paths.backups_dir() / "selly-2000-pre-0009.db", "before the migration")
+        return True
+
+    monkeypatch.setattr(update_mod, "_start_daemon", start_and_migrate)
+    monkeypatch.setattr(
+        healthcheck, "run_checks", lambda platform=None: [checks.fail("daemon", "wedged")]
+    )
+    lines = []
+
+    update_mod.perform(Args(url=base), Config(), lines.append, platform=installed)
+
+    assert read_db(paths.selly_db()) == "before the migration"
+    assert any("Anything written since then is not in it" in line for line in lines)
+
+
+def test_a_rollback_without_a_migration_leaves_the_database_alone(
+    installed, served, monkeypatch
+) -> None:
+    root, base = served
+    build_release(root, "0.2.0")
+    paths.ensure_state_dirs()
+    write_db(paths.selly_db(), "untouched")
+    write_db(paths.backups_dir() / "selly-1000-pre-0008.db", "an older snapshot")
+
+    monkeypatch.setattr(
+        healthcheck, "run_checks", lambda platform=None: [checks.fail("daemon", "wedged")]
+    )
+
+    update_mod.perform(Args(url=base), Config(), lambda line: None, platform=installed)
+
+    # No new snapshot appeared, so no migration ran, so the database is the one both versions read.
+    assert read_db(paths.selly_db()) == "untouched"
+
+
+def test_rollback_by_hand_goes_back_one_version(installed, served) -> None:
+    root, base = served
+    build_release(root, "0.2.0")
+    update_mod.perform(Args(url=base), Config(), lambda line: None, platform=installed)
+    assert materialize.current_version() == "0.2.0"
+
+    lines = []
+    assert update_mod.rollback(Args(rollback=True), Config(), lines.append, platform=installed) == 0
+    assert materialize.current_version() == "0.1.0"
+
+
+def test_rollback_refuses_when_there_is_nowhere_to_go(installed) -> None:
+    with pytest.raises(UpdateError) as caught:
+        update_mod.rollback(Args(rollback=True), Config(), lambda line: None, platform=installed)
+    assert "no previous version" in str(caught.value)
+
+
+# --- the daemon's probe ---------------------------------------------------------------------------
+
+
+class _Recorder:
+    def __init__(self):
+        self.notices = []
+        self.events = []
+
+    def queue_notice(self, text, **kwargs):
+        self.notices.append(text)
+
+    def publish(self, kind, payload, **kwargs):
+        self.events.append((kind, payload))
+
+
+def test_the_probe_notices_a_new_release_once(installed, served) -> None:
+    root, base = served
+    build_release(root, "9.9.9")
+    recorder = _Recorder()
+    seen = set()
+    cfg = Config(update_base_url=base)
+
+    update_mod.update_probe(store=recorder, bus=recorder, config_obj=cfg, seen=seen)
+    update_mod.update_probe(store=recorder, bus=recorder, config_obj=cfg, seen=seen)
+
+    assert len(recorder.notices) == 1
+    assert "9.9.9" in recorder.notices[0]
+    assert recorder.events[0][0] == "update.available"
+
+
+def test_the_probe_says_nothing_on_a_dev_install(xdg_tmp, tmp_path, served) -> None:
+    # Every real release outranks a .dev version, so a developer would be nagged forever.
+    root, base = served
+    build_release(root, "9.9.9")
+    tree = tmp_path / "checkout"
+    (tree / "bin").mkdir(parents=True)
+    (tree / "src").mkdir(parents=True)
+    materialize.install_dev(tree)
+
+    recorder = _Recorder()
+    update_mod.update_probe(
+        store=recorder, bus=recorder, config_obj=Config(update_base_url=base), seen=set()
+    )
+    assert recorder.notices == []
+
+
+def test_an_unreachable_release_host_is_not_an_error_the_seller_hears(installed) -> None:
+    recorder = _Recorder()
+    update_mod.update_probe(
+        store=recorder,
+        bus=recorder,
+        config_obj=Config(update_base_url="http://127.0.0.1:1/nowhere"),
+        seen=set(),
+    )
+    assert recorder.notices == []

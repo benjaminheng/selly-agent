@@ -188,7 +188,10 @@ def _channel_snapshot() -> dict:
             "paused": bool(ctrl["paused"]) if ctrl else False,
             "queued_notices": notices["n"],
         }
-    except sqlite3.OperationalError:  # channel tables not migrated in yet
+    except sqlite3.DatabaseError:
+        # Not migrated yet, or not readable at all. Both are things `daemon status` and the
+        # healthcheck have to survive: a damaged database is precisely when someone needs a
+        # status report, and crashing here would take the whole report with it.
         return default
     finally:
         conn.close()

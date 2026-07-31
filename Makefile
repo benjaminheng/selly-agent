@@ -4,7 +4,12 @@ PY39 ?= python3.9
 RUFF ?= ruff
 PYRIGHT ?= pyright
 
-.PHONY: test test-3.9 lint fmt typecheck
+DIST ?= dist
+VERSION = $(shell $(PY) -c "import sys; sys.path.insert(0, 'src'); \
+	import selly_agent; print(selly_agent.__version__)")
+STAGE = $(DIST)/selly-agent-$(VERSION)
+
+.PHONY: test test-3.9 lint fmt typecheck dist
 
 test:
 	$(PY) -m pytest
@@ -31,3 +36,22 @@ typecheck:
 
 fmt:
 	$(RUFF) format .
+
+# The release artifact: the same tree ./setup stages into versions/<v>, plus the checksum file
+# that both `selly-agent update` and install.sh read the version out of. Publishing is manual
+# (`gh release create`) until a cadence justifies automating it.
+dist:
+	@rm -rf $(STAGE) $(DIST)/selly-agent-$(VERSION).tar.gz $(DIST)/SHA256SUMS
+	@mkdir -p $(STAGE)
+	@cp -R bin src $(STAGE)/
+	@cp README.md $(STAGE)/ 2>/dev/null || true
+	@cp LICENSE $(STAGE)/ 2>/dev/null || true
+	@cp setup $(STAGE)/
+	@find $(STAGE) -name '__pycache__' -type d -prune -exec rm -rf {} +
+	@find $(STAGE) -name '*.py[co]' -delete
+	@tar -czf $(DIST)/selly-agent-$(VERSION).tar.gz -C $(DIST) selly-agent-$(VERSION)
+	@rm -rf $(STAGE)
+	@cd $(DIST) && { shasum -a 256 selly-agent-$(VERSION).tar.gz 2>/dev/null \
+		|| sha256sum selly-agent-$(VERSION).tar.gz; } > SHA256SUMS
+	@echo "$(DIST)/selly-agent-$(VERSION).tar.gz"
+	@cat $(DIST)/SHA256SUMS

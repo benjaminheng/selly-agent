@@ -10,6 +10,9 @@ import argparse
 
 from selly_agent import __version__
 
+# The one constant the parser's own help text needs; everything else is imported lazily.
+UPDATE_AVAILABLE_EXIT = 10
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="selly-agent")
@@ -56,6 +59,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("healthcheck", help="check the install (exit 1 if anything is wrong)")
+
+    update = sub.add_parser("update", help="update to the latest release")
+    update_what = update.add_mutually_exclusive_group()
+    update_what.add_argument(
+        "--check",
+        action="store_true",
+        help=f"report the available version and exit {UPDATE_AVAILABLE_EXIT} if there is one",
+    )
+    update_what.add_argument(
+        "--rollback", action="store_true", help="go back to the previously installed version"
+    )
+    update.add_argument(
+        "--url", default=None, help="base URL to fetch the release from (staging, testing)"
+    )
 
     daemon = sub.add_parser("daemon", help="daemon lifecycle")
     dsub = daemon.add_subparsers(dest="daemon_command", required=True)
@@ -208,6 +225,11 @@ def main(argv: list[str] | None = None) -> int:
         from selly_agent import healthcheck
 
         return healthcheck.run(args)
+
+    if args.command == "update":
+        from selly_agent.installer import update as update_cli
+
+        return update_cli.run(args)
 
     if args.command == "daemon":
         from selly_agent import daemon_cli

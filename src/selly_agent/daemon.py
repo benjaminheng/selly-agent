@@ -40,6 +40,7 @@ from selly_agent.channel.telegram import provider as telegram_provider
 from selly_agent.db import Database
 from selly_agent.events import EventBus, EventStore
 from selly_agent.http_server import HttpServer
+from selly_agent.installer import update
 from selly_agent.rail.client import RailClient, RailUnprovisioned
 from selly_agent.scheduler import Scheduler, Task
 from selly_agent.store import ScopedStore, Store
@@ -359,6 +360,18 @@ def run_daemon(*, once: bool) -> int:
             name="crosslist_lane",
             interval_sec=_CROSSLIST_LANE_INTERVAL_SEC,
             func=lambda: crosslist.crosslist_lane(crosslist_deps),
+        )
+    )
+    # Look for a new release and say so once. Nothing installs itself — an update replaces the
+    # code this process is running, so it stays something a person starts.
+    seen_versions: set = set()
+    scheduler.register(
+        Task(
+            name="update_probe",
+            interval_sec=float(cfg.update_check_interval_sec),
+            func=lambda: update.update_probe(
+                store=store, bus=bus, config_obj=cfg, seen=seen_versions
+            ),
         )
     )
     # Fold settled channel passes' claimed inbox rows from durable state (not a pass.end
