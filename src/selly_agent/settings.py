@@ -699,7 +699,7 @@ def crosslist_markets(store) -> list:
 register(
     SettingSpec(
         key="crosslist_markets",
-        label="Also list on",
+        label="Enabled marketplaces",
         parse=_parse_crosslist_markets,
         render=_render_crosslist_markets,
         default=[],

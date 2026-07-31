@@ -183,7 +183,7 @@ def test_effective_ignores_orphan_stored_key(fresh_store) -> None:
 def test_card_lists_headline_at_default(fresh_store) -> None:
     assert settings.card_lines(fresh_store) == [
         "• Quiet hours: 23:00–08:00",
-        "• Also list on: none — carousell.ai only",
+        "• Enabled marketplaces: none — carousell.ai only",
         "2 more settings at defaults — ask me about settings.",
     ]
 

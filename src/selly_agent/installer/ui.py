@@ -1,14 +1,14 @@
-"""Setup's voice: the one place that prints as the installer and the one place that prompts.
+"""Setup's terminal: the one place that prints for the installer, and the one place that prompts.
 
-The `SELLY:` prefix marks the orchestrator speaking, and nothing else in the codebase may write
-it — a CLI verb setup invokes (connect, healthcheck) owns its own polished output, and wrapping
-that in a second voice reads as two programs arguing. Setup frames a child invocation with its
-own lines before and after instead.
+An install is a long scroll, so the output is shaped to be skimmable: each phase opens with a
+heading — a blank line above it, colour on the text — and what that phase did is reported plainly,
+indented beneath it. Colour is reserved for headings and questions, which are the only lines a
+reader navigates by or has to answer.
 
-Everything decorative is conditional: colour only on a TTY with NO_COLOR unset, the banner only
-when the terminal is wide enough for it. A run whose stdin is not a human — CI, a pipe, an agent
-session — never blocks on a prompt; each one answers with its default and says that it did, so a
-scripted install is a readable transcript rather than a hang.
+Everything decorative is conditional: colour only when stdout is a TTY with NO_COLOR unset, the
+banner only when the terminal is wide enough for it. A run whose stdin is not a person never
+blocks on a prompt; each one answers with its default and says that it did, so a scripted install
+reads as a transcript rather than a hang.
 """
 
 from __future__ import annotations
@@ -16,8 +16,6 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-
-PREFIX = "SELLY:"
 
 # The banner is skipped below this width rather than wrapped: a wrapped banner is unreadable
 # noise, and the one-line fallback carries the same information.
@@ -34,6 +32,8 @@ BANNER = (
 
 _TEAL = "\033[36m"
 _BOLD_TEAL = "\033[1;36m"
+_YELLOW = "\033[33m"
+_RED = "\033[31m"
 _DIM = "\033[2m"
 _RESET = "\033[0m"
 
@@ -96,57 +96,78 @@ class Ui:
 
     # --- output --------------------------------------------------------------------------
 
-    def say(self, text: str = "") -> None:
-        """One message in setup's voice. Every line carries the prefix, so a paragraph reads as
-        one speaker rather than as output that lost its attribution halfway down."""
-        marker = self._paint(PREFIX, _BOLD_TEAL)
-        for line in (text or "").split("\n"):
-            print(f"{marker} {line}".rstrip(), file=self.stream)
+    def step(self, text: str) -> None:
+        """Open a phase: a blank line, then the phase's name in colour.
 
-    def plain(self, text: str = "") -> None:
-        """Unprefixed output — a URL, a path listing, a command to copy. The prefix is the
-        orchestrator talking *about* something; this is the something."""
+        Headings are what makes the transcript navigable, so a phase gets exactly one — either
+        this, or the question that opens it (the prompts render themselves the same way).
+        """
+        print("", file=self.stream)
+        print(self._paint(text, _BOLD_TEAL), file=self.stream)
+
+    def say(self, text: str = "") -> None:
+        """A line of body text, verbatim and unindented."""
         print(text, file=self.stream)
 
-    def warn(self, text: str) -> None:
-        self.say(f"⚠️  {text}")
+    def detail(self, text: str) -> None:
+        # """A line reporting what a phase did, indented under its heading."""
+        # print(f"  {text}", file=self.stream)
+               
+        # TODO: testing out not indenting the detail lines. before merging, if we keep this approach, refactor all calls from detail() to say()
+        self.say(text)
+
 
     def note(self, text: str) -> None:
         """A dimmed aside: what a step assumed, what was skipped, where to look."""
-        self.plain(self._paint(f"   {text}", _DIM))
+        print(self._paint(f"{text}", _DIM), file=self.stream)
+
+    def warn(self, text: str) -> None:
+        print(self._paint(f"warn: {text}", _YELLOW), file=self.stream)
 
     def banner(self, version: str) -> None:
         if self.width < BANNER_MIN_COLUMNS:
-            self.plain(self._paint(f"SELLY v{version}", _BOLD_TEAL))
+            print(self._paint(f"Selly v{version}", _BOLD_TEAL), file=self.stream)
             return
         for line in BANNER:
-            self.plain(self._paint(line, _TEAL))
+            print(self._paint(line, _TEAL), file=self.stream)
 
     def fatal(self, exc: Abort) -> None:
         """Render an Abort. The only place a fatal error is printed."""
-        print(f"{PREFIX} {exc.message}", file=self.err)
+        print(self._paint(f"error: {exc.message}", _RED), file=self.err)
         if exc.fix:
             for line in exc.fix.split("\n"):
-                print(f"{PREFIX}   {line}", file=self.err)
+                print(f"  {line}", file=self.err)
 
     def die(self, message: str, fix: str = "") -> None:
         raise Abort(message, fix)
 
     # --- prompts -------------------------------------------------------------------------
 
+    def _open_prompt(self, lead: bool) -> None:
+        """A question doubles as its phase's heading, so by default it gets the same blank line
+        above it that `step` gives. `lead=False` is for a question nested inside an open phase."""
+        if lead:
+            print("", file=self.stream)
+
     def _ask_raw(self, prompt: str) -> str:
-        print(f"{self._paint(PREFIX, _BOLD_TEAL)} {prompt}", end="", file=self.stream, flush=True)
+        print(self._paint(prompt, _BOLD_TEAL), end="", file=self.stream, flush=True)
         try:
             return self._input().strip()
         except (EOFError, KeyboardInterrupt):
-            self.plain("")
+            print("", file=self.stream)
             raise Abort("interrupted — nothing further was changed") from None
 
-    def confirm(self, question: str, *, default: bool = True) -> bool:
+    def _auto_answer(self, text: str) -> None:
+        """Echo a question and the answer taken for it, so a non-interactive run still reads as
+        a transcript of decisions rather than as output with unexplained gaps."""
+        print(self._paint(text, _BOLD_TEAL), file=self.stream)
+
+    def confirm(self, question: str, *, default: bool = True, lead: bool = True) -> bool:
         """A yes/no question. `--yes` and a non-interactive run both take the default, out loud."""
         suffix = "[Y/n]" if default else "[y/N]"
+        self._open_prompt(lead)
         if self.assume_yes or not self.interactive:
-            self.say(f"{question} {suffix} {'y' if default else 'n'}")
+            self._auto_answer(f"{question} {suffix} {'y' if default else 'n'}")
             return default
         while True:
             answer = self._ask_raw(f"{question} {suffix} ").lower()
@@ -157,22 +178,24 @@ class Ui:
             if answer in ("n", "no"):
                 return False
 
-    def ask(self, question: str, *, default: str = "") -> str:
+    def ask(self, question: str, *, default: str = "", lead: bool = True) -> str:
         """Free text, with a default shown when there is one."""
+        self._open_prompt(lead)
         if not self.interactive:
-            self.say(f"{question} {default}")
+            self._auto_answer(f"{question} {default}")
             return default
         shown = f" [{default}]" if default else ""
         return self._ask_raw(f"{question}{shown} ") or default
 
-    def choose(self, question: str, options, *, default_index: int = 0) -> int:
+    def choose(self, question: str, options, *, default_index: int = 0, lead: bool = True) -> int:
         """Pick one of a numbered list; returns its index."""
+        self._open_prompt(lead)
         if not self.interactive:
-            self.say(f"{question} {options[default_index]}")
+            self._auto_answer(f"{question} {options[default_index]}")
             return default_index
-        self.say(question)
+        self._auto_answer(question)
         for number, option in enumerate(options, start=1):
-            self.plain(f"  {number}) {option}")
+            self.detail(f"{number}) {option}")
         while True:
             raw = self._ask_raw(f"Enter 1-{len(options)} [default {default_index + 1}]: ")
             if not raw:
@@ -184,7 +207,7 @@ class Ui:
             if 1 <= picked <= len(options):
                 return picked - 1
 
-    def multiselect(self, question: str, options) -> list:
+    def multiselect(self, question: str, options, *, lead: bool = True) -> list:
         """Pick any number of a numbered list; returns their indices, possibly none.
 
         Skipping is a first-class answer (plain Enter), because every caller of this is an
@@ -192,18 +215,18 @@ class Ui:
         """
         if not options:
             return []
+        self._open_prompt(lead)
         if not self.interactive or self.assume_yes:
             # Unlike a yes/no question, this one's default is *none*: every caller of it opts the
             # seller into something public, and choosing that for them because they passed --yes
             # is not a default, it is a decision.
-            self.say(f"{question} (skipped — nothing selected)")
+            self._auto_answer(f"{question} (skipped — nothing selected)")
             return []
-        self.say(question)
+        self._auto_answer(question)
         for number, option in enumerate(options, start=1):
-            self.plain(f"  {number}) {option}")
-        self.say("Enter the numbers (comma-separated), 'a' for all, or Enter to skip.")
+            self.detail(f"{number}) {option}")
         while True:
-            raw = self._ask_raw("Which? ").lower()
+            raw = self._ask_raw("Enter the numbers (comma-separated, 'a' for all, empty to skip): ").lower()
             if not raw:
                 return []
             if raw in ("a", "all"):
@@ -223,4 +246,4 @@ class Ui:
                 picked.append(index)
             if picked:
                 return sorted(picked)
-            self.say(f"I didn't follow that — numbers from 1 to {len(options)}, or Enter to skip.")
+            self.say(f"Not understood — numbers from 1 to {len(options)}, or Enter to skip.")

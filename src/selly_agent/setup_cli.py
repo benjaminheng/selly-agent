@@ -75,6 +75,8 @@ def _run(args, ui: Ui) -> None:
     tree = materialize.source_tree()
 
     _intro(ui, platform)
+    if not _agreed_to_proceed(ui):
+        return
     _gates(ui, tree)
     _install_layout(ui, args, platform, tree)
     _start_daemon(ui, args, platform)
@@ -99,35 +101,52 @@ def _run(args, ui: Ui) -> None:
 
 def _intro(ui: Ui, platform) -> None:
     ui.banner(__version__)
-    ui.say("I'm SELLY — your marketplace agent. I list what you photograph, answer buyers,")
-    ui.say("and haggle for you. This sets me up on this Mac; it takes a few minutes.")
     ui.say("")
-    ui.say("In order:")
-    ui.say("  • Checks — Node, Chrome, and the claude CLI (installed and signed in)")
-    ui.say("  • Install — this version into place, plus the `selly-agent` command")
-    ui.say("  • Background worker — started, and whether it comes back at login")
-    ui.say("  • Where you sell — the region, currency and timezone I price in")
-    ui.say("  • Marketplaces — I open my browser once so you can sign in to the ones you want")
-    ui.say("  • Telegram — optional; where buyer chats reach you on your phone")
+    ui.say("Selly is a marketplace agent: it lists items, answers buyers, and negotiates within")
+    ui.say(f"limits you set. This installs version {__version__} on this Mac.")
     ui.say("")
-    ui.say("Everything I write goes in these places, and nowhere else:")
+    ui.say("The installer will:")
+    ui.detail("  • check for Node, Chrome, and the claude CLI (installed and signed in)")
+    ui.detail("  • install this version, plus the `selly-agent` command")
+    ui.detail("  • register and start the background worker")
+    ui.detail("  • record the region and currency to price in")
+    ui.detail("  • optionally connect marketplaces and Telegram")
+    ui.say("")
+    ui.say("Selly will be installed into the following locations, following XDG Base Directory specifications:")
     for line in materialize.layout_preview(platform=platform):
-        ui.plain(line)
-    ui.say("")
+        ui.say(line)
 
     agent_var = preflight.agent_context()
     if agent_var and ui.interactive:
         # A TTY exists, but an agent is holding it. Questions asked here would be answered by
         # a model rather than the seller, so the run takes its defaults and says so.
-        ui.warn(f"Running inside an agent session (${agent_var}) — I won't ask questions.")
+        ui.say("")
+        ui.warn(f"Running inside an agent session (${agent_var}) — questions take their defaults.")
         ui.interactive = False
+
+
+def _agreed_to_proceed(ui: Ui) -> bool:
+    """The consent gate: nothing has been written before this, and nothing is until it passes.
+
+    Every phase after this one either writes to disk or installs something, including the
+    dependency gates (a `brew install`, a package download). So the whole account of what will
+    happen is given first, and one answer covers it — the individually consequential steps
+    (touching a shell rc, signing in, opening a marketplace) still ask again in their own words.
+    """
+    ui.say("")
+    ui.say("Nothing has been written yet.")
+    if ui.confirm("Proceed with the installation?", default=True):
+        return True
+    ui.say("")
+    ui.say("Cancelled — nothing was written. Re-run ./setup when you're ready.")
+    return False
 
 
 # --- the gates ------------------------------------------------------------------------------
 
 
 def _gates(ui: Ui, tree) -> None:
-    ui.say("Checking this machine…")
+    ui.step("Checking this machine")
     cfg = config.load()
 
     _require(ui, checks.fail_open("install location", lambda: preflight.check_tree_location(tree)))
@@ -141,13 +160,13 @@ def _gates(ui: Ui, tree) -> None:
         cask=True,
     )
 
-    ui.say("Warming up the browser server (first run downloads it)…")
+    ui.note("resolving the browser server (the first run downloads it)…")
     _report(ui, checks.fail_open("playwright", lambda: preflight.prewarm_playwright(cfg)))
 
 
 def _report(ui: Ui, check: checks.Check) -> checks.Check:
     for line in check.render():
-        ui.plain(f"  {line}")
+        ui.detail(line)
     return check
 
 
@@ -176,9 +195,9 @@ def _gate_claude(ui: Ui, cfg) -> None:
             # that prints a URL and reads back a pasted code. With no terminal there is nobody
             # to hand it to.
             raise Abort("the claude CLI is signed out", check.fix)
-        if not ui.confirm("Sign in to Claude now? I'll hand the terminal over.", default=True):
+        if not ui.confirm("Sign in to Claude now?", default=True, lead=False):
             raise Abort("the claude CLI is signed out", check.fix)
-        ui.say("Handing over to `claude auth login` — come back here when it's done.")
+        ui.detail("Running `claude auth login`. Return here when it finishes.")
         preflight.claude_login(cfg)
 
 
@@ -196,10 +215,10 @@ def _gate_dependency(ui: Ui, name: str, probe, *, package: str, cask: bool = Fal
             f"{check.fix}\n(Homebrew isn't installed — get it from https://brew.sh, or install "
             f"{name} however you prefer, then re-run ./setup.)",
         )
-    if not ui.confirm(f"Install {name} with Homebrew now?", default=True):
+    if not ui.confirm(f"Install {name} with Homebrew now?", default=True, lead=False):
         raise Abort(f"{name}: {check.detail}", check.fix)
 
-    ui.say(f"Running `brew install {package}` — this can take a few minutes…")
+    ui.detail(f"Running `brew install {package}` — this can take a few minutes…")
     ok, detail = preflight.brew_install(package, cask=cask)
     if not ok:
         raise Abort(f"installing {name} failed: {detail}", check.fix)
@@ -214,23 +233,24 @@ def _install_layout(ui: Ui, args, platform, tree) -> None:
     # first. Skipping this is not merely untidy: `launchctl bootstrap` is a no-op on a label that
     # is already loaded, so the old process would keep running — still ticking heartbeats, so the
     # wait below would pass — while setup reported the new version as up.
+    ui.step(f"Installing Selly {__version__}")
     if supervisor.gather_status(platform=platform).registered:
-        ui.say("Stopping the running worker so it can pick up this version…")
+        ui.note("stopping the running worker so it picks up this version…")
         supervisor.stop(platform=platform)
 
     if args.dev:
-        ui.say(f"Dev mode: pointing the install at {tree} — edits are live on the next restart.")
         materialize.install_dev(tree)
+        ui.detail(f"dev mode: current → {tree}")
+        ui.note("edits in that tree are live after a worker restart")
     else:
-        ui.say(f"Installing version {__version__}…")
         dest = materialize.install_version(tree, __version__)
-        ui.note(f"{dest}")
+        ui.detail(f"{dest}")
         removed = materialize.prune_versions()
         if removed:
             ui.note(f"removed older version(s): {', '.join(removed)}")
 
     shim = materialize.install_shim()
-    ui.say(f"The `selly-agent` command is at {shim}.")
+    ui.detail(f"command: {shim}")
     _offer_path(ui, args)
     _record_claude_bin(ui)
     _record_node_bin_dir(ui)
@@ -247,7 +267,8 @@ def _offer_path(ui: Ui, args) -> None:
         return
     bin_dir = paths.user_bin_dir()
     export_line = materialize.RC_BLOCK_BODY
-    ui.warn(f"{bin_dir} isn't on your PATH, so `selly-agent` won't be found yet.")
+    ui.say("")
+    ui.warn(f"{bin_dir} is not on your PATH, so `selly-agent` will not be found yet.")
 
     rc_path = materialize.shell_rc_target()
     if rc_path is None:
@@ -263,29 +284,29 @@ def _offer_path(ui: Ui, args) -> None:
     consented = ui.interactive or ui.assume_yes
     if args.no_modify_path or not consented:
         ui.say("Add this to your shell's startup file:")
-        ui.plain(f"  {export_line}")
+        ui.detail(export_line)
         return
 
-    if not ui.confirm(f"Add it to {rc_path}?", default=True):
-        ui.say("Left your shell alone. Add this when you like:")
-        ui.plain(f"  {export_line}")
+    if not ui.confirm(f"Add it to {rc_path}?", default=True, lead=False):
+        ui.say("Left unchanged. Add this to your shell's startup file:")
+        ui.detail(export_line)
         return
 
     if materialize.add_rc_block(rc_path):
-        ui.say(f"Added to {rc_path} — open a new terminal, or run: source {rc_path}")
+        ui.detail(f"added to {rc_path} — open a new terminal, or run: source {rc_path}")
     else:
-        ui.say(f"{rc_path} already had it.")
+        ui.detail(f"{rc_path} already had it")
 
 
 def _explain_path_by_hand(ui: Ui, shell: str, bin_dir) -> None:
-    """Tell someone how to put the bin dir on their own PATH, in their shell's own terms."""
+    """Say how to put the bin dir on the invoking shell's PATH, in that shell's own terms."""
     if shell == "fish":
-        ui.say("You're using fish, so I won't edit your config — run this once:")
-        ui.plain(f"  {materialize.FISH_COMMAND}")
+        ui.say("Fish shell detected; its config is left unchanged. Run this once:")
+        ui.detail(materialize.FISH_COMMAND)
         ui.note(f"or in ~/.config/fish/config.fish:  {materialize.FISH_CONFIG_LINE}")
         return
-    named = f"Your shell is {shell}." if shell else "I can't tell which shell you use."
-    ui.say(f"{named} Add {bin_dir} to your PATH so you can run `selly-agent`.")
+    named = f"Shell: {shell}." if shell else "The shell could not be determined."
+    ui.say(f"{named} Add {bin_dir} to PATH to run `selly-agent` by name.")
 
 
 def _record_claude_bin(ui: Ui) -> None:
@@ -321,23 +342,28 @@ def _record_node_bin_dir(ui: Ui) -> None:
 
 
 def _start_daemon(ui: Ui, args, platform) -> None:
-    mode = args.mode or _ask_login_mode(ui)
+    if args.mode:
+        # The mode came from a flag, so no question opens this phase — it needs its own heading.
+        ui.step("Background worker")
+        mode = args.mode
+    else:
+        mode = _ask_login_mode(ui)
     started_after = time.time()
 
     if supervisor.install(mode=mode, platform=platform) != 0:
         raise Abort("could not register the background worker (see the message above)")
     if mode == supervisor.MANUAL:
-        ui.say("Manual mode: I'll start it now, but it won't come back on its own after you")
-        ui.say("log out or restart — run `selly-agent daemon start` when you want it.")
+        ui.detail("Manual mode: starting it now, but it will not restart after you log out.")
+        ui.detail("Run `selly-agent daemon start` when you want it.")
         supervisor.start(platform=platform)
 
-    ui.say("Waiting for the worker to come up…")
+    ui.note("waiting for the first heartbeat…")
     if not _wait_for_daemon(started_after):
         raise Abort(
             "the background worker didn't start",
             _daemon_diagnostics(),
         )
-    ui.say("Worker is up.")
+    ui.detail("worker is up")
 
 
 def _ask_login_mode(ui: Ui) -> str:
@@ -367,24 +393,28 @@ def _seller_region(ui: Ui, args, port: int, token: str):
     """
     known = _stored_basics(port, token)
     if known.get("region") and not args.region:
-        ui.say(f"You sell in {region_guess.render(known)} — unchanged.")
+        ui.step("Where you sell")
+        ui.detail(f"{region_guess.render(known)} — already recorded, unchanged")
         return known["region"]
 
     basics = _basics_from_flag(args) if args.region else region_guess.guess()
-    if basics and not args.region:
-        if not ui.confirm(f"You sell in {region_guess.render(basics)}, right?", default=True):
-            basics = None
+    if args.region:
+        ui.step("Where you sell")
+    elif basics and not ui.confirm(
+        f"You sell in {region_guess.render(basics)}, correct?", default=True
+    ):
+        basics = None
     if basics is None:
         basics = _ask_basics(ui)
     if not basics:
-        ui.warn("No region recorded, so I can't set up carousell.ai or name your marketplaces.")
-        ui.note("Tell me later in a session and I'll finish those two steps.")
+        ui.warn("No region recorded — carousell.ai setup and the marketplace list are skipped.")
+        ui.note("both are completed once a region is set")
         return None
 
     status, body = control.post(port, token, "/control/seller-basics", basics)
     if status != 200:
         raise Abort(f"could not record your region: {body.get('error', status)}")
-    ui.say(f"Set — {region_guess.render(body['basics'])}.")
+    ui.detail(f"recorded: {region_guess.render(body['basics'])}")
     return body["basics"].get("region")
 
 
@@ -417,7 +447,7 @@ def _ask_basics(ui: Ui):
     supported = region_guess.supported()
     code = ui.choose("Which country do you sell in?", supported)
     region = supported[code]
-    timezone = ui.ask("Your timezone?", default=region_guess.system_timezone()).strip()
+    timezone = ui.ask("Timezone?", default=region_guess.system_timezone(), lead=False).strip()
     basics = {
         "region": region,
         "currency": region_guess.CURRENCIES.get(region, ""),
@@ -439,12 +469,13 @@ def _provision_rail(ui: Ui, region) -> None:
 
     if not region:
         return
+    ui.step("Setting up carousell.ai")
     status = provision.ensure(region, api_base=config.load().carousell_ai_api_base)
     if status.get("status") == "ok":
-        ui.say("carousell.ai is ready — it's on by default, nothing to sign in to.")
+        ui.detail("ready — always enabled, with nothing to sign in to")
         return
-    ui.warn(f"Couldn't set up carousell.ai just now ({status.get('error')}).")
-    ui.note("Re-run `selly-agent provision carousell-ai` once you're back online.")
+    ui.warn(f"carousell.ai setup did not complete: {status.get('error')}")
+    ui.note("re-run `selly-agent provision carousell-ai` when back online")
 
 
 # --- marketplaces ---------------------------------------------------------------------------
@@ -460,26 +491,31 @@ def _connect_markets(ui: Ui, args, port: int, token: str, region) -> None:
     if args.skip_markets or not region:
         return
     available = market_adapters.publishable_markets(region)
+    ui.step("Other marketplaces")
     if not available:
-        ui.say("No other marketplaces are available for your region yet — carousell.ai only.")
+        ui.detail("none available in this region yet — carousell.ai only")
         return
 
-    ui.say("I can also list on these. Signing in happens in my own Chrome window, and I never")
-    ui.say("sign in for you — you can skip this and do it later with `selly-agent connect <name>`.")
+    ui.say("Listings can also be cross-posted to the marketplaces below. Sign-in happens in")
+    ui.say("Selly's own Chrome window; it never signs in on your behalf. Skipping is fine —")
+    ui.say("add them later with `selly-agent connect <name>`.")
     names = [marketplaces.display_name(market) for market in available]
-    picked = [available[index] for index in ui.multiselect("Which should I list on?", names)]
+    picked = [
+        available[index]
+        for index in ui.multiselect("Which marketplaces should Selly list on?", names, lead=False)
+    ]
     if not picked:
-        ui.say("Sticking to carousell.ai. Change that any time from the /selly menu.")
+        ui.detail("carousell.ai only — change this any time from the /selly menu")
         return
 
     # The setting first: it is what the seller opted into, and it holds even if a sign-in is
     # interrupted — the fan-out re-checks the login every time it publishes anyway.
     if settings_cli.set_setting(port, token, "crosslist_markets", json.dumps(picked)) != 0:
-        ui.warn("Couldn't record those marketplaces — carousell.ai only for now.")
+        ui.warn("Those marketplaces could not be recorded — carousell.ai only for now.")
         return
 
     for market in picked:
-        ui.say(f"Opening {marketplaces.display_name(market)}…")
+        ui.detail(f"opening {marketplaces.display_name(market)}…")
         connect_cli.market_flow(port, token, market, interactive=ui.interactive)
 
 
@@ -491,20 +527,20 @@ def _offer_telegram(ui: Ui, args, port: int, token: str) -> None:
     and everything it would push is queued and shown at the start of an attended session."""
     if args.skip_telegram:
         return
+    ui.step("Telegram")
     if _channel_bound(port, token):
-        ui.say("Telegram is already connected.")
+        ui.detail("already connected")
         return
 
-    ui.say("Want buyer chats on your phone? I can connect a Telegram bot (about two minutes).")
-    ui.say("Skip it and I'll still run — I'll just keep everything for your next session here.")
-    if not ui.interactive or not ui.confirm("Connect Telegram now?", default=True):
-        ui.say("Skipped. Connect it later with: selly-agent connect telegram")
+    ui.say("Telegram delivers buyer chats to your phone. Connecting takes about two minutes.")
+    ui.say("Without it, anything needing you is queued for your next session in the terminal.")
+    if not ui.interactive or not ui.confirm("Connect Telegram now?", default=True, lead=False):
+        ui.detail("skipped — connect later with `selly-agent connect telegram`")
         return
 
-    ui.say("Handing over to the Telegram setup —")
     code = connect_cli.bind_flow(port, token, interactive=ui.interactive)
     if code != 0:
-        ui.say("Not connected yet. Pick it up later with: selly-agent connect telegram")
+        ui.detail("not connected — resume later with `selly-agent connect telegram`")
 
 
 def _channel_bound(port: int, token: str) -> bool:
@@ -525,26 +561,28 @@ def _attended_workspace(ui: Ui) -> None:
     seller will be told to `cd` into for months afterwards, so it has to have a name.
     """
     dest = paths.data_root() / "attended"
+    ui.step("Terminal session")
     if pass_cli.harness_config(dest) != 0:
-        ui.warn("Couldn't write the attended workspace — `selly-agent harness config` will.")
+        ui.warn("The attended workspace could not be written.")
+        ui.note("create it later with `selly-agent harness config --attended --dir <path>`")
         return
-    ui.say("To talk to me in a terminal:")
-    ui.plain(f"  cd {dest} && claude")
+    ui.say("Talk to Selly in a terminal with:")
+    ui.detail(f"cd {dest} && claude")
 
 
 # --- the last word ------------------------------------------------------------------------------
 
 
 def _finish(ui: Ui, platform) -> None:
-    ui.say("")
-    ui.say("Checking everything over:")
+    ui.step("Checking the installation")
     for line in checks.render(healthcheck.run_checks(platform=platform)):
-        ui.plain(f"  {line}")
-    ui.say("")
-    ui.say("Done — I'm running.")
-    ui.say("  • Change settings any time: `/selly` in the attended session")
-    ui.say("  • Check on me:              selly-agent daemon status")
-    ui.say("  • Update:                   selly-agent update")
+        ui.detail(line)
+
+    ui.step("Installed")
+    ui.say("Selly is running.")
+    ui.detail("• Change settings:  `/selly` in the terminal session")
+    ui.detail("• Check status:     selly-agent daemon status")
+    ui.detail("• Update:           selly-agent update")
 
 
 def _daemon_diagnostics() -> str:

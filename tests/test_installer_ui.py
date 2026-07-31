@@ -1,4 +1,5 @@
-"""Setup's voice: prefixing, the decoration gates, and prompts that never hang."""
+"""Setup's output: the structure a reader navigates by, the decoration gates, and prompts that
+never hang."""
 
 from __future__ import annotations
 
@@ -16,16 +17,35 @@ def make_ui(**kwargs) -> tuple:
     return Ui(**defaults), out, err
 
 
-def test_say_prefixes_every_line_of_a_paragraph() -> None:
+def test_a_step_opens_with_a_blank_line_and_its_body_indents_under_it() -> None:
+    # The blank line and the indent are the whole navigation scheme: they are what separates one
+    # phase's report from the next in a scroll that runs for pages.
     ui, out, _ = make_ui()
-    ui.say("first\nsecond")
-    assert out.getvalue().splitlines() == ["SELLY: first", "SELLY: second"]
+    ui.step("Installing Selly")
+    ui.detail("/opt/versions/1.0.0")
+    ui.say("a plain line")
+    assert out.getvalue().splitlines() == [
+        "",
+        "Installing Selly",
+        "  /opt/versions/1.0.0",
+        "a plain line",
+    ]
 
 
-def test_plain_output_carries_no_prefix() -> None:
-    ui, out, _ = make_ui()
-    ui.plain("https://example.test/link")
-    assert out.getvalue() == "https://example.test/link\n"
+def test_colour_marks_headings_and_questions_but_not_what_they_report() -> None:
+    # Colour is the reader's index. Spending it on body text as well would leave nothing to
+    # distinguish the lines they navigate by or have to answer.
+    ui, out, _ = make_ui(color=True)
+    ui.step("Checking this machine")
+    ui.detail("node: v22")
+    ui.say("body text")
+    ui.confirm("Proceed?", default=True)
+
+    heading, detail, body, question = [line for line in out.getvalue().splitlines() if line.strip()]
+    assert "\033" in heading
+    assert "\033" in question
+    assert "\033" not in detail
+    assert "\033" not in body
 
 
 def test_no_color_strips_escapes(monkeypatch) -> None:
@@ -46,7 +66,7 @@ def test_color_is_off_when_the_stream_is_not_a_tty(monkeypatch) -> None:
 def test_narrow_terminal_falls_back_to_a_one_line_banner() -> None:
     ui, out, _ = make_ui(width=40)
     ui.banner("1.2.3")
-    assert out.getvalue() == "SELLY v1.2.3\n"
+    assert out.getvalue() == "Selly v1.2.3\n"
 
 
 def test_wide_terminal_draws_the_banner() -> None:
@@ -150,7 +170,7 @@ def test_die_raises_and_fatal_renders_the_fix_to_stderr() -> None:
         ui.die("no Chrome here", fix="brew install --cask google-chrome")
     ui.fatal(caught.value)
     assert out.getvalue() == ""
-    assert "SELLY: no Chrome here" in err.getvalue()
+    assert "error: no Chrome here" in err.getvalue()
     assert "brew install --cask google-chrome" in err.getvalue()
 
 
@@ -158,4 +178,4 @@ def test_multiselect_says_something_when_it_cannot_read_the_answer() -> None:
     answers = iter(["nonsense", "1"])
     ui, out, _ = make_ui(interactive=True, input_fn=lambda: next(answers))
     assert ui.multiselect("Which?", ["a", "b"]) == [0]
-    assert "I didn't follow that" in out.getvalue()
+    assert "Not understood" in out.getvalue()

@@ -108,14 +108,18 @@ def setup_main(*argv) -> int:
     return cli.main(["selly-agent", "setup", *argv])
 
 
-def _answer(monkeypatch, replies):
+def _answer(monkeypatch, replies, *, consent: bool = True):
     """Drive the prompts with a script, as a person at a real terminal would.
+
+    The consent gate is the first question of every interactive run, so it is answered here and
+    each test's script covers only the questions that test is about. `consent=False` hands the
+    gate back to the script, for the tests about declining it.
 
     Exhausting the script raises rather than blocking, so a prompt nobody anticipated shows up as
     a failure instead of a hung suite.
     """
     monkeypatch.setattr(setup_cli.Ui, "_detect_interactive", lambda self: True)
-    answers = iter(replies)
+    answers = iter((["y"] if consent else []) + list(replies))
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
 
@@ -137,8 +141,8 @@ def test_a_default_install_stages_a_version_and_brings_the_daemon_up(world, caps
     assert cfg.claude_bin == "/opt/claude/bin/claude"
 
     out = capsys.readouterr().out
-    assert "SELLY:" in out
-    assert "Worker is up." in out
+    assert "Checking this machine" in out  # the phase headings a reader navigates by
+    assert "worker is up" in out
 
 
 def test_setup_announces_every_location_before_writing(world, capsys) -> None:
@@ -152,7 +156,7 @@ def test_manual_mode_starts_the_daemon_and_says_what_manual_costs(world, capsys)
     assert setup_main("--yes", "--manual") == 0
     assert world.is_registered("com.selly.agent")  # started now...
     out = capsys.readouterr().out
-    assert "won't come back on its own" in out  # ...but not after a logout
+    assert "will not restart after you log out" in out  # ...but not after a logout
 
 
 def test_login_start_mode_registers_the_plist_in_launch_agents(world) -> None:
@@ -176,6 +180,51 @@ def test_a_re_run_is_idempotent(world) -> None:
     assert paths.shim_path().is_symlink()
 
 
+# --- the consent gate ---------------------------------------------------------------------------
+
+
+def test_declining_the_gate_leaves_the_machine_untouched(world, monkeypatch, capsys) -> None:
+    _answer(monkeypatch, ["n"], consent=False)
+
+    assert setup_main("--manual") == 0  # declining is an answer, not a failure
+
+    assert not paths.versions_dir().exists()
+    assert not paths.current().exists()
+    assert not paths.shim_path().exists()
+    assert not world.is_registered("com.selly.agent")
+    assert "nothing was written" in capsys.readouterr().out
+
+
+def test_nothing_touches_the_machine_before_the_gate_is_answered(
+    world, monkeypatch, capsys
+) -> None:
+    # The gate is only worth having if it precedes everything that changes the machine — which
+    # includes the dependency checks, since those offer to install a package and to download one.
+    ran = []
+    monkeypatch.setattr(
+        preflight, "check_node", lambda: ran.append("node") or checks.ok("node", "v22")
+    )
+    monkeypatch.setattr(
+        preflight,
+        "prewarm_playwright",
+        lambda cfg: ran.append("playwright") or checks.ok("playwright", "-"),
+    )
+    _answer(monkeypatch, ["n"], consent=False)
+
+    assert setup_main("--manual") == 0
+    assert ran == []
+
+
+def test_the_gate_states_the_locations_before_asking(world, monkeypatch, capsys) -> None:
+    _answer(monkeypatch, ["n"], consent=False)
+    setup_main("--manual")
+
+    out = capsys.readouterr().out
+    before_question, _, _ = out.partition("Proceed with the installation?")
+    for location in (paths.data_root(), paths.config_dir(), paths.cache_dir()):
+        assert str(location) in before_question
+
+
 # --- gates -------------------------------------------------------------------------------------
 
 
@@ -186,7 +235,7 @@ def test_an_unsupported_platform_is_one_honest_line_not_a_banner(monkeypatch, ca
     assert setup_main("--yes") == 1
     captured = capsys.readouterr()
     assert "linux" in captured.err
-    assert "SELLY" not in captured.out  # no banner, no path preview
+    assert "Selly" not in captured.out  # no banner, no path preview
 
 
 def test_a_tree_under_a_protected_folder_stops_setup_before_it_writes(world, capsys) -> None:
@@ -219,7 +268,7 @@ def test_a_signed_out_claude_offers_the_login_flow_and_re_probes(
 
     assert setup_main("--yes", "--manual") == 0
     assert len(logins) == 1
-    assert "Handing over to `claude auth login`" in capsys.readouterr().out
+    assert "Running `claude auth login`" in capsys.readouterr().out
 
 
 def test_a_signed_out_claude_with_no_terminal_stops_rather_than_pretending(
@@ -325,7 +374,7 @@ def test_a_missing_path_entry_is_offered_and_written_to_the_rc_file(
 
     rc = materialize.shell_rc_target("/bin/zsh")
     assert materialize.rc_block_present(rc.read_text())
-    assert "isn't on your PATH" in capsys.readouterr().out
+    assert "is not on your PATH" in capsys.readouterr().out
 
 
 def test_no_modify_path_prints_the_line_and_leaves_the_rc_file_alone(
@@ -363,7 +412,7 @@ def test_the_region_is_proposed_from_the_machines_timezone(world, capsys) -> Non
         "currency": "SGD",
         "timezone": "Asia/Singapore",
     }
-    assert "You sell in SG · SGD · Asia/Singapore, right?" in capsys.readouterr().out
+    assert "You sell in SG · SGD · Asia/Singapore, correct?" in capsys.readouterr().out
 
 
 def test_the_region_flag_wins_over_the_guess(world) -> None:
@@ -398,7 +447,7 @@ def test_a_timezone_outside_the_supported_countries_makes_no_guess(
     assert setup_main("--yes", "--manual") == 0
     assert world.calls["basics"] == {}
     out = capsys.readouterr().out
-    assert "can't set up carousell.ai" in out
+    assert "No region recorded" in out
 
 
 def test_provisioning_gets_the_region_that_was_recorded(world) -> None:
@@ -433,7 +482,7 @@ def test_skipping_the_marketplace_offer_enables_nothing(world, monkeypatch, caps
 
     assert world.calls["settings"] == {}
     assert world.calls["markets"] == []
-    assert "Sticking to carousell.ai" in capsys.readouterr().out
+    assert "carousell.ai only" in capsys.readouterr().out
 
 
 def test_skip_markets_never_offers(world) -> None:
@@ -445,7 +494,7 @@ def test_a_region_with_no_marketplaces_says_so_rather_than_offering_an_empty_lis
     world, capsys
 ) -> None:
     assert setup_main("--yes", "--manual", "--region", "US") == 0
-    assert "No other marketplaces are available" in capsys.readouterr().out
+    assert "none available in this region" in capsys.readouterr().out
 
 
 # --- Telegram ------------------------------------------------------------------------------------
@@ -491,7 +540,7 @@ def test_a_re_run_stops_the_old_worker_before_replacing_its_code(world, capsys) 
     assert setup_main("--yes", "--manual") == 0
 
     out = capsys.readouterr().out
-    assert "Stopping the running worker" in out
+    assert "stopping the running worker" in out
 
 
 def test_a_custom_daemon_label_is_not_replaced_by_the_default_one(world) -> None:
@@ -517,7 +566,7 @@ def test_fish_is_told_the_fish_command_and_its_config_is_left_alone(
 
     out = capsys.readouterr().out
     assert "fish_add_path ~/.local/bin" in out
-    assert "won't edit your config" in out
+    assert "config is left unchanged" in out
     assert not (paths.user_path("~") / ".profile").exists()
     assert materialize.RC_BLOCK_BODY not in out  # never the POSIX line for fish
 
@@ -529,7 +578,7 @@ def test_an_unrecognised_shell_is_named_and_told_what_to_add(world, monkeypatch,
     assert setup_main("--yes", "--manual") == 0
 
     out = capsys.readouterr().out
-    assert "Your shell is ksh." in out
+    assert "Shell: ksh." in out
     assert str(paths.user_bin_dir()) in out
     assert not (paths.user_path("~") / ".profile").exists()
 
@@ -540,7 +589,7 @@ def test_an_unset_shell_says_so_rather_than_naming_nothing(world, monkeypatch, c
 
     assert setup_main("--yes", "--manual") == 0
 
-    assert "I can't tell which shell you use." in capsys.readouterr().out
+    assert "shell could not be determined" in capsys.readouterr().out
 
 
 # --- what the supervised worker needs pinned ----------------------------------------------------
