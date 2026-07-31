@@ -39,6 +39,12 @@ RC_MARKER_START = "# >>> selly-agent >>>"
 RC_MARKER_END = "# <<< selly-agent <<<"
 RC_BLOCK_BODY = 'export PATH="$HOME/.local/bin:$PATH"'
 
+# What to tell a fish user instead of editing anything. `fish_add_path` is fish's own documented
+# way (3.2+), it is idempotent, and it persists by itself — so it is one command to run rather
+# than a config edit to make, which is the right shape for a shell we have decided not to touch.
+FISH_COMMAND = "fish_add_path ~/.local/bin"
+FISH_CONFIG_LINE = "set -gx PATH $HOME/.local/bin $PATH"
+
 
 class LayoutError(Exception):
     """The layout is not in a state we may write to. Carries the remediation."""
@@ -375,24 +381,26 @@ def remove_rc_block(rc_path) -> bool:
     return True
 
 
-def shell_rc_target(shell=None) -> Path:
-    """The rc file to offer, chosen from the login shell."""
+def shell_name(shell=None) -> str:
+    """The login shell's name — `$SHELL` basenamed, or "" when it says nothing.
+
+    `$SHELL` is the shell the account is configured with, not necessarily the one being typed in
+    right now (run bash inside zsh and this still says zsh). That is the same trade uv and rustup
+    make, and for the question being asked — which startup file will run next login — the login
+    shell is the right one to ask about.
+    """
+    resolved = shell if shell is not None else os.environ.get("SHELL", "")
+    return os.path.basename(resolved or "")
+
+
+def shell_rc_target(shell=None) -> Path | None:
+    """The rc file to offer to edit, or None for a shell whose config we leave alone."""
     return paths.shell_rc_path(shell if shell is not None else os.environ.get("SHELL", ""))
 
 
 def rc_candidates() -> list:
-    """Every rc file an install might have written the PATH block to.
-
-    Removal checks all of them rather than only the shell running right now: install under zsh,
-    uninstall from bash, and looking at just the current shell leaves the block behind for good.
-    """
-    seen, found = set(), []
-    for shell in ("zsh", "bash", ""):
-        candidate = paths.shell_rc_path(shell)
-        if candidate not in seen:
-            seen.add(candidate)
-            found.append(candidate)
-    return found
+    """Every rc file an install might have written the PATH block to."""
+    return paths.shell_rc_candidates()
 
 
 # --- the mutation preview -------------------------------------------------------------------

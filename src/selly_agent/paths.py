@@ -219,16 +219,32 @@ def shim_path() -> Path:
     return user_bin_dir() / APP
 
 
-def shell_rc_path(shell: str) -> Path:
-    """The rc file a PATH export belongs in for this login shell. zsh reads ~/.zshrc (the macOS
-    default shell); bash login shells on macOS read ~/.bash_profile; anything else gets the
-    POSIX ~/.profile."""
+def shell_rc_path(shell: str) -> Path | None:
+    """The rc file a PATH export belongs in for this login shell, or None for a shell we do not
+    write config for.
+
+    Only the two we can be right about: zsh reads ~/.zshrc (the macOS default), and bash login
+    shells on macOS read ~/.bash_profile. Everything else answers None rather than falling back
+    to ~/.profile — fish and nushell never read it, and a POSIX `export` line is not their syntax
+    either, so writing it would leave a file that does nothing and a command still not found.
+    """
     name = os.path.basename(shell or "")
     if name == "zsh":
         return _home() / ".zshrc"
     if name == "bash":
         return _home() / ".bash_profile"
-    return _home() / ".profile"
+    return None
+
+
+def shell_rc_candidates() -> list[Path]:
+    """Every rc file any version of the installer might have put its PATH block in.
+
+    Removal reads this rather than asking about the shell running right now: install under zsh and
+    uninstall from bash and the block would otherwise be left behind for good. ~/.profile is here
+    because installs before this ever wrote it, even though nothing writes it now.
+    """
+    home = _home()
+    return [home / ".zshrc", home / ".bash_profile", home / ".profile"]
 
 
 def tcc_protected_roots() -> list[Path]:

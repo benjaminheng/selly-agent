@@ -503,3 +503,41 @@ def test_a_custom_daemon_label_is_not_replaced_by_the_default_one(world) -> None
 
     assert (paths.config_dir() / "com.selly.agent.dev.plist").exists()
     assert not (paths.config_dir() / "com.selly.agent.plist").exists()
+
+
+def test_fish_is_told_the_fish_command_and_its_config_is_left_alone(
+    world, monkeypatch, capsys
+) -> None:
+    # Writing ~/.profile for fish produces a file fish never reads, holding a line it could not
+    # parse — a confident success message and no effect.
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("SHELL", "/usr/local/bin/fish")
+
+    assert setup_main("--yes", "--manual") == 0
+
+    out = capsys.readouterr().out
+    assert "fish_add_path ~/.local/bin" in out
+    assert "won't edit your config" in out
+    assert not (paths.user_path("~") / ".profile").exists()
+    assert materialize.RC_BLOCK_BODY not in out  # never the POSIX line for fish
+
+
+def test_an_unrecognised_shell_is_named_and_told_what_to_add(world, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("SHELL", "/bin/ksh")
+
+    assert setup_main("--yes", "--manual") == 0
+
+    out = capsys.readouterr().out
+    assert "Your shell is ksh." in out
+    assert str(paths.user_bin_dir()) in out
+    assert not (paths.user_path("~") / ".profile").exists()
+
+
+def test_an_unset_shell_says_so_rather_than_naming_nothing(world, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.delenv("SHELL", raising=False)
+
+    assert setup_main("--yes", "--manual") == 0
+
+    assert "I can't tell which shell you use." in capsys.readouterr().out

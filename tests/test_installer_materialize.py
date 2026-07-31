@@ -229,10 +229,23 @@ def test_removing_a_block_leaves_anything_written_after_it_alone(tmp_path) -> No
     assert rc.read_text() == "first\nlater addition\n"
 
 
-def test_rc_target_follows_the_login_shell(xdg_tmp) -> None:
+def test_rc_target_is_only_offered_for_the_shells_we_can_be_right_about(xdg_tmp) -> None:
     assert materialize.shell_rc_target("/bin/zsh").name == ".zshrc"
     assert materialize.shell_rc_target("/bin/bash").name == ".bash_profile"
-    assert materialize.shell_rc_target("/usr/bin/fish").name == ".profile"
+    # fish never reads ~/.profile and an `export` line is not its syntax, so there is no file
+    # here we could write that would do anything.
+    assert materialize.shell_rc_target("/usr/local/bin/fish") is None
+    assert materialize.shell_rc_target("/bin/ksh") is None
+    assert materialize.shell_rc_target("") is None
+
+
+def test_the_shell_name_comes_from_the_login_shell(xdg_tmp, monkeypatch) -> None:
+    assert materialize.shell_name("/usr/local/bin/fish") == "fish"
+    assert materialize.shell_name("") == ""
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    assert materialize.shell_name() == "zsh"
+    monkeypatch.delenv("SHELL")
+    assert materialize.shell_name() == ""
 
 
 # --- the preview ----------------------------------------------------------------------------

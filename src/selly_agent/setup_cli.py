@@ -248,6 +248,14 @@ def _offer_path(ui: Ui, args) -> None:
     export_line = materialize.RC_BLOCK_BODY
     ui.warn(f"{bin_dir} isn't on your PATH, so `selly-agent` won't be found yet.")
 
+    rc_path = materialize.shell_rc_target()
+    if rc_path is None:
+        # A shell we do not write config for. Someone running something other than the macOS
+        # default configured it deliberately, and an installer that rewrites that — or worse,
+        # writes a file the shell never reads — is worse than one that says what to add.
+        _explain_path_by_hand(ui, materialize.shell_name(), bin_dir)
+        return
+
     # Editing a dotfile needs a signal that someone agreed to it: either a person who can answer,
     # or `--yes`, which is that agreement given up front. A plain piped run has neither, so it
     # gets the line to paste rather than a surprise edit.
@@ -257,7 +265,6 @@ def _offer_path(ui: Ui, args) -> None:
         ui.plain(f"  {export_line}")
         return
 
-    rc_path = materialize.shell_rc_target()
     if not ui.confirm(f"Add it to {rc_path}?", default=True):
         ui.say("Left your shell alone. Add this when you like:")
         ui.plain(f"  {export_line}")
@@ -267,6 +274,17 @@ def _offer_path(ui: Ui, args) -> None:
         ui.say(f"Added to {rc_path} — open a new terminal, or run: source {rc_path}")
     else:
         ui.say(f"{rc_path} already had it.")
+
+
+def _explain_path_by_hand(ui: Ui, shell: str, bin_dir) -> None:
+    """Tell someone how to put the bin dir on their own PATH, in their shell's own terms."""
+    if shell == "fish":
+        ui.say("You're using fish, so I won't edit your config — run this once:")
+        ui.plain(f"  {materialize.FISH_COMMAND}")
+        ui.note(f"or in ~/.config/fish/config.fish:  {materialize.FISH_CONFIG_LINE}")
+        return
+    named = f"Your shell is {shell}." if shell else "I can't tell which shell you use."
+    ui.say(f"{named} Add {bin_dir} to your PATH so you can run `selly-agent`.")
 
 
 def _record_claude_bin(ui: Ui) -> None:
