@@ -375,6 +375,75 @@ def decide(store, bus, *, change_id: str, decision: str, decided_via: str) -> di
     return {"status": "unknown", "message": "Unrecognized settings action."}
 
 
+def decode_raw(raw: object) -> object:
+    """Turn a value that arrived as text into the structure the registry parser expects.
+
+    A setting's shape is per-key, so neither the MCP tool nor the CLI can declare a type for it,
+    and both surfaces hand us text: an MCP client commonly sends a structured value JSON-encoded
+    ("[23, 9]"), and a shell argument is always a string. Anything that is not JSON — a bare word
+    for a text setting — passes through untouched.
+    """
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except (ValueError, TypeError):
+            return raw
+    return raw
+
+
+def set_now(store, bus, *, key: str, raw_value: object, decided_via: str = "cli") -> dict:
+    """Validate and apply a setting immediately, for a door where the request *is* the consent.
+
+    The approval gate exists to stop the model changing things on the seller's behalf. Someone
+    typing at their own terminal has already given the signal that gate waits for, so this path
+    skips the round-trip — but skips nothing else: the same registry parser and the same
+    seller-state check run here as on the propose path, and the prior value is recorded, so the
+    change still shows up in the ledger with a working Undo.
+
+    Raises SettingError for an unknown key or a value the registry refuses; the message is
+    caller-facing.
+    """
+    spec = get_spec(key)
+    if spec is None:
+        known = ", ".join(sorted(_REGISTRY))
+        raise SettingError(f"unknown setting {key!r} — the settings are: {known}")
+    value = spec.parse(decode_raw(raw_value))
+    check_for_seller(key, value, store)
+
+    current = get(store, key)
+    rendered = spec.render(value)
+    if canonical_json(value) == canonical_json(current):
+        return {
+            "status": "unchanged",
+            "key": key,
+            "value": value,
+            "rendered": rendered,
+            "message": f"{spec.label} is already {rendered}.",
+        }
+
+    change_id = store.new_change_id()
+    text, controls = echo_notice(spec, change_id, value, current)
+    store.apply_setting_now(
+        key,
+        value,
+        change_id=change_id,
+        prior_value=current,
+        decided_via=decided_via,
+        notice_text=text,
+        notice_controls=controls,
+    )
+    publish_changed(bus, spec, change_id, value, current)
+    return {
+        "status": "applied",
+        "change_id": change_id,
+        "key": key,
+        "value": value,
+        "rendered": rendered,
+        "prior_value": current,
+        "message": f"{spec.label} set to {rendered}. {spec.take_effect}",
+    }
+
+
 def expire_stale_proposals(store, bus, now: float | None = None) -> int:
     """Sweep proposals older than the TTL to expired, publishing setting.expired per one. An
     expired proposal is answered when tapped (never re-fired) — the seller starts fresh. Returns the

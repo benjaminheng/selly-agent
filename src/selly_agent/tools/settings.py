@@ -12,8 +12,6 @@ approvals table corrupted configs).
 
 from __future__ import annotations
 
-import json
-
 from selly_agent import settings
 from selly_agent.tools.registry import (
     TIER_ATTENDED,
@@ -25,26 +23,13 @@ from selly_agent.tools.registry import (
 )
 
 
-def _decode_raw(raw: object) -> object:
-    """A setting's value shape is per-key, so `raw_value` has no declared schema type — and an MCP
-    client (Claude) commonly sends an untyped structured value as a JSON-encoded string ("[23, 9]"
-    for a list). Decode that here so the registry parser always sees the real structure; a value
-    that isn't JSON (a bare word for a text setting) passes through unchanged."""
-    if isinstance(raw, str):
-        try:
-            return json.loads(raw)
-        except (ValueError, TypeError):
-            return raw
-    return raw
-
-
 def _propose_setting_change(ctx: ToolContext, params: dict) -> dict:
     key = params["key"]
     spec = settings.get_spec(key)
     if spec is None:
         raise ToolError(f"unknown setting {key!r} — call get_settings for the list of settings")
     try:
-        value = spec.parse(_decode_raw(params["raw_value"]))
+        value = spec.parse(settings.decode_raw(params["raw_value"]))
         settings.check_for_seller(key, value, ctx.store)
     except settings.SettingError as exc:
         raise ToolError(str(exc)) from exc

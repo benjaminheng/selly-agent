@@ -198,6 +198,42 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    # --- control-route preamble -------------------------------------------------------------
+
+    def _attended_body(self):
+        """The decoded JSON body of an attended-only POST, or None once this has already replied.
+
+        Every control route is the seller reaching their own daemon from their own machine, so
+        they share one gate: the attended bearer, and a body that parses. Callers check for None
+        rather than falsiness — an empty body is the legitimate `{}`.
+        """
+        session = self._app.auth.resolve(self._bearer())
+        if session is None or session.tier != "attended":
+            self._send_json(401, {"error": "unauthorized"})
+            return None
+        try:
+            body = json.loads(self._read_body() or b"{}")
+        except ValueError:
+            self._send_json(400, {"error": "invalid json"})
+            return None
+        if not isinstance(body, dict):
+            self._send_json(400, {"error": "body must be a JSON object"})
+            return None
+        return body
+
+    def _attended_query(self, parsed):
+        """The query parameters of an attended-only GET, or None once this has already replied.
+
+        The token rides in the query rather than a header because these are opened by a browser
+        (the web tail) as well as called by the CLI.
+        """
+        qs = parse_qs(parsed.query)
+        session = self._app.auth.resolve(qs.get("token", [None])[0])
+        if session is None or session.tier != "attended":
+            self._send_json(401, {"error": "unauthorized"})
+            return None
+        return qs
+
     # --- routing --------------------------------------------------------------------------
 
     def do_POST(self) -> None:
@@ -212,6 +248,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_connect_telegram()
         elif route == "/control/settings-decide":
             self._handle_settings_decide()
+        elif route == "/control/settings-set":
+            self._handle_settings_set()
+        elif route == "/control/seller-basics":
+            self._handle_seller_basics()
+        elif route == "/control/connect-market":
+            self._handle_connect_market()
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -227,6 +269,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_channel_status(parsed)
         elif parsed.path == "/control/settings-list":
             self._handle_settings_list(parsed)
+        elif parsed.path == "/control/market-login":
+            self._handle_market_login(parsed)
         elif parsed.path == "/tail":
             self._handle_tail()
         else:
@@ -302,14 +346,8 @@ class _Handler(BaseHTTPRequestHandler):
     # --- control --------------------------------------------------------------------------
 
     def _handle_enqueue_pass(self) -> None:
-        session = self._app.auth.resolve(self._bearer())
-        if session is None or session.tier != "attended":
-            self._send_json(401, {"error": "unauthorized"})
-            return
-        try:
-            body = json.loads(self._read_body() or b"{}")
-        except ValueError:
-            self._send_json(400, {"error": "invalid json"})
+        body = self._attended_body()
+        if body is None:
             return
         pass_type = body.get("type")
         payload = body.get("payload") or {}
@@ -333,14 +371,8 @@ class _Handler(BaseHTTPRequestHandler):
         # never logged; only bot_username is published.
         from selly_agent.channel.telegram import bind
 
-        session = self._app.auth.resolve(self._bearer())
-        if session is None or session.tier != "attended":
-            self._send_json(401, {"error": "unauthorized"})
-            return
-        try:
-            body = json.loads(self._read_body() or b"{}")
-        except ValueError:
-            self._send_json(400, {"error": "invalid json"})
+        body = self._attended_body()
+        if body is None:
             return
         token = body.get("token")
         if not isinstance(token, str):
@@ -365,14 +397,8 @@ class _Handler(BaseHTTPRequestHandler):
         # no channel bound and while paused (seller-initiated control).
         from selly_agent import settings
 
-        session = self._app.auth.resolve(self._bearer())
-        if session is None or session.tier != "attended":
-            self._send_json(401, {"error": "unauthorized"})
-            return
-        try:
-            body = json.loads(self._read_body() or b"{}")
-        except ValueError:
-            self._send_json(400, {"error": "invalid json"})
+        body = self._attended_body()
+        if body is None:
             return
         action = body.get("action")
         change_id = body.get("change_id")
@@ -389,10 +415,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_settings_list(self, parsed) -> None:
         from selly_agent import settings
 
-        qs = parse_qs(parsed.query)
-        session = self._app.auth.resolve(qs.get("token", [None])[0])
-        if session is None or session.tier != "attended":
-            self._send_json(401, {"error": "unauthorized"})
+        if self._attended_query(parsed) is None:
             return
         self._send_json(
             200,
@@ -405,21 +428,15 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_channel_status(self, parsed) -> None:
         from selly_agent.channel.telegram import bind
 
-        qs = parse_qs(parsed.query)
-        session = self._app.auth.resolve(qs.get("token", [None])[0])
-        if session is None or session.tier != "attended":
-            self._send_json(401, {"error": "unauthorized"})
+        if self._attended_query(parsed) is None:
             return
         self._send_json(200, bind.channel_status(self._app.store))
 
     # --- web tail -------------------------------------------------------------------------
 
     def _handle_events_json(self, parsed) -> None:
-        qs = parse_qs(parsed.query)
-        token = qs.get("token", [None])[0]
-        session = self._app.auth.resolve(token)
-        if session is None or session.tier != "attended":
-            self._send_json(401, {"error": "unauthorized"})
+        qs = self._attended_query(parsed)
+        if qs is None:
             return
         after_seq = _int_or_none(qs.get("after_seq", [None])[0])
         pass_id = qs.get("pass", [None])[0]
