@@ -14,18 +14,25 @@ from tests.conftest import seed_setting
 from selly_agent import crosslist, settings
 from selly_agent.browser.client import BrowserUnavailable
 from selly_agent.config import Config
+from selly_agent.rail.client import RailUnprovisioned
 
 _RAIL_URL = "https://www.carousell.ai/listing/abc123"
 _CAROUSELL_URL = "https://www.carousell.sg/p/teak-lamp-1328307791/"
 
 
-def _deps(store, bus, browser_factory=None, **overrides):
+def _no_rail():
+    raise RailUnprovisioned("carousell.ai is not provisioned")
+
+
+def _deps(store, bus, browser_factory=None, rail_factory=None, **overrides):
     return crosslist.CrosslistDeps(
         store=store,
         bus=bus,
         config=Config(**overrides) if overrides else Config(),
         # The default posture: acquiring the browser succeeds without launching anything.
         browser_factory=browser_factory if browser_factory is not None else lambda: object(),
+        # And no rail key, so the push phase skips — these tests are about the lane's decisions.
+        rail_factory=rail_factory if rail_factory is not None else _no_rail,
         # Midday, so the default quiet window (23:00–08:00) is not in force.
         now=lambda: _noon(),
     )
@@ -179,13 +186,23 @@ def test_quiet_hours_hold_the_start_of_new_work(store, bus, enabled) -> None:
     seed_setting(store, "quiet_hours", [2300, 800])
 
     deps = crosslist.CrosslistDeps(
-        store=store, bus=bus, config=Config(), browser_factory=lambda: object(), now=_midnight
+        store=store,
+        bus=bus,
+        config=Config(),
+        browser_factory=lambda: object(),
+        rail_factory=_no_rail,
+        now=_midnight,
     )
     crosslist.crosslist_lane(deps)
     assert _queued(store) == []
 
     deps = crosslist.CrosslistDeps(
-        store=store, bus=bus, config=Config(), browser_factory=lambda: object(), now=_noon
+        store=store,
+        bus=bus,
+        config=Config(),
+        browser_factory=lambda: object(),
+        rail_factory=_no_rail,
+        now=_noon,
     )
     crosslist.crosslist_lane(deps)
     assert len(_queued(store)) == 1

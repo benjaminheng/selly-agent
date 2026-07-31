@@ -24,6 +24,7 @@ from selly_agent.channel import fastpaths, outbound
 from selly_agent.channel.telegram.transport import TelegramClient
 from selly_agent.config import Config
 from selly_agent.http_server import HttpServer
+from selly_agent.rail.client import RailUnprovisioned
 from selly_agent.store import ScopedStore
 from selly_agent.tools.registry import TIER_PASS_CHANNEL, ToolContext, dispatch
 
@@ -114,6 +115,10 @@ def _noon() -> float:
     )
 
 
+def _no_rail():
+    raise RailUnprovisioned("carousell.ai is not provisioned")
+
+
 def _lane(store, bus) -> None:
     crosslist.crosslist_lane(
         crosslist.CrosslistDeps(
@@ -121,6 +126,7 @@ def _lane(store, bus) -> None:
             bus=bus,
             config=Config(),
             browser_factory=lambda: object(),
+            rail_factory=_no_rail,
             now=_noon,
         )
     )

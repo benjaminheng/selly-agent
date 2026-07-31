@@ -352,7 +352,7 @@ def run_daemon(*, once: bool) -> int:
     # List what is on carousell.ai everywhere else the seller sells, and report each outcome. Driven
     # off stored rows, so rail-first is a precondition rather than a step a recipe could skip.
     crosslist_deps = crosslist.CrosslistDeps(
-        store=store, bus=bus, config=cfg, browser_factory=browser_factory
+        store=store, bus=bus, config=cfg, browser_factory=browser_factory, rail_factory=rail_factory
     )
     scheduler.register(
         Task(

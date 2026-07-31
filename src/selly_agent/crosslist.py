@@ -18,10 +18,19 @@ Two rules keep it from being expensive or surprising:
   * The outcome is reported by the daemon, from the rows the pass wrote. A publish pass has no
     conversation to report into, and asking a model to remember to send a message is how a listing
     went live once with nobody told.
+
+The lane's third phase pushes the cross-links back the other way: an item listed on both the rail
+and a browser marketplace gets the browser listing's URL written onto its carousell.ai listing,
+where the listing page renders it to buyers. Unlike the enqueue phase, the push is not held by
+quiet hours and takes no pacing reserve — it is one cheap API call on our own rail, not visible
+activity on the seller's marketplace account — and unlike a publish attempt it retries freely,
+because retrying costs one HTTP call and only ever happens while local state disagrees with what
+the rail last accepted.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -31,6 +40,7 @@ from selly_agent import marketplaces, settings
 from selly_agent.browser.client import BrowserUnavailable
 from selly_agent.engines import pacing as pacing_engine
 from selly_agent.passes import DEFAULT_PUBLISH_MARKET
+from selly_agent.rail.client import RailError, RailUnprovisioned, listing_id_from_url
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +67,9 @@ class CrosslistDeps:
     # The daemon's browser acquisition: calling it verifies Node and makes Chrome answer (starting
     # it if a closed window is all that is missing), or raises BrowserUnavailable.
     browser_factory: Callable[[], object]
+    # The daemon's rail acquisition: returns a client, or raises RailUnprovisioned when no key is
+    # present — in which case no rail listing can exist and the push phase has nothing to do.
+    rail_factory: Callable[[], object]
     # Lane state, in process on purpose: it is all notice de-duplication, and a restart re-arming it
     # errs toward telling the seller twice rather than never.
     notified: dict = field(default_factory=dict)
@@ -89,10 +102,13 @@ def in_quiet_hours(deps: CrosslistDeps) -> bool:
 
 
 def crosslist_lane(deps: CrosslistDeps) -> None:
-    """One tick: report the fan-out publishes that have settled, then queue at most one more."""
+    """One tick: report the fan-out publishes that have settled, push any cross-links the rail is
+    missing, then queue at most one more publish. The push sits before the quiet-hours gate on
+    purpose — see the module docstring."""
     report_settled(deps)
     if deps.store.is_paused():
         return
+    push_crosslinks(deps)
     if in_quiet_hours(deps):
         return
     enqueue_next(deps)
@@ -216,3 +232,76 @@ def report_settled(deps: CrosslistDeps) -> int:
             pass_id=row["pass_id"],
         )
     return reported
+
+
+# --- pushing the cross-links onto the rail listing ----------------------------------------------
+
+# Which rail platform each market's listing URL is filed under. The values are the rail's proto
+# enum *names* (protojson accepts them, and they read as themselves in logs and stored markers).
+# Deliberately code, not registry data: this changes only when the rail's enum does. It must stay
+# injective — the rail rejects a set carrying the same platform twice — and a market with no entry
+# here is left out of the pushed set entirely, never sent as an unspecified platform.
+MARKET_PLATFORMS = {
+    "carousell": "EXTERNAL_PLATFORM_CAROUSELL",
+    "fb": "EXTERNAL_PLATFORM_FACEBOOK_MARKETPLACE",
+}
+
+
+def desired_external_urls(listing_urls: dict) -> list:
+    """The external-URL set an item's rail listing should carry, platform-sorted: every recorded
+    listing URL whose market maps to a rail platform. The rail's own URL is not in the map, so it
+    can never point at itself."""
+    urls = [
+        {"platform": MARKET_PLATFORMS[market], "url": url}
+        for market, url in listing_urls.items()
+        if market in MARKET_PLATFORMS and url
+    ]
+    return sorted(urls, key=lambda entry: entry["platform"])
+
+
+def push_crosslinks(deps: CrosslistDeps) -> int:
+    """Write each item's cross-listing URLs onto its rail listing; returns how many were pushed.
+
+    Deterministic bookkeeping, not a recipe step: the desired set derives from where the item
+    actually is (its recorded listing URLs), and a push happens only when that differs from what
+    the rail last accepted. A set that has emptied is pushed too — present-but-empty replaces the
+    rail's whole set with nothing, clearing stale links. Failure is silent-retry: the seller
+    cannot act on an unlinked listing, so a RailError is an event and another try next tick.
+    """
+    try:
+        rail = deps.rail_factory()
+    except RailUnprovisioned:
+        return 0  # no key, so no rail listing exists to link anything onto
+
+    markers = deps.store.crosslink_pushed_urls()
+    sold = deps.store.sold_item_ids()
+    pushed = 0
+    for item in deps.store.list_items():
+        if item["id"] in sold:
+            continue  # its rail listing is about to be archived; pushing would race the take-down
+        rail_id = listing_id_from_url(item["listing_urls"].get(DEFAULT_PUBLISH_MARKET))
+        if not rail_id:
+            continue
+        desired = desired_external_urls(item["listing_urls"])
+        desired_json = json.dumps(desired, sort_keys=True)
+        marker = markers.get(item["id"])
+        if marker == desired_json:
+            continue
+        if marker is None and not desired:
+            continue  # nothing pushed and nothing to push — no call, no marker row
+        try:
+            rail.update_listing(rail_id, external_urls={"urls": desired})
+        except RailError as exc:
+            deps.bus.publish("crosslink.push_failed", {"item_id": item["id"], "reason": str(exc)})
+            continue
+        deps.store.set_crosslink_pushed(item["id"], desired_json)
+        deps.bus.publish(
+            "crosslink.pushed",
+            {
+                "item_id": item["id"],
+                "listing_id": rail_id,
+                "platforms": [entry["platform"] for entry in desired],
+            },
+        )
+        pushed += 1
+    return pushed
