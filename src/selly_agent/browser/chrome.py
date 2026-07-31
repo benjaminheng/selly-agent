@@ -56,6 +56,15 @@ UNAVAILABLE = "unavailable"
 SINGLETON_LOCKS = ("SingletonLock", "SingletonCookie", "SingletonSocket")
 
 
+def resolve_binary(chrome_bin: str | None = None) -> str:
+    """The Chrome executable to drive: the configured path, or the OS default install location.
+
+    One answer for the launch, the by-hand hint, and the installer's "is Chrome even here" gate —
+    a gate that checked a different path from the one the launch uses would pass and then fail.
+    """
+    return chrome_bin or _CHROME_MACOS
+
+
 def version_url(port: int) -> str:
     return f"http://127.0.0.1:{port}/json/version"
 
@@ -88,7 +97,7 @@ def clear_stale_locks() -> list:
     return removed
 
 
-def launch_command(port: int, *, chrome_bin: str = _CHROME_MACOS) -> list:
+def launch_command(port: int, *, chrome_bin: str | None = None) -> list:
     """The argv for the warm Chrome: the agent's own profile, CDP open on the loopback interface.
 
     A dedicated profile is the point — the seller's everyday Chrome is never driven, and the
@@ -99,7 +108,7 @@ def launch_command(port: int, *, chrome_bin: str = _CHROME_MACOS) -> list:
     active.
     """
     return [
-        chrome_bin,
+        resolve_binary(chrome_bin),
         f"--remote-debugging-port={port}",
         f"--user-data-dir={paths.browser_profile_dir()}",
         "--disable-backgrounding-occluded-windows",
@@ -115,7 +124,7 @@ def launch_command(port: int, *, chrome_bin: str = _CHROME_MACOS) -> list:
 def bring_up_hint(port: int, *, chrome_bin: str | None = None) -> str:
     """What to tell a person whose Chrome could not be started for them. Installing the launchd job
     that keeps it alive is the installer's work; this is the by-hand instruction."""
-    argv = launch_command(port, chrome_bin=chrome_bin or _CHROME_MACOS)
+    argv = launch_command(port, chrome_bin=chrome_bin)
     quoted = " ".join(f'"{part}"' if " " in part else part for part in argv)
     return f"the agent's Chrome is not running on port {port} — start it with:\n  {quoted}"
 
@@ -147,7 +156,7 @@ def ensure_running(port: int, *, chrome_bin: str | None = None, wait_sec: float 
         if removed:
             log.info("cleared stale Chrome profile lock(s): %s", ", ".join(removed))
 
-        argv = launch_command(port, chrome_bin=chrome_bin or _CHROME_MACOS)
+        argv = launch_command(port, chrome_bin=chrome_bin)
         try:
             # Its own session, so the daemon's exit — or a pass group being killed — never takes the
             # seller's browser with it.

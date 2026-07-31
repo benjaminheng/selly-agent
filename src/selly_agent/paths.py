@@ -194,6 +194,37 @@ def claude_bin_candidates() -> list[Path]:
     ]
 
 
+def user_bin_dir() -> Path:
+    """~/.local/bin — where the entry-point shim lands. A PATH convention rather than an XDG
+    data home, so it is home-relative and not overridable."""
+    return _home() / ".local" / "bin"
+
+
+def shim_path() -> Path:
+    """The user-facing `selly-agent` command: a symlink through `current`, so it survives
+    updates."""
+    return user_bin_dir() / APP
+
+
+def shell_rc_path(shell: str) -> Path:
+    """The rc file a PATH export belongs in for this login shell. zsh reads ~/.zshrc (the macOS
+    default shell); bash login shells on macOS read ~/.bash_profile; anything else gets the
+    POSIX ~/.profile."""
+    name = os.path.basename(shell or "")
+    if name == "zsh":
+        return _home() / ".zshrc"
+    if name == "bash":
+        return _home() / ".bash_profile"
+    return _home() / ".profile"
+
+
+def tcc_protected_roots() -> list[Path]:
+    """The user dirs macOS gates behind per-app TCC consent. A launchd job gets no consent
+    prompt — it just fails to read — so an install tree must not live under any of these."""
+    home = _home()
+    return [home / "Documents", home / "Desktop", home / "Downloads"]
+
+
 def launch_agents_dir(platform=None) -> Path:
     """The per-user auto-start directory, composed here from the platform's OS-specific rule
     (callers must never compose this themselves). A platform may be injected (tests); otherwise
