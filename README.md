@@ -21,6 +21,34 @@ deterministic fast paths, the needs-me queue (escalations + notices), and a
 phone-driven channel pass. The browser layer and the skills rewrite are later
 workstreams.
 
+## Installing
+
+```sh
+git clone https://github.com/carousell/selly-agent && cd selly-agent
+./setup
+```
+
+One command, one terminal, no LLM anywhere in it. It checks the machine (Node,
+Chrome, and the `claude` CLI signed in), prints every location it will write to
+before writing anything, copies this version into `~/.local/share/selly-agent/versions/`,
+installs the `selly-agent` command, starts the background worker, then asks where
+you sell and offers marketplace sign-in and Telegram. Both offers are skippable.
+
+```sh
+./setup --dev        # point the install at this working tree instead of copying it
+./setup --yes --manual --region SG --skip-markets --skip-telegram   # unattended
+
+selly-agent healthcheck            # five checks; exit 1 if anything is actually wrong
+selly-agent update                 # fetch, verify, swap, restart, verify — or roll back
+selly-agent update --check         # exit 10 if there is a newer release
+selly-agent update --rollback      # go back to the previous version
+selly-agent uninstall              # add --preserve-data to keep the database and its key
+```
+
+`install.sh` is the eventual `curl … | sh` bootstrap: it verifies a release
+against its published checksum and hands off to that release's own `./setup`.
+It refuses to run until release hosting is public.
+
 ## Where the plans live
 
 Design, architecture decisions, invariants, and the plan this code implements
@@ -68,9 +96,13 @@ bin/selly-agent harness config --attended --dir /path/to/session
 bin/selly-agent connect telegram                          # interactive prompt
 printf '%s' "<bot-token>" | bin/selly-agent connect telegram   # scripted
 
-# bring up the warm Chrome the browser layer drives (a dedicated profile, NOT your everyday
-# Chrome). The daemon starts this itself whenever it needs the browser, so this is for logging in
-# to Carousell by hand the first time, and for keeping an eye on it while developing.
+# sign in to a marketplace: the daemon opens it in the agent's own Chrome and the login probe
+# reads back whether it worked. Nothing about the session is stored — the cookies are the state.
+bin/selly-agent connect carousell
+
+# bring up the warm Chrome the browser layer drives by hand (a dedicated profile, NOT your
+# everyday Chrome). The daemon starts this itself whenever it needs the browser, and `connect`
+# above is the normal way to log in — this is for keeping an eye on it while developing.
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --remote-debugging-port=9222 \
   --user-data-dir="$HOME/.local/share/selly-agent/browser-profile" \
@@ -105,9 +137,11 @@ Tests point `$XDG_*_HOME` at a tmpdir, so they never touch a real install.
 ## Layout
 
 ```
+setup                      the installer's front door: check python3, exec bin/selly-agent setup
+install.sh                 the curl bootstrap: verify a release, hand off to its own ./setup
 bin/selly-agent            single CLI launcher (resolves src/, dispatches argv)
 src/selly_agent/
-  cli.py                   argparse dispatch (daemon, inspect, pass, harness, provision, …)
+  cli.py                   argparse dispatch (setup, daemon, update, healthcheck, pass, …)
   paths.py                 the one path authority (XDG; only module touching home/XDG)
   platform/                OS seam (macOS launchd; Windows is a later port)
   config.py                read-only config.json loader (+ installer-side writer)
@@ -121,7 +155,12 @@ src/selly_agent/
   mcp_proxy.py             stdio<->HTTP MCP shim for stdio-only harnesses
   tools/                   the typed MCP tool registry + the tool implementations
   channel/                 provider-agnostic channel core + channel/telegram/ provider
-  connect_cli.py           `connect telegram` (token via stdin -> control route)
+  control.py               the one client for the daemon's localhost control routes
+  connect_cli.py           `connect telegram` + `connect <marketplace>` over those routes
+  setup_cli.py             the installer's phase orchestration (no LLM anywhere in it)
+  healthcheck.py           the five checks, and their renderer
+  uninstall_cli.py         removal: marked plists, our shim, the roots, --preserve-data
+  installer/               ui (setup's voice), preflight gates, the versioned layout, update
   browser/                 the daemon's Playwright MCP client, reconcile, markets/ adapters
   rail/                    the carousell.ai rail client + guest-key provisioning
   harness/                 the harness seam: PassSpec + claude/codex emitters

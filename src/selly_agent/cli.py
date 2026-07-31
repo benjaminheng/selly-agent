@@ -74,6 +74,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--url", default=None, help="base URL to fetch the release from (staging, testing)"
     )
 
+    remove = sub.add_parser("uninstall", help="remove selly-agent from this machine")
+    remove.add_argument(
+        "--preserve-data",
+        action="store_true",
+        help="keep the database, photos, browser profile and the secrets they depend on",
+    )
+    remove.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
+
     daemon = sub.add_parser("daemon", help="daemon lifecycle")
     dsub = daemon.add_subparsers(dest="daemon_command", required=True)
 
@@ -230,6 +238,11 @@ def main(argv: list[str] | None = None) -> int:
         from selly_agent.installer import update as update_cli
 
         return update_cli.run(args)
+
+    if args.command == "uninstall":
+        from selly_agent import uninstall_cli
+
+        return uninstall_cli.run(args)
 
     if args.command == "daemon":
         from selly_agent import daemon_cli

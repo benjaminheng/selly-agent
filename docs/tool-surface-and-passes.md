@@ -27,6 +27,23 @@ surfaces:
   `t.me/<bot>?start=<nonce>` deep link; the status route reports off /
   awaiting-bind / bound for the connecting CLI to poll. The token is never echoed
   or logged; only `bot_username` is published (`channel.bind_attempt`).
+- **`POST /control/settings-set`** — set a setting outright (attended token
+  only). Same registry parser and same `check_for_seller` as the propose path;
+  what it skips is the approval round-trip, which exists to gate the model rather
+  than the person typing. The prior value is recorded, so Undo still works.
+- **`POST` / `GET /control/seller-basics`** — write and read region, currency and
+  timezone. The installer needs the region before it can provision the rail, and
+  asks the daemon for it rather than opening a database a live process owns.
+- **`POST /control/connect-market`**, **`GET /control/market-login`**,
+  **`GET /control/market-logins`** — open a marketplace in the agent's Chrome for
+  the seller to sign in, probe one market's login, and report every enabled market
+  at once for the healthcheck. The plural read declines to probe when Chrome is
+  closed: acquiring the browser starts it, and a status read that opens a window
+  on someone's screen is not a status read.
+
+Every one of these is called through `control.py`, the one client for them —
+which is also why the stdlib guard grants socket capability to that module rather
+than to each CLI verb in turn.
 
 Hardening applies to every request: the Host must be a localhost name and any
 Origin header a localhost origin (DNS-rebinding defense), and a bearer token must

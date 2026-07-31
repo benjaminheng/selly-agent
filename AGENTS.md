@@ -110,7 +110,10 @@ Keep these distinct — where a value lives is a decision about what it *is*:
   (e.g. `http_port`, pacing jitter/cap, `pacing_mode`.)
 - **Seller domain records** — the `seller_config` table (basics, shipping zones,
   the origin address). Free-form JSON sections the flows consult; written
-  attended-direct via `update_seller_config`.
+  attended-direct via `update_seller_config`, or by the installer through
+  `/control/seller-basics`. Both share one validator (`tools.seller.validate_basics`),
+  which upper-cases region and currency because every registry lookup is an exact
+  match, and checks the timezone against the zone database.
 - **Seller settings** — the `settings` table plus the `settings.py` code
   registry. Runtime behavior knobs the seller changes through a door. Defaults
   live in the registry, not as rows: an unset key reads as its default. Adding a
@@ -127,7 +130,13 @@ is deliberately no apply/approve/undo/cancel tool. The daemon decides by policy
 (a registry `requires_approval` flag): high-stakes changes are held for a human
 signal (an Approve/Cancel button, an exact `approve <id>` text token, or the
 attended `selly-agent settings approve <id>` CLI over `/control/settings-decide`);
-low-stakes ones apply immediately in deterministic store code. Every apply is one
+low-stakes ones apply immediately in deterministic store code. `selly-agent
+settings set <key> <value>` (over `/control/settings-set`) skips the approval
+round-trip and only that: the gate exists to stop the *model* changing things
+unasked, and someone typing at their own terminal has already given the signal it
+waits for — so the same parser and the same `check_for_seller` run, and the prior
+value is recorded so Undo still works. The installer writes the marketplaces the
+seller opted into through that door rather than touching the database itself. Every apply is one
 `selly.db` transaction (setting upsert + ledger row + echo notice), and every
 consumer reads its setting at its own decision point (read-at-use — no caching, no
 reload). The no-apply-tool rule is enforced by a guard test, not just convention.

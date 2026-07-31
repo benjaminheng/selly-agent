@@ -18,11 +18,13 @@ uninstall`, `inspect`, `version`). launchd's job points at this launcher.
 ## Layout
 
 ```
+setup                     the installer's front door (POSIX sh; checks python3, then hands over)
+install.sh                the curl bootstrap (verify a release, run its own ./setup)
 bin/selly-agent          CLI launcher
 src/selly_agent/          the package
 tests/                    plain pytest (guards under tests/guard/)
 docs/                     this document and friends
-Makefile                  local entry points (test, lint, fmt)
+Makefile                  local entry points (test, lint, fmt, dist)
 ```
 
 ## The package, by responsibility
@@ -94,6 +96,32 @@ Observability — one event record, two readers. Detail in
   daemon. `--json` is the machine form.
 - **`data/tail.html`** — the localhost web tail, an opinionated *human* view over
   the same wire shape.
+
+Install, update and removal — deterministic, no LLM anywhere in the path. An
+install and an update are the same operation: stage a tree into `versions/<v>`
+and move a symlink, so the default install exercises the update path on every
+machine:
+
+- **`installer/ui.py`** — setup's voice. The only home of the `SELLY:` prefix; a
+  CLI verb setup invokes owns its own output rather than being wrapped in a
+  second voice. Colour and the banner are gated on a real terminal, and no prompt
+  blocks when there is nobody to answer it.
+- **`installer/preflight.py`** — the machine gates, each split into a pure
+  decision and a shim that fetches its inputs. Node native to the machine (a
+  Rosetta Node is the failure this exists for), Chrome present, the `claude` CLI
+  signed in, and a tree macOS will actually let a launchd job read.
+- **`installer/materialize.py`** — the versioned layout: stage, atomic rename,
+  swap `current`, the `~/.local/bin` shim, retention, and the marker-fenced PATH
+  block. `current` is always a symlink we own; a real directory there is refused.
+- **`installer/update.py`** — fetch, verify against the published checksum, swap,
+  restart, health-check, and roll back — restoring the pre-migration database
+  snapshot when, and only when, the new version migrated.
+- **`setup_cli.py` / `healthcheck.py` / `uninstall_cli.py`** — the phase
+  orchestration, the five checks, and removal that only ever touches what an
+  install put there.
+- **`control.py`** — the client half of the daemon's control routes. Every verb
+  that changes state asks the running daemon rather than opening its database, so
+  the single-writer rule holds across processes too.
 
 The tool surface and pass runner — how the LLM touches state and how it runs.
 Detail in [`tool-surface-and-passes.md`](tool-surface-and-passes.md):
