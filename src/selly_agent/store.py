@@ -3132,6 +3132,24 @@ class Store:
         rows = self._db.query("SELECT item_id FROM negotiations WHERE state = 'sold'")
         return {row["item_id"] for row in rows}
 
+    def crosslink_pushed_urls(self) -> dict:
+        """The last external-URL set the rail accepted, per item: {item_id: canonical JSON}. An
+        item with no row has never had a set accepted."""
+        rows = self._db.query("SELECT item_id, pushed_urls FROM crosslink_pushes")
+        return {row["item_id"]: row["pushed_urls"] for row in rows}
+
+    def set_crosslink_pushed(self, item_id: str, urls_json: str) -> None:
+        """Record the set the rail just accepted. Written only after the rail call succeeds — a
+        marker ahead of acceptance would silence the retry that makes the push reliable."""
+        with self._db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO crosslink_pushes (item_id, pushed_urls, pushed_ts) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT (item_id) DO UPDATE SET "
+                "pushed_urls = excluded.pushed_urls, pushed_ts = excluded.pushed_ts",
+                (item_id, urls_json, _now()),
+            )
+
     def inbox_for_pass(self, pass_id: str) -> list[InboxRecord]:
         """The inbox rows claimed into a pass — the prompt builder reads these (arrival order)."""
         rows = self._db.query(

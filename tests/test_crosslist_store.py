@@ -1,5 +1,5 @@
 """Store accessors the fan-out adds: the publish-attempt index, the unreported-outcome queue and
-its report-once transaction, and the settled-sale read."""
+its report-once transaction, the settled-sale read, and the cross-link push marker."""
 
 from __future__ import annotations
 
@@ -119,3 +119,28 @@ def test_sold_item_ids_reads_the_negotiation_ledger(store) -> None:
     ids = store.sold_item_ids()
     assert sold["id"] in ids
     assert open_item["id"] not in ids
+
+
+# --- the cross-link push marker ----------------------------------------------------------------
+
+
+def test_crosslink_marker_upserts_and_reads_back(store) -> None:
+    item = store.create_item(title="Lamp", list_price=80.0)
+    assert store.crosslink_pushed_urls() == {}
+
+    store.set_crosslink_pushed(item["id"], '[{"platform": "P", "url": "https://a"}]')
+    assert store.crosslink_pushed_urls() == {item["id"]: '[{"platform": "P", "url": "https://a"}]'}
+
+    store.set_crosslink_pushed(item["id"], "[]")
+    assert store.crosslink_pushed_urls() == {item["id"]: "[]"}
+
+
+def test_crosslink_marker_rows_follow_their_item(store) -> None:
+    """ON DELETE CASCADE: a deleted item takes its marker with it, so the table never grows a
+    tail of orphans."""
+    item = store.create_item(title="Lamp", list_price=80.0)
+    store.set_crosslink_pushed(item["id"], "[]")
+
+    with store._db.transaction() as conn:
+        conn.execute("DELETE FROM items WHERE id = ?", (item["id"],))
+    assert store.crosslink_pushed_urls() == {}
