@@ -36,7 +36,7 @@ def _run(args, ui: Ui) -> int:
 
     ui.step("Removing selly-agent from this Mac")
     for line in _plan(preserve):
-        ui.detail(line)
+        ui.say(line)
     # Deleting someone's data defaults to no, and `--yes` is read as the consent itself rather
     # than as "take the default" — which for this question is the opposite of what it means.
     if not ui.assume_yes and not ui.confirm("Go ahead?", default=False):
@@ -44,21 +44,21 @@ def _run(args, ui: Ui) -> int:
         return 0
 
     ui.step("Removing")
-    ui.detail("stopping the background worker")
+    ui.say("stopping the background worker")
     supervisor.uninstall(platform=platform)
 
     if materialize.remove_shim():
-        ui.detail(f"removed {paths.shim_path()}")
+        ui.say(f"removed {paths.shim_path()}")
     for rc_file in materialize.rc_candidates():
         # Every shell we might have written to, not just the one running now: install under zsh
         # and uninstall from bash, and checking only the current shell leaves the block behind.
         if materialize.remove_rc_block(rc_file):
-            ui.detail(f"removed the PATH line from {rc_file}")
+            ui.say(f"removed the PATH line from {rc_file}")
 
     for target in _roots_to_remove(preserve):
         _remove(target)
     if preserve:
-        ui.detail(f"kept: {paths.data_dir()}, {paths.config_dir()}")
+        ui.say(f"kept: {paths.data_dir()}, {paths.config_dir()}")
         ui.note("the carousell.ai key stays with them — without it those listings are orphaned")
     ui.say("")
     ui.say("Done.")

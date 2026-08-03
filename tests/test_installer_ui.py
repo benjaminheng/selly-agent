@@ -17,19 +17,13 @@ def make_ui(**kwargs) -> tuple:
     return Ui(**defaults), out, err
 
 
-def test_a_step_opens_with_a_blank_line_and_its_body_indents_under_it() -> None:
-    # The blank line and the indent are the whole navigation scheme: they are what separates one
-    # phase's report from the next in a scroll that runs for pages.
+def test_a_step_opens_with_a_blank_line_and_what_follows_is_flat() -> None:
+    # The blank line above a heading is the whole navigation scheme: it is what separates one
+    # phase's report from the next in a scroll that runs for pages. Nothing else is indented.
     ui, out, _ = make_ui()
     ui.step("Installing Selly")
-    ui.detail("/opt/versions/1.0.0")
-    ui.say("a plain line")
-    assert out.getvalue().splitlines() == [
-        "",
-        "Installing Selly",
-        "  /opt/versions/1.0.0",
-        "a plain line",
-    ]
+    ui.say("/opt/versions/1.0.0")
+    assert out.getvalue().splitlines() == ["", "Installing Selly", "/opt/versions/1.0.0"]
 
 
 def test_colour_marks_headings_and_questions_but_not_what_they_report() -> None:
@@ -37,14 +31,12 @@ def test_colour_marks_headings_and_questions_but_not_what_they_report() -> None:
     # distinguish the lines they navigate by or have to answer.
     ui, out, _ = make_ui(color=True)
     ui.step("Checking this machine")
-    ui.detail("node: v22")
-    ui.say("body text")
+    ui.say("node: v22")
     ui.confirm("Proceed?", default=True)
 
-    heading, detail, body, question = [line for line in out.getvalue().splitlines() if line.strip()]
+    heading, body, question = [line for line in out.getvalue().splitlines() if line.strip()]
     assert "\033" in heading
     assert "\033" in question
-    assert "\033" not in detail
     assert "\033" not in body
 
 

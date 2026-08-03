@@ -1,9 +1,9 @@
 """Setup's terminal: the one place that prints for the installer, and the one place that prompts.
 
 An install is a long scroll, so the output is shaped to be skimmable: each phase opens with a
-heading — a blank line above it, colour on the text — and what that phase did is reported plainly,
-indented beneath it. Colour is reserved for headings and questions, which are the only lines a
-reader navigates by or has to answer.
+heading — a blank line above it, colour on the text — and everything that phase reports follows
+plainly beneath, unindented. The blank line is the only separator, and colour is reserved for
+headings and questions, which are the only lines a reader navigates by or has to answer.
 
 Everything decorative is conditional: colour only when stdout is a TTY with NO_COLOR unset, the
 banner only when the terminal is wide enough for it. A run whose stdin is not a person never
@@ -106,20 +106,17 @@ class Ui:
         print(self._paint(text, _BOLD_TEAL), file=self.stream)
 
     def say(self, text: str = "") -> None:
-        """A line of body text, verbatim and unindented."""
+        """A line of body text: everything a phase reports, and the only unmarked output.
+
+        Flat rather than indented under its heading. The blank line a heading opens with is
+        separation enough, and indenting what follows buys nothing back for the width it costs on
+        lines that are mostly paths.
+        """
         print(text, file=self.stream)
-
-    def detail(self, text: str) -> None:
-        # """A line reporting what a phase did, indented under its heading."""
-        # print(f"  {text}", file=self.stream)
-               
-        # TODO: testing out not indenting the detail lines. before merging, if we keep this approach, refactor all calls from detail() to say()
-        self.say(text)
-
 
     def note(self, text: str) -> None:
         """A dimmed aside: what a step assumed, what was skipped, where to look."""
-        print(self._paint(f"{text}", _DIM), file=self.stream)
+        print(self._paint(text, _DIM), file=self.stream)
 
     def warn(self, text: str) -> None:
         print(self._paint(f"warn: {text}", _YELLOW), file=self.stream)
@@ -195,7 +192,7 @@ class Ui:
             return default_index
         self._auto_answer(question)
         for number, option in enumerate(options, start=1):
-            self.detail(f"{number}) {option}")
+            self.say(f"{number}) {option}")
         while True:
             raw = self._ask_raw(f"Enter 1-{len(options)} [default {default_index + 1}]: ")
             if not raw:
@@ -224,9 +221,9 @@ class Ui:
             return []
         self._auto_answer(question)
         for number, option in enumerate(options, start=1):
-            self.detail(f"{number}) {option}")
+            self.say(f"{number}) {option}")
         while True:
-            raw = self._ask_raw("Enter the numbers (comma-separated, 'a' for all, empty to skip): ").lower()
+            raw = self._ask_raw("Choose (comma-separated, 'a' for all, empty to skip): ").lower()
             if not raw:
                 return []
             if raw in ("a", "all"):
