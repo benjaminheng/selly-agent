@@ -16,11 +16,11 @@ DEFAULT_BASE_URL="$REPO_URL/releases/latest/download"
 BASE_URL="${SELLY_INSTALL_BASE_URL:-}"
 
 say() {
-	echo "SELLY: $1"
+	echo "$1"
 }
 
 die() {
-	echo "SELLY: $1" >&2
+	echo "$1" >&2
 	exit 1
 }
 
@@ -82,7 +82,7 @@ if [ "$(echo "$archives" | wc -l)" -gt 1 ]; then
 fi
 archive="$archives"
 
-say "Downloading $archive…"
+say "Downloading $archive"
 curl -fsSL "$BASE_URL/$archive" -o "$archive" || die "couldn't download $BASE_URL/$archive"
 
 say "Checking it against the published checksum…"
