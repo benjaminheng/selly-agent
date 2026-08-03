@@ -176,7 +176,7 @@ def uninstall(*, label: str | None = None, platform: Platform | None = None) -> 
     for location in _plist_locations(platform, label).values():
         if location.exists() and _is_ours(location):
             location.unlink()
-    print("uninstalled")
+    print("uninstalled supervisor")
     return 0
 
 

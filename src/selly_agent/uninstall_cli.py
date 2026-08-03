@@ -34,7 +34,7 @@ def _run(args, ui: Ui) -> int:
     preserve = bool(getattr(args, "preserve_data", False))
     platform = get_platform()
 
-    ui.step("Removing selly-agent from this Mac")
+    ui.step("Uninstalling selly-agent from this Mac")
     for line in _plan(preserve):
         ui.say(line)
     # Deleting someone's data defaults to no, and `--yes` is read as the consent itself rather
@@ -43,7 +43,7 @@ def _run(args, ui: Ui) -> int:
         ui.say("Left everything alone.")
         return 0
 
-    ui.step("Removing")
+    ui.step("Uninstalling")
     ui.say("stopping the background worker")
     supervisor.uninstall(platform=platform)
 
@@ -57,9 +57,7 @@ def _run(args, ui: Ui) -> int:
 
     for target in _roots_to_remove(preserve):
         _remove(target)
-    if preserve:
-        ui.say(f"kept: {paths.data_dir()}, {paths.config_dir()}")
-        ui.note("the carousell.ai key stays with them — without it those listings are orphaned")
+        ui.say(f"removed {target}")
     ui.say("")
     ui.say("Done.")
     return 0
@@ -68,21 +66,17 @@ def _run(args, ui: Ui) -> int:
 def _plan(preserve: bool) -> list:
     lines = [
         "• stop and unregister the background worker",
-        f"• remove {paths.shim_path()} and the PATH line, if we added one",
-        f"• delete {paths.versions_dir()} (the installed code)",
-        f"• delete {paths.state_dir()} (logs, transcripts, backups)",
+        f"• remove {paths.shim_path()} and PATH changes, if we added any",
+        f"• remove {paths.versions_dir()} (the installed code)",
+        f"• remove {paths.state_dir()} (logs, transcripts, backups)",
     ]
     if preserve:
-        kept = ", ".join(
-            str(place)
-            for place in (paths.data_dir(), paths.media_dir(), paths.browser_profile_dir())
-        )
-        lines.append(f"• KEEP {kept}")
-        lines.append(f"• KEEP {paths.config_dir()} (it holds the carousell.ai key those need)")
+        lines.append(f"• KEEP {paths.data_root()} (database, photos, browser profile)")
+        lines.append(f"• KEEP {paths.config_dir()} (config and secrets)")
     else:
-        lines.append(f"• delete {paths.data_root()} (database, photos, browser profile)")
-        lines.append(f"• delete {paths.config_dir()} (config and secrets)")
-        lines.append(f"• delete {paths.cache_dir()}")
+        lines.append(f"• remove {paths.data_root()} (database, photos, browser profile)")
+        lines.append(f"• remove {paths.config_dir()} (config and secrets)")
+        lines.append(f"• remove {paths.cache_dir()} (cache)")
     return lines
 
 
