@@ -364,16 +364,22 @@ def run_daemon(*, once: bool) -> int:
     )
     # Look for a new release and say so once. Nothing installs itself — an update replaces the
     # code this process is running, so it stays something a person starts.
+    #
+    # Not in a single-tick run: that mode exists to prove the loop works, and every task's first
+    # tick is immediate, so registering this would put an outbound request to the release host in
+    # the path of a smoke check — slow where there is no network, and reaching a third party from
+    # a test suite. Its own tests cover it against a local server.
     seen_versions: set = set()
-    scheduler.register(
-        Task(
-            name="update_probe",
-            interval_sec=float(cfg.update_check_interval_sec),
-            func=lambda: update.update_probe(
-                store=store, bus=bus, config_obj=cfg, seen=seen_versions
-            ),
+    if not once:
+        scheduler.register(
+            Task(
+                name="update_probe",
+                interval_sec=float(cfg.update_check_interval_sec),
+                func=lambda: update.update_probe(
+                    store=store, bus=bus, config_obj=cfg, seen=seen_versions
+                ),
+            )
         )
-    )
     # Fold settled channel passes' claimed inbox rows from durable state (not a pass.end
     # subscriber), so a crash at any point — including a stale-swept pass — still folds the
     # seller's messages and queues the failure notice. Always on, channel-provider-independent.
