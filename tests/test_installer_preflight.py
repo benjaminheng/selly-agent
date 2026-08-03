@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from selly_agent.config import Config
@@ -161,9 +162,92 @@ def test_claude_gate_falls_back_to_the_exit_code_when_the_output_is_unreadable(m
 
 def test_prewarm_is_a_warning_not_a_failure(monkeypatch) -> None:
     monkeypatch.setattr(preflight.shutil, "which", lambda name: "/usr/bin/npx")
-    monkeypatch.setattr(preflight, "_run", lambda argv, timeout=None: (1, "network unreachable"))
+    monkeypatch.setattr(
+        preflight, "_run", lambda argv, timeout=None, env=None: (1, "network unreachable")
+    )
     result = preflight.prewarm_playwright(Config())
     assert result.status == checks.WARN
+
+
+def test_prewarm_fills_the_cache_the_worker_will_read_with_the_pinned_version(monkeypatch) -> None:
+    # Warming an unpinned spec fills a different cache entry than the daemon asks for, and warming
+    # under this shell's environment would not prove the worker's can reach npx at all.
+    monkeypatch.setattr(preflight.shutil, "which", lambda name: "/usr/bin/npx")
+    monkeypatch.setattr(preflight, "node_path_fragment", lambda: "/opt/node/bin")
+    monkeypatch.setenv("HOME", "/Users/seller")
+    seen = {}
+
+    def record(argv, timeout=None, env=None):
+        seen["argv"], seen["env"] = argv, env
+        return 0, ""
+
+    monkeypatch.setattr(preflight, "_run", record)
+    assert preflight.prewarm_playwright(Config()).status == checks.OK
+
+    assert preflight.browser_client.PINNED_MCP_SPEC in seen["argv"]
+    assert seen["env"] == {
+        "PATH": f"/opt/node/bin:{preflight.supervisor.SUPERVISED_PATH}",
+        "HOME": "/Users/seller",
+    }
+
+
+# --- the spawn the worker will actually perform --------------------------------------------------
+
+
+def _node_stubs(directory: Path) -> None:
+    """`node` and `npx` that answer --version, as executable as the real ones."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in ("node", "npx"):
+        stub = directory / name
+        stub.write_text("#!/bin/sh\necho v22.0.0\n")
+        stub.chmod(0o755)
+
+
+def test_the_spawn_gate_passes_when_the_workers_path_reaches_node_and_npx(
+    tmp_path, monkeypatch
+) -> None:
+    bin_dir = tmp_path / "node" / "bin"
+    _node_stubs(bin_dir)
+    monkeypatch.setattr(preflight, "node_path_fragment", lambda: str(bin_dir))
+    monkeypatch.setattr(preflight.supervisor, "SUPERVISED_PATH", str(tmp_path / "system"))
+
+    result = preflight.check_supervised_spawn(Config())
+    assert result.status == checks.OK
+    assert str(bin_dir) in result.detail
+
+
+def test_the_spawn_gate_fails_when_only_this_shell_can_find_npx(tmp_path, monkeypatch) -> None:
+    # The failure plan 08's live test produced: setup checked node in the seller's shell, passed,
+    # and the launchd job — whose PATH holds none of it — could not spawn the browser server.
+    bin_dir = tmp_path / "node" / "bin"
+    _node_stubs(bin_dir)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.setattr(preflight, "node_path_fragment", lambda: "")
+    monkeypatch.setattr(preflight.supervisor, "SUPERVISED_PATH", str(tmp_path / "system"))
+
+    result = preflight.check_supervised_spawn(Config())
+    assert result.status == checks.FAIL
+    # The PATH it was tried under is the whole diagnosis — without it the message is unactionable.
+    assert str(tmp_path / "system") in result.detail
+    assert "node --version" in result.detail
+    assert "re-run ./setup" in result.fix
+
+
+def test_the_spawn_gate_checks_an_override_and_leaves_node_out_of_it(tmp_path, monkeypatch) -> None:
+    # An override may be a bundled server that never goes through npx, so `node` is not ours to
+    # demand; its own binary still has to be reachable from the worker.
+    server = tmp_path / "opt" / "mcp"
+    server.parent.mkdir(parents=True)
+    server.write_text("#!/bin/sh\necho 1.0\n")
+    server.chmod(0o755)
+    monkeypatch.setattr(preflight, "node_path_fragment", lambda: "")
+    monkeypatch.setattr(preflight.supervisor, "SUPERVISED_PATH", str(tmp_path / "system"))
+
+    cfg = Config(playwright_mcp_cmd=[str(server), "--stdio"])
+    assert preflight.check_supervised_spawn(cfg).status == checks.OK
+
+    missing = Config(playwright_mcp_cmd=["mcp-server-that-is-nowhere"])
+    assert preflight.check_supervised_spawn(missing).status == checks.FAIL
 
 
 def test_homebrew_is_never_bootstrapped(monkeypatch) -> None:
@@ -207,16 +291,39 @@ def test_the_node_directory_is_recorded_at_a_path_that_outlives_the_shell(
     # Recording it verbatim would leave the worker pointed at nothing after the next logout.
     installation = tmp_path / "node-versions" / "v22" / "installation"
     (installation / "bin").mkdir(parents=True)
-    (installation / "bin" / "npx").write_text("#!/bin/sh\n")
+    for name in ("node", "npx"):
+        (installation / "bin" / name).write_text("#!/bin/sh\n")
     per_shell = tmp_path / "fnm_multishells" / "52166_1785491228033"
     per_shell.parent.mkdir(parents=True)
     per_shell.symlink_to(installation)
 
-    monkeypatch.setattr(preflight.shutil, "which", lambda name: str(per_shell / "bin" / "npx"))
+    monkeypatch.setattr(preflight.shutil, "which", lambda name: str(per_shell / "bin" / name))
 
-    assert preflight.node_bin_dir() == str(installation / "bin")
+    # One directory holds both, so the fragment is a single entry — the plist stays as it was.
+    assert preflight.node_path_fragment() == str(installation / "bin")
 
 
-def test_no_npx_records_nothing_rather_than_a_guess(monkeypatch) -> None:
+def test_a_divergent_npx_records_both_directories_with_node_first(tmp_path, monkeypatch) -> None:
+    # A global npm prefix can carry `npx` while `node` lives elsewhere. Recording only npx's
+    # directory passed setup and then failed under the supervisor, where nothing else is on PATH.
+    node_dir = tmp_path / "node" / "bin"
+    npx_dir = tmp_path / "npm-global" / "bin"
+    for directory in (node_dir, npx_dir):
+        directory.mkdir(parents=True)
+    binaries = {"node": str(node_dir / "node"), "npx": str(npx_dir / "npx")}
+    monkeypatch.setattr(preflight.shutil, "which", lambda name: binaries.get(name))
+
+    # Node first: npx's shebang looks `node` up on PATH, and the node the gates checked must win
+    # over any stray build sitting beside npx.
+    assert preflight.node_path_fragment() == f"{node_dir}:{npx_dir}"
+
+
+def test_a_missing_binary_records_nothing_rather_than_a_guess(monkeypatch) -> None:
     monkeypatch.setattr(preflight.shutil, "which", lambda name: None)
-    assert preflight.node_bin_dir() == ""
+    assert preflight.node_path_fragment() == ""
+
+    # npx alone is not enough: the fragment exists to reach both.
+    monkeypatch.setattr(
+        preflight.shutil, "which", lambda name: "/usr/local/bin/npx" if name == "npx" else None
+    )
+    assert preflight.node_path_fragment() == ""

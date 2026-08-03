@@ -47,6 +47,9 @@ def world(monkeypatch, xdg_tmp, tree):
     monkeypatch.setattr(preflight, "check_node", lambda: checks.ok("node", "v22"))
     monkeypatch.setattr(preflight, "check_chrome", lambda chrome_bin=None: checks.ok("chrome", "-"))
     monkeypatch.setattr(preflight, "check_claude", lambda cfg: checks.ok("claude CLI", "signed in"))
+    monkeypatch.setattr(
+        preflight, "check_supervised_spawn", lambda cfg: checks.ok("browser server", "-")
+    )
     monkeypatch.setattr(preflight, "prewarm_playwright", lambda cfg: checks.ok("playwright", "-"))
     monkeypatch.setattr(preflight, "agent_context", lambda env=None: "")
     monkeypatch.setattr(passes, "resolve_claude_bin", lambda cfg: "/opt/claude/bin/claude")
@@ -339,6 +342,20 @@ def test_a_failing_prewarm_is_a_warning_not_a_stop(world, monkeypatch, capsys) -
     assert "⚠️ playwright" in capsys.readouterr().out
 
 
+def test_a_browser_server_the_worker_cannot_spawn_stops_setup(world, monkeypatch, capsys) -> None:
+    # The download can fail and still leave a working install; a spawn the worker cannot perform
+    # cannot — it is a dead browser lane at the first publish, with nothing said about it.
+    monkeypatch.setattr(
+        preflight,
+        "check_supervised_spawn",
+        lambda cfg: checks.fail("browser server", "npx is unreachable", "re-run ./setup"),
+    )
+
+    assert setup_main("--yes", "--manual") == 1
+    assert "npx is unreachable" in capsys.readouterr().err
+    assert not paths.current().exists()
+
+
 def test_an_agent_session_stops_setup_asking_questions(world, monkeypatch, capsys) -> None:
     monkeypatch.setattr(preflight, "agent_context", lambda env=None: "CLAUDECODE")
     monkeypatch.setattr(setup_cli.Ui, "_detect_interactive", lambda self: True)
@@ -598,10 +615,23 @@ def test_an_unset_shell_says_so_rather_than_naming_nothing(world, monkeypatch, c
 def test_setup_pins_the_node_directory_into_the_workers_job(world, monkeypatch) -> None:
     # The ordering is the point: the directory is recorded while a real shell's PATH is available,
     # and the job definition is rendered afterwards, so the worker is started able to find npx.
-    monkeypatch.setattr(preflight, "node_bin_dir", lambda: "/opt/node-versions/v22/bin")
+    monkeypatch.setattr(preflight, "node_path_fragment", lambda: "/opt/node-versions/v22/bin")
 
     assert setup_main("--yes", "--manual") == 0
 
     assert config.load().node_bin_dir == "/opt/node-versions/v22/bin"
     plist = (paths.config_dir() / "com.selly.agent.plist").read_text()
     assert "/opt/node-versions/v22/bin" in plist
+
+
+def test_setup_records_every_directory_the_worker_needs_not_just_the_first(
+    world, monkeypatch
+) -> None:
+    # Where `node` and `npx` live apart, both directories are recorded and both reach the job.
+    fragment = "/opt/node/bin:/usr/local/npm-global/bin"
+    monkeypatch.setattr(preflight, "node_path_fragment", lambda: fragment)
+
+    assert setup_main("--yes", "--manual") == 0
+
+    assert config.load().node_bin_dir == fragment
+    assert fragment in (paths.config_dir() / "com.selly.agent.plist").read_text()
