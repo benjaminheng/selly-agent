@@ -3,18 +3,23 @@
 `pass run` posts to the daemon's control route rather than writing selly.db directly — one writer
 per store holds at the process level too. `harness config --attended` sets up an attended Claude
 Code session against the same daemon MCP server (same tools, same state) as headless passes: the
-.mcp.json, the slash commands, and a CLAUDE.md. Both read the attended token from the config-dir
-secret; the daemon must be running.
+.mcp.json, the slash commands, and a CLAUDE.md. `chat` is the door a seller actually uses: the same
+config, written to a fixed place, then Claude Code launched in it. All three read the attended
+token from the config-dir secret; the daemon must be running.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
 from selly_agent import config, control, paths, skills
+
+# The seam tests replace to observe the launch instead of becoming a Claude Code session.
+_exec = os.execvp
 
 
 def run(args) -> int:
@@ -120,17 +125,20 @@ def _claude_md(skills_dir: Path) -> str:
     return _CLAUDE_MD.format(skill_lines=lines)
 
 
-def harness_config(directory=None) -> int:
+def harness_config(directory=None, *, quiet: bool = False) -> int:
     """`selly-agent harness config --attended [--dir DIR]` — write the attended session's config:
     a .mcp.json pointed at the daemon's MCP server with the attended token, the slash commands,
     and a CLAUDE.md.
 
     Takes the destination directly rather than a parsed-args object, so the installer can
-    generate the same workspace at its own fixed location without fabricating one.
+    generate the same workspace at its own fixed location without fabricating one. `quiet` is for
+    callers this is a step of rather than the point of — listing seven paths is the useful answer
+    to `harness config`, and preamble in front of a session someone asked to start.
 
     No .claude/settings.json: an attended session is the seller's own, and its permissions are
-    theirs to set. Command bodies reference the skill files by path rather than inlining them, so
-    an update changes what they say without the files being rewritten.
+    theirs to set — and this rewrites only the three things it generates, so a permission granted
+    in a past session survives. Command bodies reference the skill files by path rather than
+    inlining them, so an update changes what they say without the files being rewritten.
     """
     token = control.require_token()
     if not token:
@@ -163,9 +171,68 @@ def harness_config(directory=None) -> int:
     claude_md.write_text(_claude_md(skills_dir))
     written.append(claude_md)
 
-    for path in written:
-        print(f"wrote {path}")
+    if not quiet:
+        for path in written:
+            print(f"wrote {path}")
     return 0
+
+
+def attended_dir() -> Path:
+    """Where the attended workspace lives — a fixed, documented place rather than wherever the
+    terminal happened to be, because it is what the installer provisions and `chat` launches."""
+    return paths.data_root() / "attended"
+
+
+def chat(args=None) -> int:
+    """`selly-agent chat` — regenerate the attended workspace, then become a Claude Code session.
+
+    Regenerated per launch rather than trusted from install time: the .mcp.json carries the
+    daemon's port and the attended token, and an update or a rotated token would otherwise leave a
+    session pointed at nothing.
+
+    The daemon is checked before the workspace is written, because every tool this session has is
+    served by it — launched against a stopped daemon, the session comes up with no way to read or
+    change anything and no obvious reason why.
+    """
+    token = control.require_token()
+    if not token:
+        return 1
+    port = config.load().http_port
+    try:
+        status, body = control.get(port, token, "/control/channel-status")
+    except control.DaemonUnreachable:
+        print(
+            "selly-agent: the daemon is not running — start it with `selly-agent daemon start`",
+            file=sys.stderr,
+        )
+        return 1
+    if status != 200:
+        print(f"selly-agent: {body.get('error', f'HTTP {status}')}", file=sys.stderr)
+        return 1
+
+    dest = attended_dir()
+    if harness_config(dest, quiet=True) != 0:
+        return 1
+
+    from selly_agent import passes
+
+    binary = passes.resolve_claude_bin(config.load())
+    if binary is None:
+        print(
+            "selly-agent: claude binary not found — set claude_bin in config or add it to PATH",
+            file=sys.stderr,
+        )
+        return 1
+
+    # exec inherits the file descriptors but not Python's own buffers, so anything still sitting
+    # in them is lost rather than printed — silently, and only when stdout is a pipe.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # Replace this process rather than parenting the session: signals and the tty then behave
+    # exactly as if the seller had run `claude` themselves. Nothing can run after this line.
+    os.chdir(dest)
+    _exec(binary, [binary])
+    return 0  # pragma: no cover — exec does not return
 
 
 def provision(args) -> int:

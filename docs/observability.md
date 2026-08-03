@@ -22,7 +22,7 @@ any live subscriber; a subscriber that raises never breaks a publish.
 
 ### Wire shape
 
-`event_to_wire` is the one serializer: `inspect --json` NDJSON lines and the web
+`event_to_wire` is the one serializer: `logs --json` NDJSON lines and the web
 tail's `/events.json` rows are byte-identical in shape.
 
 ```json
@@ -72,7 +72,7 @@ so `pass.tool_use` and `tool.call` are two separate records of the same call, no
 something to fold together. The one `tool.error` with no `call_id` is the
 validation failure — it fires before a call exists, so there is nothing to pair.
 
-## `selly-agent inspect`
+## `selly-agent logs`
 
 A read-only tail over its own connection: it needs no cooperation from the daemon
 and works whether or not one is running, including against a stopped daemon's
@@ -86,21 +86,31 @@ history (WAL gives concurrent readers by construction).
 | `--pass <id>` | one pass's events, harness and server interleaved |
 | `--kind <k>` | an explicit request, so it shows whatever it asks for regardless of level |
 | `--all` | lift the level floor to include the `routine` heartbeat |
+| `--web` | open the web tail below instead of printing (needs the daemon) |
 
 Without `--all` or `--kind`, the floor is `info`: the heartbeat is hidden. The
 text format is one line per event (`time  kind  pass=…  payload`) and is
 deliberately plain — colorized machine output is `--json` piped through `jq -c`.
 
+`--web` composes only with `--since`. The other flags are refused rather than
+silently ignored — the page has its own equivalents.
+
 ## The web tail
 
 `http://127.0.0.1:<http_port>/tail?token=<attended-token>` (the token is a 0600
-file in the config dir). The page is `data/tail.html`, a packaged asset read per
-request; it polls `/events.json` and appends to the DOM.
+file in the config dir); `selly-agent logs --web` composes and opens it. The page
+is `data/tail.html`, a packaged asset read per request; it polls `/events.json`
+and appends to the DOM.
+
+It opens on the **newest** events rather than the oldest, so one request seeds
+what you see and an idle agent still opens on what it last did. The `routine`
+tier never reaches this page at all — the heartbeat is most of the volume and none
+of what a tail is opened to read; `logs --all` is where it is answered.
 
 This is the **human** surface, and the split is deliberate: the NDJSON stream
 above stays the canonical machine form *and* the debugging tool, which is what
-frees the page to hide and abbreviate aggressively. Nothing is lost doing so —
-every row expands to its own wire JSON, and one toggle reveals everything hidden.
+frees the page to hide and abbreviate aggressively. Every row it shows expands to
+its own wire JSON, and one toggle reveals the rest.
 
 ### A row
 
@@ -131,10 +141,10 @@ not by escaping.
 | Control | Behavior |
 |---|---|
 | **follow** | On by default: new rows keep the viewport at the bottom. Scrolling up hands control back; scrolling to the bottom, or ticking the box, resumes. |
-| **verbose** | Reveals what is hidden by default — the `routine` tier, thinking-token ticks, and the handful of kinds redundant beside the rows they accompany. |
+| **verbose** | Reveals what is hidden by default — thinking-token ticks and the kinds redundant beside the rows they accompany. Not the `routine` tier, which never reaches the page. |
 | **pass pill** | Isolates one pass (see above). |
-| `?since=` | Lookback window on load, in the `--since` grammar. Defaults to `1h`, so a load starts near now instead of replaying the retention window. |
-| `?json=true` | The zero-renderer view: one raw JSON line per event, matching `inspect --json`. |
+| `?since=` | Narrows the load to a lookback window, in the `--since` grammar. No default: a load opens on the newest events whatever their age. |
+| `?json=true` | The zero-renderer view: one raw JSON line per event, matching `logs --json`. |
 
 Thinking *content* never enters the log at all — the stream parser drops those
 blocks — so the per-tick `pass.raw` marker is the only thinking artifact, and the
