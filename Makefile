@@ -49,7 +49,9 @@ dist:
 	@cp setup $(STAGE)/
 	@find $(STAGE) -name '__pycache__' -type d -prune -exec rm -rf {} +
 	@find $(STAGE) -name '*.py[co]' -delete
-	@tar -czf $(DIST)/selly-agent-$(VERSION).tar.gz -C $(DIST) selly-agent-$(VERSION)
+# COPYFILE_DISABLE: macOS tar otherwise writes an AppleDouble `._name` entry beside every file
+# carrying extended attributes, and those ship inside the published archive.
+	@COPYFILE_DISABLE=1 tar -czf $(DIST)/selly-agent-$(VERSION).tar.gz -C $(DIST) selly-agent-$(VERSION)
 	@rm -rf $(STAGE)
 	@cd $(DIST) && { shasum -a 256 selly-agent-$(VERSION).tar.gz 2>/dev/null \
 		|| sha256sum selly-agent-$(VERSION).tar.gz; } > SHA256SUMS
