@@ -108,6 +108,38 @@ def browser_profile_dir() -> Path:
     return data_root() / "browser-profile"
 
 
+def tools_dir() -> Path:
+    """Third-party binaries we fetch and own, kept out of every directory somebody else uses."""
+    return data_root() / "tools"
+
+
+def uv_path() -> Path:
+    """Our own copy of uv, invoked by absolute path.
+
+    Deliberately not ~/.local/bin: a user may have their own uv there, and taking that name is not
+    ours to do. Under the data root, an uninstall removes it by removing that root.
+    """
+    return tools_dir() / ("uv.exe" if os.name == "nt" else "uv")
+
+
+def venv_dir(tree: Path) -> Path:
+    """The dependency venv belonging to a tree — a version directory, or a dev checkout."""
+    return Path(tree) / ".venv"
+
+
+def venv_python(tree: Path) -> Path:
+    """The interpreter inside a tree's venv: what the launcher re-execs onto and what the
+    supervised job's definition names.
+
+    bin/ vs Scripts/ is virtual-environment layout, not host integration, which is why it is
+    answered here and not behind the platform seam — that seam refuses an unsupported host, and
+    this has to resolve while a runtime is still being established.
+    """
+    scripts = "Scripts" if os.name == "nt" else "bin"
+    name = "python.exe" if os.name == "nt" else "python"
+    return venv_dir(tree) / scripts / name
+
+
 # --- state_dir children --------------------------------------------------------------------
 
 

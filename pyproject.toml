@@ -5,23 +5,38 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "selly-agent"
 description = "Local single-tenant agent that sells/buys on P2P marketplaces from the user's own machine"
-requires-python = ">=3.9"
+# uv pins the interpreter (see .python-version), so this floor describes the code, not a
+# precondition a user's machine could fail to meet.
+requires-python = ">=3.14"
 dynamic = ["version"]
-# No runtime dependencies, ever: the user's own python3 is the runtime, and the
-# test suite mechanically rejects any non-stdlib import under src/.
-dependencies = []
+# Each runtime dependency is a supply-chain grant on a machine holding marketplace credentials
+# and a logged-in browser, so adding one takes three edits: here, a relocked uv.lock, and
+# ALLOWED_RUNTIME_DEPS in tests/guard/test_stdlib_only.py, which fails the suite otherwise.
+# The major bound keeps a major bump a reviewed diff rather than a relock.
+dependencies = [
+    "psutil>=7,<8",
+]
 
-[project.optional-dependencies]
+# Dev tooling. A dependency *group* rather than an extra, because uv installs groups by default
+# and drops them with --no-dev: one flag separates a dev tree from what a user's install gets.
+[dependency-groups]
 dev = [
     "pytest",
     "ruff",
-    # dev-only static type checker (never shipped): enforces the store's declared record/ack
+    # static type checker (never shipped): enforces the store's declared record/ack
     # shapes via `make typecheck`. Basic mode, so only annotated code is checked.
     "pyright",
-    # dev-only: the official MCP SDK drives our server in the conformance suite (never shipped;
-    # it needs 3.10+, so those tests skip on the 3.9 runtime floor).
-    "mcp; python_version >= '3.10'",
+    # the official MCP SDK drives our server in the conformance suite (never shipped).
+    # Held below 2.0, which renamed the streamable-HTTP client entry point; moving the
+    # conformance client to that API is its own change.
+    "mcp>=1.29,<2",
 ]
+
+[tool.uv]
+# Dependencies only — never selly-agent itself. An editable install would build this package on
+# the user's machine mid-install and leave a .pth holding an absolute path into a version
+# directory that update prunes. The launcher and pytest both put src/ on the path already.
+package = false
 
 [tool.setuptools.dynamic]
 version = { attr = "selly_agent.__version__" }
@@ -37,6 +52,7 @@ selly_agent = [
     "migrations/*/*.sql",
     "data/*.json",
     "data/*.html",
+    "data/*.txt",
     "skills/*.md",
     "skills/commands/*.md",
 ]
@@ -46,8 +62,8 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.ruff]
-# py39 keeps ruff a mechanical enforcer of the 3.9 runtime floor: 3.10+ syntax
-# (match, runtime X | Y unions) is flagged at lint time.
+# Deliberately behind requires-python: the tree is still written in 3.9-compatible syntax, and
+# pinning ruff here keeps modernizing it one reviewable sweep rather than a drip of new syntax.
 target-version = "py39"
 line-length = 100
 src = ["src", "tests"]
@@ -76,4 +92,4 @@ ban-relative-imports = "all"
 # drowned by the rest of the still-untyped tree; widening is a separate decision.
 include = ["src/selly_agent/store.py"]
 typeCheckingMode = "basic"
-pythonVersion = "3.9"
+pythonVersion = "3.14"

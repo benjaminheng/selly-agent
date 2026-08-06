@@ -19,15 +19,25 @@ import shutil
 from pathlib import Path
 
 from selly_agent import paths
+from selly_agent.installer import runtime
 
 # What a version directory holds: the launcher and the package (whose migrations, registries and
-# skills ship as package data inside it). A checkout's .git, tests and dev Makefile are not part
-# of a running install. `make dist` packs this same set, so installing from a checkout and
-# installing from a release tarball produce identical trees.
+# skills ship as package data inside it), plus the three files describing the runtime — which are
+# what let a version build its own venv, and so what makes it self-contained enough to roll back
+# to. A checkout's .git, tests and dev Makefile are not part of a running install. `make dist`
+# packs this same set, so installing from a checkout and from a release tarball match.
 VERSION_DIRS = ("bin", "src")
-VERSION_FILES = ("setup", "README.md", "LICENSE")
+VERSION_FILES = (
+    "setup",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+    "uv.lock",
+    ".python-version",
+)
 
-_IGNORED = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo")
+# .venv holds absolute paths, so a dev checkout's would be wrong here. Every version builds its own.
+_IGNORED = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".venv")
 
 # How many installed versions to keep. Enough that a rollback has somewhere to go and the one
 # before it is still around for comparison; not so many that the data root grows without bound.
@@ -224,11 +234,20 @@ def install_dev(checkout) -> Path:
     return swap_current(Path(checkout).resolve())
 
 
-def install_version(tree, version: str) -> Path:
-    """The default install and every update: stage the tree as a version and make it current."""
+def install_version(tree, version: str, *, provision=None) -> Path:
+    """The default install and every update: stage the tree as a version, give it its
+    dependencies, then make it current.
+
+    The venv is built after the rename into versions/<v> and before the swap, for two separate
+    reasons. After, because a venv records absolute paths and one built in the staging directory
+    would describe the wrong place. Before, because a version without dependencies must never
+    become the live one: a failure here leaves the previous version running, which is what makes
+    a failed update recoverable.
+    """
     paths.ensure_runtime_dirs()
     _guard_current_is_ours()
     dest = stage_version(tree, version)
+    (provision if provision is not None else runtime.provision)(dest)
     swap_current(dest)
     return dest
 
@@ -410,7 +429,11 @@ def layout_preview(platform=None) -> list:
     """Every location an install writes to, rendered from the path authority itself so the
     preview cannot drift from what actually happens."""
     rows = [
-        (paths.data_root(), "code (versions/), the database, photos, the browser profile"),
+        (
+            paths.data_root(),
+            "code (versions/, each with its own dependencies), the Python toolchain, "
+            "the database, photos, the browser profile",
+        ),
         (paths.state_dir(), "logs, transcripts, database backups"),
         (paths.config_dir(), "config.json and secrets (0600)"),
         (paths.cache_dir(), "downloaded release archives"),

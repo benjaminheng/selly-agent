@@ -32,6 +32,19 @@ def _resolve_platform(platform: Platform | None) -> Platform:
     return platform if platform is not None else get_platform()
 
 
+def job_interpreter() -> Path:
+    """The interpreter to name in the job definition.
+
+    Through `current` rather than the version behind it, so the definition stays true across an
+    update. Falls back to whatever is running us when there is no venv — a checkout pointed at by
+    `./setup --dev` before bootstrapping — because naming an interpreter that does not exist gives
+    a job that fails to start with nothing explaining why, and the launcher re-execs onto the venv
+    by itself once there is one.
+    """
+    interpreter = paths.venv_python(paths.current())
+    return interpreter if interpreter.exists() else Path(os.path.realpath(sys.executable))
+
+
 def _resolve_label(platform: Platform, label: str | None) -> str:
     if label:
         return label
@@ -110,8 +123,12 @@ def install(*, mode: str, label: str | None = None, platform: Platform | None = 
             print(exc.fix, file=sys.stderr)
         return 2
 
-    interpreter = os.path.realpath(sys.executable)
-    program_args = [interpreter, str(paths.current() / "bin" / "selly-agent"), "daemon", "run"]
+    program_args = [
+        str(job_interpreter()),
+        str(paths.current() / "bin" / "selly-agent"),
+        "daemon",
+        "run",
+    ]
     plist_text = platform.render_supervisor(
         label=label,
         program_args=program_args,

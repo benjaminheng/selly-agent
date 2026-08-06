@@ -3,28 +3,13 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
 from selly_agent import paths
 from selly_agent.installer import materialize
 from selly_agent.installer.materialize import LayoutError
-
-
-@pytest.fixture
-def tree(tmp_path):
-    """A minimal selly-agent tree: what a checkout or an unpacked release looks like."""
-    root = tmp_path / "checkout"
-    (root / "bin").mkdir(parents=True)
-    (root / "bin" / "selly-agent").write_text("#!/usr/bin/env python3\n")
-    (root / "src" / "selly_agent" / "__pycache__").mkdir(parents=True)
-    (root / "src" / "selly_agent" / "__init__.py").write_text("__version__ = '9.9.9'\n")
-    (root / "src" / "selly_agent" / "__pycache__" / "stale.pyc").write_text("junk")
-    (root / "README.md").write_text("docs\n")
-    (root / ".git").mkdir()
-    (root / ".git" / "HEAD").write_text("ref: refs/heads/master\n")
-    return root
-
 
 # --- staging and swapping -----------------------------------------------------------------
 
@@ -44,6 +29,42 @@ def test_staging_leaves_dev_scaffolding_behind(xdg_tmp, tree) -> None:
     dest = materialize.install_version(tree, "1.0.0")
     assert not (dest / ".git").exists()
     assert not (dest / "src" / "selly_agent" / "__pycache__").exists()
+
+
+def test_a_version_carries_the_files_it_needs_to_build_its_own_venv(xdg_tmp, tree) -> None:
+    """Without these three a version cannot install its dependencies, which means it cannot be
+    rolled back to either."""
+    dest = materialize.install_version(tree, "1.0.0")
+    for name in ("pyproject.toml", "uv.lock", ".python-version"):
+        assert (dest / name).is_file(), name
+
+
+def test_the_source_trees_venv_is_never_copied(xdg_tmp, tree, stub_provision) -> None:
+    """A venv records absolute paths, so copying one would describe the checkout it came from.
+    Each version gets its own instead."""
+    dest = materialize.install_version(tree, "1.0.0")
+    assert stub_provision == [dest]
+    assert paths.venv_python(dest).is_file()
+
+
+def test_a_version_is_provisioned_before_it_becomes_current(xdg_tmp, tree, monkeypatch) -> None:
+    """A version with no dependencies must never be the live one: if provisioning fails, the
+    previous version is still what current points at."""
+    materialize.install_version(tree, "1.0.0")
+
+    def explode(dest):
+        raise RuntimeError("no network")
+
+    monkeypatch.setattr(materialize.runtime, "provision", explode)
+    with pytest.raises(RuntimeError):
+        materialize.install_version(tree, "2.0.0")
+    assert materialize.current_version() == "1.0.0"
+
+
+def test_provisioning_is_injectable(xdg_tmp, tree) -> None:
+    seen = []
+    materialize.install_version(tree, "1.0.0", provision=seen.append)
+    assert seen == [paths.versions_dir() / "1.0.0"]
 
 
 def test_a_crash_between_staging_and_the_swap_leaves_current_valid(xdg_tmp, tree) -> None:
@@ -325,3 +346,16 @@ def test_a_leftover_from_a_crashed_swap_is_swept(xdg_tmp, tree) -> None:
 def test_rc_candidates_cover_every_shell_we_might_have_written_to(xdg_tmp) -> None:
     names = {path.name for path in materialize.rc_candidates()}
     assert {".zshrc", ".bash_profile", ".profile"} <= names
+
+
+def test_the_release_archive_carries_what_a_version_directory_needs() -> None:
+    """`make dist` and staging must agree. They are separate lists in separate languages, so a
+    file added to one and not the other yields a release that installs but cannot run."""
+    makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text()
+    packed = " ".join(line for line in makefile.splitlines() if line.strip().startswith("@cp"))
+    for name in materialize.VERSION_FILES:
+        if name == "LICENSE":
+            continue  # copied conditionally; absent from the repo today
+        assert name in packed, f"{name} is staged into a version but not packed by `make dist`"
+    for name in materialize.VERSION_DIRS:
+        assert name in packed, name
