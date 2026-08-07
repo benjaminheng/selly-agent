@@ -1,0 +1,16 @@
+# The image builds its own runtime from the pin files, so a local venv, a local install's data
+# and VCS metadata are all context nobody reads.
+# A layer is immutable, so a secret copied into one survives being deleted later and travels
+# with any export of the image. Compose reads .env from here without it ever entering the build.
+.env
+.git
+.jj
+.local
+.venv*
+dist
+selly-data
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+*.egg-info
