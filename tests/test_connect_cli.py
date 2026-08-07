@@ -144,8 +144,17 @@ def test_prints_prominent_url_with_phone_wording(monkeypatch, stub_daemon, capsy
     rc = connect_cli.bind_flow(9999, "mcp-tok", interactive=False)
     assert rc == 0
     out = capsys.readouterr().out
-    assert "Open this link on the phone that has Telegram" in out
+    assert "Scan the code with the phone that has Telegram" in out
     assert "https://t.me/sellybot?start=n0" in out
+
+
+def test_prints_a_terminal_qr_above_the_link(monkeypatch, stub_daemon, capsys) -> None:
+    _pipe_stdin(monkeypatch, _TOKEN + "\n")
+    connect_cli.bind_flow(9999, "mcp-tok", interactive=False)
+    out = capsys.readouterr().out
+    qr_block = out.split("validated.", 1)[1].split("Scan the code", 1)[0]
+    assert "█" in qr_block  # the half-block QR sits between the identity and the guidance
+    assert "\x1b" not in out  # the render is colorless — nothing ANSI lands in a pipe or a log
 
 
 # --- timeout defaults ------------------------------------------------------------------------
