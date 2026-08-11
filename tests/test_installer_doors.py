@@ -23,11 +23,21 @@ from selly_agent.tools.registry import ToolContext
 
 
 class FakeBrowser:
-    """A browser client that records where it was sent and answers a scripted login state."""
+    """A browser client that records where it was sent and answers a scripted login state.
+
+    It knows which tab it is on, because the real client can lose that: bringing a tab forward
+    selects one before it can check which tab it got, and a select repoints every later call. So
+    `evaluate` answers about the current tab rather than unconditionally, and a scripted
+    `front_steals_the_tab` reproduces the case where that tab is no longer ours.
+    """
 
     def __init__(self, state="logged_in"):
         self.state = state
         self.visited = []
+        self.fronted = []
+        self.front_error = None
+        self.front_steals_the_tab = False
+        self.on_our_tab = True
         self.exclusive_depth = 0
 
     def exclusive(self):
@@ -46,9 +56,21 @@ class FakeBrowser:
 
     def navigate(self, url):
         self.visited.append(url)
+        self.on_our_tab = True
+
+    def ensure_frontmost(self, url):
+        assert self.exclusive_depth > 0, "the tab select must run under the navigate's hold"
+        if self.front_error is not None:
+            if self.front_steals_the_tab:
+                self.on_our_tab = False
+            raise self.front_error
+        self.fronted.append(url)
 
     def evaluate(self, function, **kwargs):
         assert self.exclusive_depth > 0, "the probe must run under the same hold as the navigate"
+        if not self.on_our_tab:
+            # Some page of the seller's, which a market's login artifact reads as signed out.
+            return {"state": "logged_out"}
         return {"state": self.state} if self.state else None
 
 
@@ -266,8 +288,70 @@ def test_connect_market_opens_the_regional_site_and_reports_the_probe(
     store.set_seller_config_section("basics", {"region": "SG"})
     status, body = _call(server, "POST", "/control/connect-market", body={"market": "carousell"})
     assert status == 200
-    assert body == {"market": "carousell", "url": "https://www.carousell.sg/", "state": "logged_in"}
+    assert body == {
+        "market": "carousell",
+        "url": "https://www.carousell.sg/",
+        "state": "logged_in",
+        "raise_window": True,
+    }
     assert browser.visited == ["https://www.carousell.sg/"]
+
+
+def test_connect_market_reports_the_sellers_window_preference(server, store) -> None:
+    """The CLI does the OS-level raise, but the setting lives in the daemon's store — so the
+    answer rides in the response for the CLI to obey."""
+    from tests.conftest import seed_setting
+
+    store.set_seller_config_section("basics", {"region": "SG"})
+    seed_setting(store, "raise_browser", False)
+    _status, body = _call(server, "POST", "/control/connect-market", body={"market": "carousell"})
+    assert body["raise_window"] is False
+
+
+def test_connect_market_brings_the_agents_own_tab_forward(server, store, browser) -> None:
+    store.set_seller_config_section("basics", {"region": "SG"})
+    _call(server, "POST", "/control/connect-market", body={"market": "carousell"})
+    assert browser.fronted == ["https://www.carousell.sg/"]
+
+
+def test_a_tab_that_will_not_come_forward_never_fails_the_sign_in(server, store, browser) -> None:
+    from selly_agent.browser.client import BrowserToolError
+
+    store.set_seller_config_section("basics", {"region": "SG"})
+    browser.front_error = BrowserToolError("the tab stayed hidden")
+    status, body = _call(server, "POST", "/control/connect-market", body={"market": "carousell"})
+    assert status == 200
+    assert body["state"] == "logged_in"
+
+
+def test_a_raise_that_lost_our_tab_reports_our_page_not_whatever_it_landed_on(
+    server, store, browser
+) -> None:
+    """The select that brings a tab forward happens before it can tell which tab it got, so a
+    failure can point every later call at the seller's own page — and the probe is a later call.
+    Answering about that page would report a signed-in seller as signed out."""
+    from selly_agent.browser.client import BrowserToolError
+
+    store.set_seller_config_section("basics", {"region": "SG"})
+    browser.front_error = BrowserToolError("selecting our own tab landed somewhere else")
+    browser.front_steals_the_tab = True
+    status, body = _call(server, "POST", "/control/connect-market", body={"market": "carousell"})
+    assert status == 200
+    assert body["state"] == "logged_in"
+    # Re-navigated first: the market is back in a tab of ours, which is what the probe answers for.
+    assert browser.visited == ["https://www.carousell.sg/"] * 2
+
+
+def test_login_probes_never_touch_the_tab_order(server, store, browser, chrome_up) -> None:
+    """The connect route is the one being asked for a window; a read probe that reordered tabs
+    would elbow the seller mid-browse — the anti-focus-stealing guarantee, pinned."""
+    from tests.conftest import seed_setting
+
+    store.set_seller_config_section("basics", {"region": "SG"})
+    seed_setting(store, "crosslist_markets", ["carousell"])
+    _call(server, "GET", "/control/market-login?market=carousell")
+    _call(server, "GET", "/control/market-logins")
+    assert browser.fronted == []
 
 
 def test_the_three_login_states_come_back_verbatim(server, store, browser, chrome_up) -> None:
