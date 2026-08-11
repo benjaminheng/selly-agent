@@ -99,16 +99,13 @@ CONVERSATIONS_LIST_JS = """async () => {
 #
 # Returns null when the message list cannot be identified — the caller must treat that as a failed
 # read, because an empty list would claim the conversation is over when we simply could not see it.
-CONVERSATION_TAIL_JS = """() => {
+#
+# The function is async because the chat messages are fetched after the page load event fires: a
+# synchronous read on a freshly navigated tab finds the pane but no bubbles yet, which the caller
+# cannot distinguish from a genuinely empty thread. Polling closes that gap without changing what
+# null vs [] means to the caller.
+CONVERSATION_TAIL_JS = """async () => {
   const cut = window.innerWidth * 0.35;
-  const panes = Array.from(document.querySelectorAll('div')).filter((el) => {
-    if (!/auto|scroll/.test(getComputedStyle(el).overflowY)) return false;
-    const r = el.getBoundingClientRect();
-    return r.width > 200 && r.height > 120 && r.left > cut;
-  });
-  if (panes.length !== 1) return null;
-  const pane = panes[0];
-  const pr = pane.getBoundingClientRect();
   const clickable = (el) => {
     for (let n = el, i = 0; n && i < 6; n = n.parentElement, i++) {
       if (getComputedStyle(n).cursor === 'pointer') return true;
@@ -122,22 +119,39 @@ CONVERSATION_TAIL_JS = """() => {
     }
     return false;
   };
-  const out = [];
-  pane.querySelectorAll('p').forEach((el) => {
-    if (el.children.length > 0) return;
-    const r = el.getBoundingClientRect();
-    if (r.width === 0) return;
-    const text = (el.textContent || '').trim();
-    if (!text || clickable(el) || !inBubble(el)) return;
-    const fromLeft = r.left - pr.left;
-    const fromRight = pr.right - r.right;
-    let side = 'center';
-    if (fromRight < fromLeft * 0.6) side = 'out';
-    else if (fromLeft < fromRight * 0.6) side = 'in';
-    out.push({ text: text.slice(0, 300), side: side, y: Math.round(r.top) });
-  });
-  out.sort((a, b) => a.y - b.y);
-  return out;
+  const read = () => {
+    const panes = Array.from(document.querySelectorAll('div')).filter((el) => {
+      if (!/auto|scroll/.test(getComputedStyle(el).overflowY)) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 200 && r.height > 120 && r.left > cut;
+    });
+    if (panes.length !== 1) return null;
+    const pane = panes[0];
+    const pr = pane.getBoundingClientRect();
+    const out = [];
+    pane.querySelectorAll('p').forEach((el) => {
+      if (el.children.length > 0) return;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0) return;
+      const text = (el.textContent || '').trim();
+      if (!text || clickable(el) || !inBubble(el)) return;
+      const fromLeft = r.left - pr.left;
+      const fromRight = pr.right - r.right;
+      let side = 'center';
+      if (fromRight < fromLeft * 0.6) side = 'out';
+      else if (fromLeft < fromRight * 0.6) side = 'in';
+      out.push({ text: text.slice(0, 300), side: side, y: Math.round(r.top) });
+    });
+    out.sort((a, b) => a.y - b.y);
+    return out;
+  };
+  const deadline = Date.now() + 5000;
+  let result = read();
+  while (result !== null && result.length === 0 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 250));
+    result = read();
+  }
+  return result;
 }"""
 
 # Submit the composed message, by dispatching the key the box listens for.
