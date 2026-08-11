@@ -20,14 +20,6 @@ Selly is a marketplace agent. It helps you list items on peer-to-peer marketplac
 - **Works in a visible browser.** Selly interacts with marketplaces through its own dedicated browser, and you can watch it work.
 - **Configured conversationally.** Ask Selly what settings are available. You may want to set the _persona_ setting to control how Selly speaks to buyers.
 
-## How it works
-
-![Architecture overview](docs/architecture-master.png)
-
-You interact with Selly through **control surfaces** — chat apps like Telegram, and agent harnesses like Claude Code. Behind those sits the **Selly daemon**, a single local process holding all of the core logic: a SQLite store, an event bus for scheduling, and an MCP server that everything the agent does goes through. The **agent harness and browser** are the only components outside the daemon; the harness drives the browser with Playwright, and the browser is where you are signed into your **marketplaces** and where buyers interact with your listings.
-
-For the full map, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
 ## Quick start
 
 This section assumes a native installation on Linux or MacOS. For installation guides for Windows or using Docker, see [docs/install.md](docs/install.md).
@@ -62,3 +54,10 @@ selly-agent healthcheck
 selly-agent update
 selly-agent uninstall --preserve-data   # --preserve-data will uninstall Selly but keep configuration and other data
 ```
+
+## How it works
+
+You interact with Selly through **control surfaces** — chat apps like Telegram, and agent harnesses like Claude Code. Behind those sits the **Selly daemon**, a single local process holding all of the core logic: a SQLite store, an event bus for scheduling, and an MCP server that everything the agent does goes through. The **agent harness and browser** are the only components outside the daemon; the harness drives the browser with Playwright, and the browser is where you are signed into your **marketplaces** and where buyers interact with your listings.
+
+For the full details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
