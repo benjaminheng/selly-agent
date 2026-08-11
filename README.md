@@ -7,11 +7,12 @@ Selly is a marketplace agent. It helps you list items on peer-to-peer marketplac
 
 ## Quick start
 
-This section assumes a native installation on Linux and MacOS. For installation guides for Windows or using Docker, see [docs/install.md](docs/install.md).
+This section assumes a native installation on Linux or MacOS. For installation guides for Windows or using Docker, see [docs/install.md](docs/install.md).
 
 Ensure pre-requisites:
 
 - **Browser:** Chrome or Chromium
+- **Node runtime and package manager:** Node.js and NPM
 - **Agent harness:** Claude Code (with Claude subscription)
 
 Clone the repository:

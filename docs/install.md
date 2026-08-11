@@ -66,17 +66,35 @@ Supported environment variables:
 
 ## Linux (native)
 
-> [!WARNING]  
-> Linux support is coming soon. However it is expected to be similar to MacOS, requiring no additional work.
+Requires a glibc distribution with systemd. Alpine and other musl distributions are not supported. The daemon runs as a systemd user unit in your desktop login session.
+
+Then:
 
 ```sh
 ./setup
+```
+
+Useful afterwards:
+
+```sh
+systemctl --user status selly-agent     # daemon status
+journalctl --user -u selly-agent        # startup failures
 ```
 
 ## MacOS (native)
 
 ```sh
 ./setup
+```
+
+## Windows (WSL)
+
+Ensure that systemd is enabled:
+
+```ini
+# /etc/wsl.conf
+[boot]
+systemd=true
 ```
 
 ## Windows (native)

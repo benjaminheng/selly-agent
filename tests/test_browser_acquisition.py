@@ -8,6 +8,8 @@ does: Node first, Chrome ensured on every call, the window announced when a laun
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from selly_agent import daemon
@@ -137,3 +139,92 @@ def test_every_acquisition_re_ensures_chrome_and_reuses_the_client(store, bus, m
     second = factory()
     assert first is second is holder["client"]
     assert len(ensures) == 2
+
+
+# --- finding the binary --------------------------------------------------------------------------
+
+
+def test_a_configured_path_wins_on_every_platform(monkeypatch) -> None:
+    """Checked first: a seller with Chrome somewhere unusual said so in config, and no amount of
+    searching should second-guess that."""
+    for platform in ("darwin", "linux"):
+        monkeypatch.setattr(chrome.sys, "platform", platform)
+        assert chrome.resolve_binary("/opt/my-chrome") == "/opt/my-chrome"
+
+
+def test_macos_answers_the_one_place_chrome_installs(monkeypatch) -> None:
+    monkeypatch.setattr(chrome.sys, "platform", "darwin")
+    assert chrome.resolve_binary() == chrome._CHROME_MACOS
+
+
+def test_linux_takes_the_first_candidate_it_can_find(monkeypatch) -> None:
+    """There is no single install location on Linux, so the ladder decides — Google's own package
+    ahead of a distribution's Chromium, since that is what the live install is tested against."""
+    monkeypatch.setattr(chrome.sys, "platform", "linux")
+    present = {"chromium": "/usr/bin/chromium", "google-chrome": "/usr/bin/google-chrome"}
+    monkeypatch.setattr(chrome.shutil, "which", present.get)
+    assert chrome.resolve_binary() == "/usr/bin/google-chrome"
+
+    del present["google-chrome"]
+    assert chrome.resolve_binary() == "/usr/bin/chromium"
+
+
+def test_linux_falls_back_to_the_path_the_deb_installs(monkeypatch, tmp_path) -> None:
+    """A supervised worker's PATH is minimal, so `which` can come up empty on a machine that does
+    have Chrome. The absolute path Google's .deb writes is the last thing tried."""
+    monkeypatch.setattr(chrome.sys, "platform", "linux")
+    monkeypatch.setattr(chrome.shutil, "which", lambda name: None)
+    real = tmp_path / "opt" / "google" / "chrome" / "chrome"
+    real.parent.mkdir(parents=True)
+    real.write_text("")
+    monkeypatch.setattr(chrome, "_CHROME_LINUX", ("google-chrome", str(real)))
+    assert chrome.resolve_binary() == str(real)
+
+
+def test_linux_with_no_chrome_answers_something_a_person_recognises(monkeypatch) -> None:
+    """The installer's gate reports "not found at X". An empty X would tell a seller nothing;
+    the package name tells them what to install."""
+    monkeypatch.setattr(chrome.sys, "platform", "linux")
+    monkeypatch.setattr(chrome.shutil, "which", lambda name: None)
+    monkeypatch.setattr(chrome, "_CHROME_LINUX", ("google-chrome", "/opt/nowhere/chrome"))
+    assert chrome.resolve_binary() == "google-chrome"
+
+
+def test_the_profile_locks_are_named_the_same_on_both_posix_platforms() -> None:
+    """Chrome writes these itself; they are not ours to translate per OS."""
+    assert chrome.SINGLETON_LOCKS == ("SingletonLock", "SingletonCookie", "SingletonSocket")
+
+
+# --- giving up on a launch when the daemon is stopping --------------------------------------------
+
+
+@pytest.fixture
+def launch_that_never_answers(monkeypatch):
+    """Chrome starts and never binds its port — what a headless machine does, and what a wrong
+    binary on the discovery ladder does."""
+    monkeypatch.setattr(chrome, "_last_failed_launch_ts", None)
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kw: False)
+    monkeypatch.setattr(chrome, "clear_stale_locks", lambda: [])
+    monkeypatch.setattr(chrome.subprocess, "Popen", lambda *a, **kw: None)
+
+
+def test_a_stop_during_the_launch_wait_gives_up_promptly(launch_that_never_answers) -> None:
+    """The daemon drains by waiting for its lanes, so a lane sitting out the whole launch wait is a
+    `daemon stop` that looks wedged for 20s. Chrome is detached and keeps coming up regardless."""
+    began = time.monotonic()
+    state = chrome.ensure_running(9222, wait_sec=30.0, should_stop=lambda: True)
+
+    assert state == chrome.UNAVAILABLE
+    assert time.monotonic() - began < 5.0
+
+
+def test_a_daemon_that_is_not_stopping_still_waits_the_launch_out(
+    launch_that_never_answers,
+) -> None:
+    """The predicate must not short-circuit an ordinary launch: a cold Chrome on a large profile
+    takes seconds, and giving up early would report a browser that was about to be there."""
+    began = time.monotonic()
+    state = chrome.ensure_running(9222, wait_sec=1.0, should_stop=lambda: False)
+
+    assert state == chrome.UNAVAILABLE
+    assert time.monotonic() - began >= 1.0

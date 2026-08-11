@@ -18,11 +18,14 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from selly_agent import paths
 
@@ -50,6 +53,17 @@ _last_failed_launch_ts: float | None = None
 
 _CHROME_MACOS = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
+# What a Linux desktop calls Chrome, most-preferred first: Google's own .deb/.rpm provides
+# `google-chrome`, the rest are the distributions' Chromium packages. The absolute path last is
+# where that .deb puts the binary, for a session whose PATH does not reach /usr/bin.
+_CHROME_LINUX = (
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "chromium-browser",
+    "/opt/google/chrome/chrome",
+)
+
 # What ensure_running found or did.
 READY = "ready"
 LAUNCHED = "launched"
@@ -66,7 +80,28 @@ def resolve_binary(chrome_bin: str | None = None) -> str:
     One answer for the launch, the by-hand hint, and the installer's "is Chrome even here" gate —
     a gate that checked a different path from the one the launch uses would pass and then fail.
     """
-    return chrome_bin or _CHROME_MACOS
+    if chrome_bin:
+        return chrome_bin
+    if sys.platform == "linux":
+        return _linux_chrome()
+    return _CHROME_MACOS
+
+
+def _linux_chrome() -> str:
+    """The first candidate this machine actually has, or the name to install when it has none.
+
+    A name rather than nothing, because the installer reports "not found at <this>" — which a
+    person can act on where an empty path is not.
+    """
+    for candidate in _CHROME_LINUX:
+        if candidate.startswith("/"):
+            if Path(candidate).exists():
+                return candidate
+        else:
+            found = shutil.which(candidate)
+            if found:
+                return found
+    return _CHROME_LINUX[0]
 
 
 def version_url(port: int) -> str:
@@ -161,6 +196,7 @@ def ensure_running(
     chrome_bin: str | None = None,
     wait_sec: float = LAUNCH_WAIT_SEC,
     may_launch: bool = True,
+    should_stop=None,
 ):
     """Make sure the agent's Chrome is answering on its debugging port, starting it if it is not.
 
@@ -218,6 +254,12 @@ def ensure_running(
             if is_ready(port):
                 _last_failed_launch_ts = None
                 return LAUNCHED
+            if should_stop is not None and should_stop():
+                # The daemon drains by waiting for its lanes, so a lane still sitting out this wait
+                # is a stop that looks wedged. Chrome is detached and comes up on its own; the next
+                # acquisition finds it ready.
+                log.info("stopping while waiting for Chrome on port %s — leaving it to start", port)
+                return UNAVAILABLE
         log.warning("started Chrome but it did not answer on port %s within %ss", port, wait_sec)
         _last_failed_launch_ts = time.monotonic()
         return UNAVAILABLE

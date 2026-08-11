@@ -1,10 +1,8 @@
 """The photo converter, against real image bytes.
 
-Every fixture here is generated in-test and decoded back, because what the photo pipeline depends
-on is the pixels that come out — orientation applied, never enlarged, always a JPEG the rail
-accepts — and an argv assertion could pin none of that. HEIC gets its own cases: it is the format
-a phone actually produces, no marketplace takes it, and it is the only one needing a decoder that
-Pillow does not ship.
+Every fixture is generated in-test and decoded back: what the pipeline depends on is the pixels
+that come out — orientation applied, never enlarged, always a JPEG — and an argv assertion could
+pin none of that. HEIC gets its own cases as the format a phone actually produces.
 """
 
 from __future__ import annotations
@@ -39,6 +37,21 @@ def _opened(path: Path):
         return image
 
 
+def _detailed(path: Path, size=(400, 300)) -> Path:
+    """A source with enough detail that the encoder's quality setting shows in the output. A flat
+    colour would compress to nothing at any quality and pin nothing."""
+    image = Image.new("RGB", size)
+    image.putdata(
+        [
+            ((x * 7) % 256, (y * 13) % 256, (x * y) % 256)
+            for y in range(size[1])
+            for x in range(size[0])
+        ]
+    )
+    image.save(path, format="PNG")
+    return path
+
+
 # --- the transform ----------------------------------------------------------------------------
 
 
@@ -70,11 +83,24 @@ def test_a_photo_already_inside_the_bound_is_never_enlarged(tmp_path) -> None:
 @pytest.mark.parametrize("fmt", ["JPEG", "HEIF"])
 def test_exif_orientation_is_baked_into_the_pixels(tmp_path, fmt) -> None:
     """A phone writes the picture unrotated and records which way is up in a tag. A marketplace
-    that ignores the tag shows the listing sideways, so the rotation is applied before upload —
-    which is what the OS tools used to do implicitly, and what a HEIC decoder must also do."""
+    that ignores the tag shows the listing sideways, so the rotation is applied before upload."""
     src = _write(tmp_path / "rotated.in", (120, 40), fmt=fmt, orientation=6)
     to_jpeg(src, tmp_path / "rotated.jpg", 1600)
     assert _opened(tmp_path / "rotated.jpg").size == (40, 120)
+
+
+def test_photos_are_not_written_at_the_encoders_default_quality(tmp_path) -> None:
+    """Pillow defaults to quality 75, below what sips and ImageMagick produced — a silent
+    downgrade of every listing photo, on the OS where the pipeline already worked. Compared
+    against a default-quality encode of the same pixels rather than a byte count that would
+    drift with the library."""
+    src = _detailed(tmp_path / "detail.png")
+    to_jpeg(src, tmp_path / "converted.jpg", 1600)
+
+    default_quality = tmp_path / "default.jpg"
+    _opened(src).save(default_quality, format="JPEG")
+
+    assert (tmp_path / "converted.jpg").stat().st_size > default_quality.stat().st_size
 
 
 def test_transparency_is_flattened_rather_than_refused(tmp_path) -> None:
