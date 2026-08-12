@@ -92,8 +92,8 @@ running daemon, which:
 
 1. validates them against the Discord API, writes them to a 0600 file, and mints a
    one-time **nonce**;
-2. returns an OAuth authorize link (zero-permission, `applications.commands` scope only
-   for future slash-command support) and starts the provider;
+2. returns a zero-permission OAuth authorize link (`scope=bot&permissions=0` — the bot
+   only ever DMs, so it needs no guild permission grant at all) and starts the provider;
 3. binds the DM from the first user who sends the nonce code — and no other.
 
 The flow is deliberately two-step: unlike Telegram's one-tap deep link, the seller
