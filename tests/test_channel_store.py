@@ -69,6 +69,18 @@ def test_rebind_new_bot_resets_welcome_and_commands(store) -> None:
     assert ch["commands_hash"] is None
 
 
+def test_arm_bind_accepts_a_discord_adapter(store) -> None:
+    store.arm_bind("SellyBot", "nonce-1", adapter="discord")
+    ch = store.get_channel()
+    assert ch["adapter"] == "discord"
+
+
+def test_arm_bind_still_defaults_to_telegram(store) -> None:
+    store.arm_bind("SellyBot", "nonce-1")
+    ch = store.get_channel()
+    assert ch["adapter"] == "telegram"
+
+
 def test_advance_offset_only_moves_forward(store) -> None:
     store.arm_bind("selly_bot", "n1")
     store.complete_bind(555, update_offset=10)

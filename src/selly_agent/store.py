@@ -2855,15 +2855,20 @@ class Store:
         rows = self._db.query("SELECT * FROM channel WHERE id = 1")
         return _channel_from_row(rows[0]) if rows else dict(_DEFAULT_CHANNEL)  # type: ignore[return-value]
 
-    def arm_bind(self, bot_username: str, bind_nonce: str) -> None:
+    def arm_bind(self, bot_username: str, bind_nonce: str, *, adapter: str = "telegram") -> None:
         """Reset the channel row for a fresh bind and mint the nonce, one transaction: chat_id
         NULL, cursor 0, the connecting bot's username, the new nonce. welcomed_at and commands_hash
-        survive only when the SAME bot re-binds — a re-connect must neither re-greet nor re-register
-        commands; a different bot (a new token) resets both, so the new bot greets and registers."""
+        survive only when the SAME bot on the SAME adapter re-binds — a re-connect must neither
+        re-greet nor re-register commands; a different bot, or a switch to the other provider,
+        resets both, so the new bot greets and registers."""
         now = _now()
         with self._db.transaction() as conn:
             existing = conn.execute("SELECT * FROM channel WHERE id = 1").fetchone()
-            if existing is not None and existing["bot_username"] == bot_username:
+            if (
+                existing is not None
+                and existing["bot_username"] == bot_username
+                and existing["adapter"] == adapter
+            ):
                 welcomed_at = existing["welcomed_at"]
                 commands_hash = existing["commands_hash"]
             else:
@@ -2874,8 +2879,8 @@ class Store:
                 "INSERT INTO channel "
                 "(id, adapter, bot_username, chat_id, update_offset, bind_nonce, "
                 " welcomed_at, commands_hash, bound_ts, updated_ts) "
-                "VALUES (1, 'telegram', ?, NULL, 0, ?, ?, ?, NULL, ?)",
-                (bot_username, bind_nonce, welcomed_at, commands_hash, now),
+                "VALUES (1, ?, ?, NULL, 0, ?, ?, ?, NULL, ?)",
+                (adapter, bot_username, bind_nonce, welcomed_at, commands_hash, now),
             )
 
     def complete_bind(self, chat_id: int, update_offset: int) -> None:
