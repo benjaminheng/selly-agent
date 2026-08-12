@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import time
 
 from selly_agent.channel.discord.ws_client import ConnectionClosed, connect
 
@@ -137,15 +138,28 @@ class GatewaySession:
         """The steady-state loop: race "a message arrived" against "the heartbeat is due", for as
         long as `stop_event` isn't set. Raises ConnectionClosed on a close frame, a zombied
         connection (no ACK before the next heartbeat), or Reconnect/non-resumable Invalid Session —
-        the caller decides whether to Resume or re-Identify from there."""
+        the caller decides whether to Resume or re-Identify from there.
+
+        The heartbeat deadline is an absolute wall-clock time (`next_heartbeat_at`), computed once
+        when due and left alone until a heartbeat is actually sent — not recomputed on every loop
+        iteration. A fresh `wait_for` recomputed from the full interval on every inbound message
+        would never reach zero on a connection that's receiving messages more often than the
+        heartbeat interval (plausible during an active DM conversation, since Discord's real
+        interval is ~41.25s), so heartbeats would never fire and Discord would eventually close the
+        connection as a zombie — the opposite of what this loop exists to prevent."""
         first_heartbeat = True
+        next_heartbeat_at: float | None = None
         while not stop_event.is_set():
-            wait_for = self._heartbeat_interval_sec * (random.random() if first_heartbeat else 1.0)
-            first_heartbeat = False
+            if next_heartbeat_at is None:
+                jitter = random.random() if first_heartbeat else 1.0
+                next_heartbeat_at = time.monotonic() + self._heartbeat_interval_sec * jitter
+                first_heartbeat = False
+            wait_for = max(0.0, next_heartbeat_at - time.monotonic())
             if not self._ws.wait_readable(wait_for):
                 if self._ack_pending:
                     raise ConnectionClosed("zombied: no Heartbeat ACK before the next was due")
                 self._send_heartbeat()
+                next_heartbeat_at = None  # re-armed (full interval) on the next loop iteration
                 continue
             message = json.loads(self._ws.recv_text())
             if message.get("s") is not None:
