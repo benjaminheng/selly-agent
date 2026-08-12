@@ -73,6 +73,62 @@ def test_register_configured_starts_only_configured(bus) -> None:
     assert on.started == 1 and off.started == 0
 
 
+# --- only one provider runs at a time (the channel row is a singleton bound to one adapter) --
+
+
+def test_register_deregisters_any_other_running_provider(bus) -> None:
+    """Reproduces the collision: both providers register scheduler tasks under identical literal
+    names (notice_drain/typing_pulse — see channel/discord/provider.py, channel/telegram/
+    provider.py). Before this fix, `register` never tore down a different provider that was
+    already running, so switching providers left the old one's handle (and, in production, its
+    scheduler task registrations) dangling — and a later reconnect back to the first provider was
+    a no-op that never reclaimed its scheduler lanes, silently routing its notices through the
+    other provider's transport instead."""
+    telegram = _FakeProvider(configured=True)
+    discord = _FakeProvider(configured=True)
+    mgr = _manager({"telegram": telegram, "discord": discord}, bus)
+
+    mgr.register("telegram")
+    assert telegram.started == 1
+    assert telegram.handle.shutdowns == 0
+
+    mgr.register("discord")  # switching providers must tear the old one down
+    assert discord.started == 1
+    assert telegram.handle.shutdowns == 1  # telegram was deregistered, not left dangling
+
+    mgr.register("telegram")  # reconnecting telegram must not be a no-op: discord is running
+    assert telegram.started == 2  # started fresh, not skipped as "already running"
+    assert discord.handle.shutdowns == 1
+
+
+class _FakeStore:
+    def __init__(self, adapter: str):
+        self._adapter = adapter
+
+    def get_channel(self):
+        return {"adapter": self._adapter}
+
+
+def test_register_configured_prefers_the_bound_adapter_when_multiple_are_configured(bus) -> None:
+    """A seller who tried both providers at different times can leave both token files behind
+    (`is_configured()` true for both) even though only one was ever actually bound. Boot must
+    start only the one the channel row's `adapter` says is bound, not blindly start every
+    configured provider — dict iteration order, not the seller's actual bound provider, would
+    otherwise decide which one wins (via `register`'s own mutual-exclusion teardown)."""
+    telegram = _FakeProvider(configured=True)
+    discord = _FakeProvider(configured=True)
+    mgr = ChannelManager(
+        providers={"telegram": telegram, "discord": discord},
+        bus=bus,
+        store=_FakeStore(adapter="discord"),
+        config=Config(),
+        scheduler=None,
+    )
+    mgr.register_configured()
+    assert discord.started == 1
+    assert telegram.started == 0
+
+
 def test_shutdown_all_stops_running(bus) -> None:
     p = _FakeProvider(configured=True)
     mgr = _manager({"telegram": p}, bus)

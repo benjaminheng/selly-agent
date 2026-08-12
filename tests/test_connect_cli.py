@@ -277,7 +277,9 @@ def test_discord_interactive_getpass_interrupt_exits_2(monkeypatch, capsys) -> N
     assert rc == 2
 
 
-def test_discord_autodetects_interactive_from_isatty(monkeypatch, stub_discord_daemon, capsys) -> None:
+def test_discord_autodetects_interactive_from_isatty(
+    monkeypatch, stub_discord_daemon, capsys
+) -> None:
     monkeypatch.setattr(connect_cli.sys.stdin, "isatty", lambda: True, raising=False)
     monkeypatch.setattr(connect_cli.getpass, "getpass", lambda *a, **k: _DISCORD_TOKEN)
     rc = connect_cli.discord_bind_flow(9999, "mcp-tok")
@@ -339,7 +341,9 @@ def test_discord_prints_a_terminal_qr_above_the_invite(
     assert "\x1b" not in out
 
 
-def test_discord_interactive_default_timeout_is_300(monkeypatch, stub_discord_daemon, capsys) -> None:
+def test_discord_interactive_default_timeout_is_300(
+    monkeypatch, stub_discord_daemon, capsys
+) -> None:
     monkeypatch.setattr(connect_cli.getpass, "getpass", lambda *a, **k: _DISCORD_TOKEN)
     connect_cli.discord_bind_flow(9999, "mcp-tok", interactive=True)
     assert "up to 300s" in capsys.readouterr().out
@@ -365,7 +369,9 @@ def test_run_dispatches_discord_status_to_print_status(monkeypatch, capsys) -> N
     monkeypatch.setattr(control, "require_token", lambda: "mcp-tok")
     monkeypatch.setattr(connect_cli.config, "load", lambda path=None: Config())
     monkeypatch.setattr(
-        control, "get", lambda *a, **k: (200, {"bound": False, "awaiting_bind": True, "bot_username": "b"})
+        control,
+        "get",
+        lambda *a, **k: (200, {"bound": False, "awaiting_bind": True, "bot_username": "b"}),
     )
 
     class Args:
@@ -380,9 +386,7 @@ def test_run_dispatches_discord_connect_to_discord_bind_flow(monkeypatch) -> Non
     monkeypatch.setattr(control, "require_token", lambda: "mcp-tok")
     monkeypatch.setattr(connect_cli.config, "load", lambda path=None: Config())
     calls = []
-    monkeypatch.setattr(
-        connect_cli, "discord_bind_flow", lambda *a, **k: calls.append((a, k)) or 0
-    )
+    monkeypatch.setattr(connect_cli, "discord_bind_flow", lambda *a, **k: calls.append((a, k)) or 0)
 
     class Args:
         connect_command = "discord"

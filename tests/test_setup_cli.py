@@ -685,7 +685,8 @@ def test_a_telegram_bind_this_run_stops_discord_from_being_offered(
     Telegram would silently replace it. _offer_discord re-probes bound state itself rather than
     taking a value threaded through, so a Telegram bind that happens during this same run is
     picked up before Discord is offered."""
-    _answer(monkeypatch, ["y", "", "", "y"])  # region, no marketplace, window default, telegram: yes
+    # region confirmed, no marketplace, window default, Telegram: yes
+    _answer(monkeypatch, ["y", "", "", "y"])
     monkeypatch.setattr(
         connect_cli,
         "bind_flow",

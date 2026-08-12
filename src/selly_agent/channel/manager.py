@@ -9,6 +9,14 @@ thread at all (rather than a thread that idles doing nothing).
 register/deregister are the symmetric pair: `register` starts a provider and tracks its handle
 (idempotent); `deregister` shuts one down and drops it; `shutdown_all` tears them all down at
 daemon stop. Handles are shut down outside the lock (shutdown joins a thread).
+
+At most one provider is ever meant to be running at a time: the bound channel is a singleton row
+with one `adapter` (see `store.arm_bind`), and every provider's delivery lanes are registered on
+the shared scheduler under the same literal task names (`notice_drain`, `typing_pulse` — see
+channel/*/provider.py). Two providers running at once would silently overwrite each other's
+scheduler tasks rather than error, so `register` enforces the invariant itself: starting a
+different provider first deregisters whichever one is currently running, and `register_configured`
+picks at most one when more than one happens to be configured.
 """
 
 from __future__ import annotations
@@ -25,10 +33,16 @@ class ChannelManager:
 
     def register(self, name: str) -> None:
         """Start `name` and track its handle. Idempotent — a re-register while running is a no-op
-        (the running provider picks up any new state on its own)."""
+        (the running provider picks up any new state on its own). Only one provider is ever meant
+        to be running (see module docstring), so registering a different provider first
+        deregisters whichever one is currently running rather than letting both stay up."""
         with self._lock:
             if name in self._handles:
                 return
+            others = [n for n in self._handles if n != name]
+        for other in others:
+            self.deregister(other)
+        with self._lock:
             self._handles[name] = self._providers[name].start(**self._deps)
 
     def deregister(self, name: str) -> None:
@@ -40,10 +54,19 @@ class ChannelManager:
             handle.shutdown()
 
     def register_configured(self) -> None:
-        """Start every provider that is already set up (e.g. a returning user with a bound bot)."""
-        for name, provider in self._providers.items():
-            if provider.is_configured():
-                self.register(name)
+        """Start every provider that is already set up (e.g. a returning user with a bound bot).
+        When more than one happens to be configured — a seller can leave a stale token file
+        behind after switching from one provider to the other — only the one matching the channel
+        row's current `adapter` is started; `register`'s own invariant would otherwise leave the
+        outcome to dict iteration order instead of the seller's actual bound provider."""
+        configured = [name for name, p in self._providers.items() if p.is_configured()]
+        if len(configured) > 1:
+            store = self._deps["store"]
+            adapter = store.get_channel()["adapter"] if store is not None else None
+            if adapter in configured:
+                configured = [adapter]
+        for name in configured:
+            self.register(name)
 
     def shutdown_all(self) -> None:
         with self._lock:
