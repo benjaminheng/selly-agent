@@ -118,7 +118,7 @@ _SKILL_BLURBS = (
     (
         "listing-flow-craigslist",
         "the same, filled into Craigslist's own posting form in the browser",
-    ),  # noqa: E501
+    ),
     ("buyer-conversation", "how a buyer's message is classified, answered, and negotiated"),
     ("scam-guard", "the never-engage rule, and what to do with a flagged thread"),
 )
