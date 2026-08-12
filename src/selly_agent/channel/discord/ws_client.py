@@ -181,7 +181,13 @@ class WebSocket:
     def wait_readable(self, timeout: float) -> bool:
         """True once at least one byte is waiting — lets the Gateway session race "a message
         arrived" against "the heartbeat is due" without ever starting a blocking read that a
-        timeout could interrupt mid-frame."""
+        timeout could interrupt mid-frame. Checks SSL's internal buffer first: select() only
+        reflects OS-level fd readability of the encrypted stream, so a TLS record that decrypted
+        into more application bytes than a prior read consumed can leave data sitting in OpenSSL's
+        buffer while the underlying fd goes quiet — select() alone would wrongly say "not
+        readable" and delay dispatch of an already-received message."""
+        if hasattr(self._sock, "pending") and self._sock.pending() > 0:
+            return True
         ready, _, _ = select.select([self._sock], [], [], timeout)
         return bool(ready)
 

@@ -83,3 +83,23 @@ def test_wait_readable_true_once_the_server_sends(server) -> None:
     assert ws.wait_readable(2.0) is True
     assert ws.recv_text() == '{"x": 1}'
     ws.close()
+
+
+def test_wait_readable_returns_true_when_ssl_socket_has_pending_data() -> None:
+    """Verify that wait_readable() checks SSL socket's internal buffer (via .pending()) before
+    calling select(). This catches the case where TLS record decryption buffered plaintext bytes
+    that select() wouldn't see, which would delay Gateway message dispatch. Uses duck-typing:
+    any socket-like object with a .pending() method returning > 0 should be treated as readable."""
+    from selly_agent.channel.discord.ws_client import WebSocket
+
+    class FakePendingSocket:
+        """Mimics an ssl.SSLSocket with pending buffered data."""
+
+        def pending(self):
+            return 42  # Non-zero = data buffered in SSL's internal buffer
+
+    fake_sock = FakePendingSocket()
+    ws = WebSocket(fake_sock)
+    # Should return True immediately because pending() > 0, without needing select() to work.
+    # Since select() would fail on the fake socket, this proves the pending() check runs first.
+    assert ws.wait_readable(0.001) is True
