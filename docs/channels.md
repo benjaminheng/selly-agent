@@ -4,8 +4,8 @@ The channel is how the agent talks to the seller asynchronously — buyer
 escalations land on their phone, and they can steer the agent back. It is
 **optional**: the daemon runs fully without one, and the needs-me queue (things
 awaiting the seller) still works — surfaced at an attended session's catch-up
-instead of pushed. Telegram is the only provider today; the design keeps a second
-one (Slack, iMessage) a sibling package rather than a rewrite.
+instead of pushed. Telegram and Discord are the providers today; the design keeps
+additional ones (Slack, iMessage) as sibling packages rather than rewrites.
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for where this sits in the whole.
 
@@ -76,6 +76,39 @@ Because authorization is nonce possession, not first contact, the hijack race a
 first-contact capture would have can't happen, and an interrupted bind resumes
 after a restart (the nonce is durable). The token never appears in an event or a
 log.
+
+On bind the daemon queues a deterministic welcome as ordinary notices (drain-
+delivered, retried, catchup-backstopped — never a fire-and-forget send), stamping
+`welcomed_at` in the same transaction so the same bot never re-greets. A seller
+with nothing listed yet also gets the **first-listing CTA** — "send a photo of
+something you want to sell" — with an inline *Skip for now* button; a seller with
+real items never sees it.
+
+## Bind (Discord)
+
+`selly-agent connect discord` reads the Discord bot token and the bot's application ID
+— neither from argv, so they stay out of `ps`/shell history — and sends them to the
+running daemon, which:
+
+1. validates them against the Discord API, writes them to a 0600 file, and mints a
+   one-time **nonce**;
+2. returns an OAuth authorize link (zero-permission, `applications.commands` scope only
+   for future slash-command support) and starts the provider;
+3. binds the DM from the first user who sends the nonce code — and no other.
+
+The flow is deliberately two-step: unlike Telegram's one-tap deep link, the seller
+invites the bot to their server first (via OAuth), then sends the nonce in a DM to
+establish the binding. This decouples bot installation from session binding and makes
+the nonce flow harder to race.
+
+The provider uses Discord's Gateway connection (WebSocket) instead of long-poll,
+connecting once and streaming all events. The gateway intent is scoped to **DIRECT_MESSAGES**
+only — it receives only DMs and ignores all server traffic — keeping the connection
+minimal. Discord requires the **DM message content** exemption to read DM text without
+the `MESSAGE_CONTENT` intent (the privacy-gating mechanism for bot access to message content
+in servers). Without this exemption, the bot would need `MESSAGE_CONTENT` intent and explicit
+approval from every server it joins; the DM exemption bypasses this for direct messages
+alone, a non-obvious platform fact to record for future readers.
 
 On bind the daemon queues a deterministic welcome as ordinary notices (drain-
 delivered, retried, catchup-backstopped — never a fire-and-forget send), stamping
@@ -155,7 +188,7 @@ A missing control row reads as *not paused* (fail toward not-paused).
 
 ## Adding a provider
 
-A second channel is a sibling package under `channel/`, not a change to the core.
+Each new channel provider is a sibling package under `channel/`, not a change to the core.
 It brings its own receive mechanism (long-poll, a webhook route, or a socket) and,
 once it normalizes inbound messages into the shared event shape
 `{event_id, kind, text, payload, src_ts}`, reuses the core unchanged:
