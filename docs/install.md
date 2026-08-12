@@ -17,11 +17,12 @@ git clone https://github.com/carousell/selly-agent
 cd selly-agent
 ```
 
-Add a `.env` file containing the `TZ` and `CLAUDE_CODE_OAUTH_TOKEN` env vars. You can get your Claude Code token using `claude setup-token`.
+Add a `.env` file containing the `TZ` and `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` env vars. If using the oauth token, you can get it using `claude setup-token`. If using an API key, get it from platform.claude.com.
 
 ```env
 TZ=Asia/Singapore
 CLAUDE_CODE_OAUTH_TOKEN=...
+ANTHROPIC_API_KEY=...
 ```
 
 Since Selly will be running in a container, it cannot manage its own Chrome process. You will have to launch Chrome separately. A `start-chrome` script is included in the repository. Execute using:
