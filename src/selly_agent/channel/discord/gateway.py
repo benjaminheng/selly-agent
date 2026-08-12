@@ -83,10 +83,18 @@ def _resume_payload(*, token: str, session_id: str, seq: int) -> dict:
 
 class _NeverStop:
     """A stop_event stand-in for a session run outside the daemon (tests, or a caller with its own
-    lifecycle) — `is_set()` is always False, so `_pump_until_stopped` only returns via an
-    exception."""
+    lifecycle) — `is_set()` is always False, so `_pump_until_stopped` only returns via an exception.
+    `wait(timeout)` actually sleeps, so `DiscordGateway.run()`'s off-idle and error-backoff waits
+    still throttle even with no real stop_event supplied — without this, a `DiscordGateway()`
+    built with the constructor's own `stop_event=None` default would busy-spin at 100% CPU while
+    off, and reconnect/IDENTIFY with zero delay after every failed session (an unthrottled storm
+    against gateway.discord.gg — exactly what Discord's session_start_limit exists to punish)."""
 
     def is_set(self) -> bool:
+        return False
+
+    def wait(self, timeout: float) -> bool:
+        time.sleep(timeout)
         return False
 
 
@@ -208,21 +216,24 @@ class DiscordGateway:
         return DiscordClient(token, api_base=self.config.discord_api_base)
 
     def run(self) -> None:
-        while self.stop is None or not self.stop.is_set():
+        # Resolved once, not per-branch: `_NeverStop.wait` actually sleeps, so the off-idle and
+        # error-backoff waits below throttle unconditionally even with the constructor's own
+        # `stop_event=None` default — a bare `DiscordGateway()` must never busy-spin re-reading the
+        # token/channel row, nor reconnect/IDENTIFY with zero delay after a failed session.
+        stopper = self.stop or _NeverStop()
+        while not stopper.is_set():
             token = self._read_token()
             ch = self.store.get_channel()
             state = self._state(token, ch)
             if state == "off":
-                if self.stop is not None:
-                    self.stop.wait(OFF_IDLE_SEC)
+                stopper.wait(OFF_IDLE_SEC)
                 continue
             try:
                 self._run_session(token)
             except Exception:
                 self._arm_backoff()
                 log.exception("Discord gateway session failed (backing off %.0fs)", self._backoff)
-                if self.stop is not None:
-                    self.stop.wait(self._backoff)
+                stopper.wait(self._backoff)
             else:
                 self._backoff = 0.0
 

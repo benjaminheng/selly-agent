@@ -7,8 +7,13 @@ this task's tests inject dispatch payloads directly rather than re-proving the t
 
 from __future__ import annotations
 
+import time
+
+import pytest
+
 from fake_discord_api import CHANNEL_ID, FAKE_TOKEN, FakeDiscordAPI
 from selly_agent import secrets
+from selly_agent.channel.discord import gateway
 from selly_agent.channel.discord.gateway import DiscordGateway
 from selly_agent.config import Config
 
@@ -96,3 +101,56 @@ def test_free_text_stays_pending_for_the_channel_pass(store, bus, xdg_tmp) -> No
             }
         )
     assert store.has_active_channel_pass()
+
+
+# --- run()'s throttling with no stop_event (the constructor's own default) --------------------
+#
+# A bare DiscordGateway() — no daemon, no stop_event supplied — must never busy-spin: the
+# off-idle wait and the error-backoff wait inside run() have to keep sleeping for real even
+# though there's no real threading.Event to wait on. Covered two ways: a direct, deterministic
+# unit test of _NeverStop.wait() itself (no need to touch run()'s loop at all), and a timed
+# run() call bounded to a handful of iterations (run() has no natural exit with stop=None, so the
+# bound is a monkeypatched _NeverStop.wait that raises after N calls — the same technique a real
+# stop_event's is_set() flipping True would trigger, just deterministic instead of racy).
+
+
+def test_neverstop_wait_actually_sleeps() -> None:
+    stopper = gateway._NeverStop()
+    started = time.monotonic()
+    result = stopper.wait(0.05)
+    elapsed = time.monotonic() - started
+    assert result is False
+    assert elapsed >= 0.05
+
+
+class _StopTestLoop(Exception):
+    """Raised from a monkeypatched _NeverStop.wait to give run()'s otherwise-infinite
+    (stop_event=None) loop a deterministic exit after a fixed number of iterations."""
+
+
+def test_run_throttles_the_off_idle_wait_with_no_stop_event(store, xdg_tmp, monkeypatch) -> None:
+    """No token is ever written (xdg_tmp keeps secrets hermetic), so _state is always "off" and
+    run() only ever takes the off-idle branch. OFF_IDLE_SEC is monkeypatched down so the test
+    stays fast; _NeverStop.wait is wrapped to count real calls and bail out after a few — proving
+    run() calls a real, sleeping wait() on every iteration (not a no-op), the exact gap that let
+    a stop_event=None DiscordGateway busy-spin at 100% CPU before this fix."""
+    monkeypatch.setattr(gateway, "OFF_IDLE_SEC", 0.05)
+    real_wait = gateway._NeverStop.wait
+    calls: list = []
+
+    def counting_wait(self, timeout):
+        calls.append(timeout)
+        if len(calls) >= 3:
+            raise _StopTestLoop
+        return real_wait(self, timeout)
+
+    monkeypatch.setattr(gateway._NeverStop, "wait", counting_wait)
+    gw = DiscordGateway(store=store, config=Config(), bus=None)  # stop_event defaults to None
+    started = time.monotonic()
+    with pytest.raises(_StopTestLoop):
+        gw.run()
+    elapsed = time.monotonic() - started
+    assert calls == [0.05, 0.05, 0.05]
+    # Two real sleeps must have elapsed before the third call raised — a busy spin would finish
+    # in microseconds regardless of OFF_IDLE_SEC.
+    assert elapsed >= 0.05 * 2
