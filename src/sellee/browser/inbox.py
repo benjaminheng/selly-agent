@@ -330,9 +330,11 @@ def _read_thread(
     conversation could not be read at all — which the caller counts as being blind on this market,
     never as the buyer having said nothing.
 
-    `row` is the conversation as the list reported it, which makes one failure detectable: if the
-    list says the conversation has a latest message and the page shows none, the two disagree and we
-    cannot see what we were told is there.
+    `row` is the conversation as the list reported it, which makes two failures detectable: if the
+    list says the conversation has a latest message and the page shows none, the two disagree and
+    we cannot see what we were told is there; and if the list reports unread content but the
+    reconciler finds nothing fresh, a repeat past the tail window would otherwise pass for a
+    quiet buyer.
     """
     market = thread["market"]
     native = thread["thread_id"].split(":", 1)[1] if ":" in thread["thread_id"] else ""
@@ -357,6 +359,11 @@ def _read_thread(
             return None
         return 0
     fresh = reconcile.new_rows(tail, stored, now=deps.now())
+    if not fresh and (row or {}).get("unread"):
+        # A buyer repeating the same text past TAIL_BUBBLES looks to the aligner like an
+        # already-stored tail (every overlap size matches trivially). The list's unread count is
+        # the backstop: unread with nothing fresh means we cannot see what we were told is there.
+        return None
     for entry in fresh:
         verdict = None
         if entry["direction"] == "in":
