@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from selly_agent import marketplaces
-from selly_agent.browser.markets import carousell
+from selly_agent.browser.markets import carousell, craigslist
 
 
 @dataclass(frozen=True)
@@ -77,7 +77,16 @@ CAROUSELL = MarketAdapter(
     system_handles=carousell.SYSTEM_HANDLES,
 )
 
-_ADAPTERS = {CAROUSELL.market: CAROUSELL}
+CRAIGSLIST = MarketAdapter(
+    market="craigslist",
+    conversations_list_js=craigslist.CONVERSATIONS_LIST_JS,
+    conversation_tail_js=craigslist.CONVERSATION_TAIL_JS,
+    login_js=craigslist.LOGIN_JS,
+    listing_id_pattern=craigslist.LISTING_ID_PATTERN,
+    system_handles=craigslist.SYSTEM_HANDLES,
+)
+
+_ADAPTERS = {CAROUSELL.market: CAROUSELL, CRAIGSLIST.market: CRAIGSLIST}
 
 # The flow name the composer selectors are cached under.
 REPLY_FLOW = "reply"
