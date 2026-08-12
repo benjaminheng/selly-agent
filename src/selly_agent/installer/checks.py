@@ -67,7 +67,13 @@ def fail_open(name: str, probe, fix: str = "") -> Check:
         return probe()
     except Exception as exc:  # noqa: BLE001 — a probe must never take down the summary
         log.debug("probe %r raised", name, exc_info=True)
-        return fail(name, f"could not be checked ({type(exc).__name__}: {exc})", fix)
+        return fail(
+            name,
+            f"could not be checked ({type(exc).__name__}: {exc})",
+            fix
+            or "re-run ./setup — if this keeps happening, run the failing check by hand "
+            "to see the full error",
+        )
 
 
 def render(checks) -> list:
