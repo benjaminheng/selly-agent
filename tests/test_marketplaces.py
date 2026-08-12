@@ -106,3 +106,18 @@ def test_no_entry_ever_resolves_to_a_bare_host_suffix() -> None:
         for region in ("SG", "US", "MY", "ZZ", None):
             host = marketplaces.resolve_domain(entry["id"], region)
             assert host is None or not host.endswith("."), (entry["id"], region, host)
+
+
+# --- craigslist: registry entry -----------------------------------------------------------------
+
+
+def test_craigslist_registry_entry_is_complete() -> None:
+    assert marketplaces.listing_flow("craigslist") == "listing-flow-craigslist"
+    assert marketplaces.market_url("craigslist", "sell", "US") == "https://craigslist.org/"
+    assert marketplaces.market_url("craigslist", "sell", None) == "https://craigslist.org/"
+
+
+def test_craigslist_has_no_recorded_inbox_url() -> None:
+    """Craigslist has no in-page buyer inbox, so the read lane must never be pointed at one —
+    covered end to end in test_browser_inbox.py."""
+    assert marketplaces.urls("craigslist").get("inbox") is None
