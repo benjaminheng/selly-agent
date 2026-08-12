@@ -1,0 +1,118 @@
+"""An in-process fake Discord REST API for the channel tests — mirrors tests/fake_telegram_api.py:
+a stdlib ThreadingHTTPServer serving the endpoints our transport calls, with a scriptable call log
+and outbox, so tests drive the REAL transport against it rather than a mock.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+BOT_ID = "123456789012345678"
+APPLICATION_ID = "123456789012345678"
+BOT = {"id": BOT_ID, "username": "selly_test_bot", "bot": True}
+CHANNEL_ID = 987654321098765432
+# A structurally fake Discord bot token (three dot-separated base64url-shaped segments), never a
+# real credential. Its third segment is 71 chars — over the 45-char cap the leak guard's
+# DISCORD_TOKEN_RE checks — so it never matches that pattern either, same discipline as Telegram's
+# own FAKE_TOKEN deliberately not matching its regex.
+FAKE_TOKEN = (
+    "OTIzNDU2Nzg5MDEyMzQ1Njc4.YIz98g.ffPyQbZQGxQ3tmunQx2i86AWT-fakefakefakefakefakefakefake"
+)
+
+
+class FakeDiscordAPI:
+    def __init__(self):
+        self.calls: list = []
+        self.outbox: list = []
+        self.typing_pulses: list = []
+        self.acknowledged: list = []
+        self.files: dict = {"/attachments/fake.jpg": b"\xff\xd8\xff\xe0fake-jpeg-bytes"}
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._make_handler())
+        self._server.daemon_threads = True
+        self._server.timeout = 0.5
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+
+    @property
+    def base_url(self) -> str:
+        host, port = self._server.server_address
+        return f"http://{host}:{port}"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._server.shutdown()
+        self._thread.join()
+
+    def _make_handler(self):
+        api = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args) -> None:
+                pass
+
+            def _reply(self, status: int, body: dict) -> None:
+                payload = json.dumps(body).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def _body(self) -> dict:
+                length = int(self.headers.get("Content-Length", 0))
+                return json.loads(self.rfile.read(length)) if length else {}
+
+            def _rejects_bad_bot_token(self) -> bool:
+                # Attachment CDN links are unauthenticated by design (see transport.py's
+                # download_attachment docstring); every /api/v10/* route requires the real fake
+                # bot token, matching Discord's own 401-on-bad-token behavior so a transport bug
+                # that mishandles auth failure is exercised for real, not mocked away.
+                if (
+                    self.path.startswith("/api/v10/")
+                    and self.headers.get("Authorization") != f"Bot {FAKE_TOKEN}"
+                ):
+                    self._reply(401, {"message": "401: Unauthorized", "code": 0})
+                    return True
+                return False
+
+            def do_GET(self) -> None:
+                api.calls.append(("GET", self.path))
+                if self._rejects_bad_bot_token():
+                    return
+                if self.path.startswith("/attachments/"):
+                    data = api.files.get(self.path, api.files["/attachments/fake.jpg"])
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                elif self.path == "/api/v10/users/@me":
+                    self._reply(200, BOT)
+                elif self.path == "/api/v10/oauth2/applications/@me":
+                    self._reply(200, {"id": APPLICATION_ID})
+                else:
+                    self._reply(404, {"message": "unknown"})
+
+            def do_POST(self) -> None:
+                api.calls.append(("POST", self.path))
+                if self._rejects_bad_bot_token():
+                    return
+                body = self._body()
+                if self.path == f"/api/v10/channels/{CHANNEL_ID}/messages":
+                    api.outbox.append(body)
+                    self._reply(200, {"id": "111", "content": body.get("content", "")})
+                elif self.path == f"/api/v10/channels/{CHANNEL_ID}/typing":
+                    api.typing_pulses.append(True)
+                    self._reply(204, {})
+                elif self.path.startswith("/api/v10/interactions/") and self.path.endswith(
+                    "/callback"
+                ):
+                    api.acknowledged.append(self.path)
+                    self._reply(204, {})
+                else:
+                    self._reply(404, {"message": "unknown"})
+
+        return Handler

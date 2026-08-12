@@ -1,0 +1,147 @@
+"""The Discord REST transport: the pure `_normalize` mapping and DiscordClient over the fake API.
+
+`_normalize` is exercised without a network (a pure function); the client is driven against the
+in-process fake REST server so the real urllib path (auth header, JSON bodies, error mapping) is
+covered end to end.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from fake_discord_api import BOT_ID, CHANNEL_ID, FAKE_TOKEN, FakeDiscordAPI
+from selly_agent.channel.discord import transport
+from selly_agent.channel.discord.transport import ChannelError, DiscordClient
+
+# --- _normalize (pure) ------------------------------------------------------------------------
+
+
+def _message_create(content, event_id="1", author_bot=False, attachments=None):
+    return {
+        "t": "MESSAGE_CREATE",
+        "d": {
+            "id": event_id,
+            "channel_id": str(CHANNEL_ID),
+            "author": {"id": "555", "username": "seller", "bot": author_bot},
+            "content": content,
+            "attachments": attachments or [],
+            "timestamp": "2026-08-12T00:00:00.000000+00:00",
+        },
+    }
+
+
+def test_normalize_text() -> None:
+    ev = transport._normalize(_message_create("hello there"))
+    assert ev["kind"] == "text"
+    assert ev["text"] == "hello there"
+    assert ev["payload"] == {}
+    assert ev["event_id"] == 1
+
+
+def test_normalize_ignores_the_bot_s_own_messages() -> None:
+    assert transport._normalize(_message_create("echo", author_bot=True)) is None
+
+
+def test_normalize_lifts_an_attachment_to_photo_kind() -> None:
+    attachments = [
+        {
+            "id": "a1",
+            "filename": "photo.jpg",
+            "url": "http://example/attachments/fake.jpg",
+            "content_type": "image/jpeg",
+            "size": 123,
+        }
+    ]
+    ev = transport._normalize(_message_create("a caption", attachments=attachments))
+    assert ev["kind"] == "photo"
+    assert ev["text"] == "a caption"
+    assert ev["payload"]["url"] == "http://example/attachments/fake.jpg"
+
+
+def test_normalize_button_click() -> None:
+    # A real Discord snowflake shape (all-digit string) — _normalize casts event_id to int for the
+    # channel_inbox INTEGER column, so a non-numeric placeholder here would mask that behavior.
+    interaction = {
+        "t": "INTERACTION_CREATE",
+        "d": {
+            "id": "111222333444555666",
+            "token": "int-token",
+            "type": 3,  # MESSAGE_COMPONENT
+            "channel_id": str(CHANNEL_ID),
+            "data": {"custom_id": "chg_1:approve"},
+        },
+    }
+    ev = transport._normalize(interaction)
+    assert ev["kind"] == "action"
+    assert ev["text"] == "approve"
+    assert ev["event_id"] == 111222333444555666
+    assert ev["payload"] == {
+        "ref": "chg_1",
+        "choice": "approve",
+        "interaction_id": "111222333444555666",
+        "interaction_token": "int-token",
+    }
+
+
+def test_normalize_ignores_dispatch_kinds_we_do_not_handle() -> None:
+    assert transport._normalize({"t": "TYPING_START", "d": {}}) is None
+
+
+# --- DiscordClient over the fake API -----------------------------------------------------------
+
+
+def _client(api) -> DiscordClient:
+    return DiscordClient(FAKE_TOKEN, api_base=api.base_url + "/api/v10")
+
+
+def test_get_me() -> None:
+    with FakeDiscordAPI() as api:
+        me = _client(api).get_me()
+        assert me["id"] == BOT_ID
+
+
+def test_get_application() -> None:
+    with FakeDiscordAPI() as api:
+        app = _client(api).get_application()
+        assert "id" in app
+
+
+def test_send_message_records_content_and_components() -> None:
+    with FakeDiscordAPI() as api:
+        _client(api).send_message(CHANNEL_ID, "hi there", components=[("Pause", "pause")])
+        assert api.outbox[-1]["content"] == "hi there"
+        assert api.outbox[-1]["components"][0]["components"][0]["custom_id"] == "pause"
+
+
+def test_send_message_over_the_2000_char_limit_is_chunked() -> None:
+    with FakeDiscordAPI() as api:
+        _client(api).send_message(CHANNEL_ID, "x" * 2500)
+        assert len(api.outbox) == 2
+        assert all(len(m["content"]) <= 2000 for m in api.outbox)
+
+
+def test_trigger_typing() -> None:
+    with FakeDiscordAPI() as api:
+        _client(api).trigger_typing(CHANNEL_ID)
+        assert api.typing_pulses == [True]
+
+
+def test_acknowledge_interaction() -> None:
+    with FakeDiscordAPI() as api:
+        _client(api).acknowledge_interaction("int1", "int-token")
+        assert api.acknowledged == ["/api/v10/interactions/int1/int-token/callback"]
+
+
+def test_download_attachment(tmp_path) -> None:
+    with FakeDiscordAPI() as api:
+        dest = tmp_path / "photo.jpg"
+        _client(api).download_attachment(api.base_url + "/attachments/fake.jpg", dest)
+        assert dest.read_bytes() == api.files["/attachments/fake.jpg"]
+
+
+def test_transport_error_never_carries_the_token() -> None:
+    with FakeDiscordAPI() as api:
+        client = DiscordClient("bad-token-shape", api_base=api.base_url + "/api/v10")
+        with pytest.raises(ChannelError) as exc:
+            client.get_me()
+        assert "bad-token-shape" not in str(exc.value)

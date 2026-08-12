@@ -43,6 +43,7 @@ NETWORK_ALLOWLIST: set[str] = {
     "selly_agent/rail/provision.py",  # carousell.ai guest-key provisioning
     "selly_agent/channel/telegram/transport.py",  # the Telegram Bot API transport (one pipe)
     "selly_agent/channel/discord/ws_client.py",  # the hand-rolled RFC 6455 WebSocket client
+    "selly_agent/channel/discord/transport.py",  # the Discord REST API transport (one pipe)
     "selly_agent/browser/chrome.py",  # the warm Chrome's CDP readiness probe (loopback GET)
 }
 

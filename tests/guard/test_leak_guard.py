@@ -17,10 +17,14 @@ ROOT = Path(__file__).resolve().parents[2]
 APPROVED_FAKE_IDS = {
     "123456789",  # fake telegram bot id / chat id
     "6591234567",  # classic SG placeholder
+    "123456789012345678",  # fake discord snowflake id (bot/application/user)
+    "987654321098765432",  # fake discord channel id
 }
 
 # Telegram bot token shape: 8-12 digit bot id, colon, "AA..." auth part.
 TOKEN_RE = re.compile(r"\b\d{8,12}:AA[A-Za-z0-9_-]{25,}")
+# Discord bot token shape: three dot-separated base64url segments (user id, timestamp, HMAC).
+DISCORD_TOKEN_RE = re.compile(r"\b[A-Za-z0-9_-]{20,28}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,45}\b")
 # Long digit runs on lines that mention a chat/offset identifier.
 DIGIT_RUN_RE = re.compile(r"\d{6,}")
 IDENTIFIER_LINE_RE = re.compile(r"chat|update_offset")
@@ -72,7 +76,7 @@ def test_no_bot_token_shape_in_repo_files() -> None:
     offenders: list[str] = []
     for path, text in _repo_text_files():
         for lineno, line in enumerate(text.splitlines(), start=1):
-            if TOKEN_RE.search(line):
+            if TOKEN_RE.search(line) or DISCORD_TOKEN_RE.search(line):
                 offenders.append(f"{path.relative_to(ROOT)}:{lineno}")
     assert not offenders, "bot-token shape in repo files:\n" + "\n".join(offenders)
 
