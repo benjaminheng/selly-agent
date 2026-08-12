@@ -38,14 +38,23 @@ Craigslist doesn't: a buyer's "reply" to a posting is relayed through an anonymi
 address, landing in the seller's own email inbox — a channel this codebase doesn't touch at
 all. There is no page to scrape a thread from.
 
-**Resolution: ship listing/publish only.** `conversations_list_js` permanently returns
-`{conversations: []}` — a true, static fact about the platform ("no on-platform threads exist"),
-not an error state and not a placeholder for future work. `conversation_tail_js` is correspondingly
-dead code (never reached, since the conversation list is always empty) and returns `null`
-(abstain) for completeness. The inbox lane reads this every tick and finds nothing to do — cheap,
-harmless, honest. The upstream issue and PR both say plainly that Craigslist buyer-reply
-automation is out of scope because the platform has no on-platform channel for it, not because of
-missing engineering effort.
+**Resolution: ship listing/publish only, and don't wire the inbox lane to a page that doesn't
+exist.** The registry entry records no `urls.inbox` for Craigslist (see "Changes" below), so the
+read lane's existing, generic "no recorded inbox URL — skip" path (already there for exactly this
+situation) means the lane never navigates anywhere for Craigslist and never calls its
+`conversations_list_js`/`conversation_tail_js` at all — no per-tick cost, and critically, **no
+change to any existing test's navigation or notice assertions**, since nothing about how the lane
+processes Carousell changes. `conversations_list_js` still permanently returns `{conversations:
+[]}` and `conversation_tail_js` still returns `null`, to satisfy `MarketAdapter`'s required-field
+shape truthfully (a real, permanent fact about the platform, not a placeholder) — they're just not
+reachable from the background lane given there's no inbox page to point it at. `login_js` is not
+dead code, though: `selly-agent connect craigslist` and the healthcheck's per-market login line
+(`http_server.py`'s `_handle_market_logins` / `_open_and_probe`) navigate to
+`marketplaces.market_home(market, region)` — independent of `urls.inbox` — and evaluate
+`login_js` directly, for whichever markets the seller has actually enabled. That's where this
+adapter's login detection earns its keep. The upstream issue and PR both say plainly that
+Craigslist buyer-reply automation is out of scope because the platform has no on-platform channel
+for it, not because of missing engineering effort.
 
 **2. Craigslist is per-city, not per-country.** Every other registry entry's `domains` map is one
 host per ISO region (`SG → www.carousell.sg`). Craigslist runs one host per city
@@ -57,10 +66,10 @@ them, with no country-level grouping. This codebase's seller-region setting is c
 `domains` map (matching its current stub shape and the existing test
 `test_resolve_falls_back_to_listing_url_host`, which already documents and asserts this fallback:
 "craigslist has no domains map and a real host, so the listing_url host is the answer"). `urls.sell`
-and `urls.inbox` both resolve against the bare `craigslist.org` host — a real, always-reachable
-page (the site's own country/city directory), not a fabricated deep link. The `listing-flow-craigslist.md`
-skill's first step instructs the agent to log in and follow the seller's own account/redirect to
-their real city site, rather than the code guessing a subdomain — consistent with this codebase's
+resolves against the bare `craigslist.org` host — a real, always-reachable page (the site's own
+country/city directory), not a fabricated deep link. The `listing-flow-craigslist.md` skill's
+first step instructs the agent to log in and follow the seller's own account/redirect to their
+real city site, rather than the code guessing a subdomain — consistent with this codebase's
 existing rule (`marketplaces.market_url`'s own docstring) that navigation targets come from the
 registry, a stored URL, or a link read off a live page, never a guess.
 
@@ -79,7 +88,7 @@ courtesy this codebase's own selector-healing cache exists to make cheap to fix 
 | Permalink shape `.../d/<slug>/<digits>.html` | High (stable for years) | `LISTING_ID_PATTERN` |
 | No in-page buyer inbox; contact is by email | High (documented platform behavior) | scope decision above |
 | One host per city, no country grouping | High | no `domains` map |
-| `craigslist.org` root is a real, reachable directory page | Medium-high | `urls.sell` / `urls.inbox` fallback host |
+| `craigslist.org` root is a real, reachable directory page | Medium-high | `urls.sell` fallback host, and `market_home()` for login checks |
 | Account login exists and gates posting/managing listings | Medium-high (long-standing feature) | `LOGIN_JS` |
 | Exact login-state DOM markers | Low — needs live verification | `LOGIN_JS` body, flagged in comments |
 | Exact posting-wizard steps/fields | Medium (well-known general shape; exact field names unverified) | `listing-flow-craigslist.md` |
@@ -88,9 +97,12 @@ courtesy this codebase's own selector-healing cache exists to make cheap to fix 
 
 ### 1. `data/marketplaces.json` — complete the `craigslist` entry
 
-Add `urls` (`sell`, `inbox` — both `"/"`, the bare root) and `listing_flow:
-"listing-flow-craigslist"`. No `domains` map (see above). `connector.type: "browser"` and
-`status: "active"` are already present.
+Add `urls: {"sell": "/"}` (the bare root — the publish pass's `composer_url` comes from
+`market_url(market, "sell", region)`) and `listing_flow: "listing-flow-craigslist"`. Deliberately
+**no `urls.inbox`** — the read lane's existing `inbox_url is None → log and skip` path (already
+in `browser/inbox.py`, needed for exactly this case) then keeps Craigslist fully inert in the
+background lane, without touching that generic code at all. No `domains` map (see above).
+`connector.type: "browser"` and `status: "active"` are already present.
 
 ### 2. `browser/markets/craigslist.py` — new adapter module
 
@@ -133,11 +145,12 @@ replies to this listing (they arrive by email, outside this session).
   (`test_supported_markets_is_the_adapter_registry`,
   `test_publishable_markets_follow_the_seller_region`) to include `craigslist` — an expected,
   intentional change, not a regression, since both now reflect a second real adapter.
-- `tests/test_browser_inbox.py`: extend `StubClient.evaluate` to recognize Craigslist's JS
-  artifacts (currently raises `AssertionError` on anything not Carousell's, which the real
-  registry's now-adapter-having `craigslist` entry would otherwise trip on every existing test).
-  Add one test asserting a Craigslist tick reads as empty and quiet — no blind count, no thread
-  created, no error — confirming the always-empty contract is actually harmless in the lane.
+- `tests/test_browser_inbox.py`: no existing test needs updating — with no `urls.inbox`, the lane
+  never calls `client.navigate`/`client.evaluate` for Craigslist at all, so every existing
+  Carousell-focused navigation/notice assertion is untouched. Add one new test confirming this
+  directly: after a normal Carousell-seeded read, no navigation URL contains `"craigslist"` —
+  a regression guard proving the "registered but no inbox URL" combination stays inert, in case a
+  future change adds `urls.inbox` without updating the adapter's inbox-related JS.
 - New `tests/test_browser_markets_craigslist.py` (or folded into `test_marketplaces.py`): shape
   tests for the adapter — `LISTING_ID_PATTERN` matches real-shaped permalinks and rejects
   non-matches, `CRAIGSLIST` is registered and satisfies the same structural checks
