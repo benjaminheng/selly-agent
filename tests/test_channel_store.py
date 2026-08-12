@@ -69,6 +69,18 @@ def test_rebind_new_bot_resets_welcome_and_commands(store) -> None:
     assert ch["commands_hash"] is None
 
 
+def test_rebind_same_bot_different_adapter_resets_welcome_and_commands(store) -> None:
+    store.arm_bind("selly_bot", "n1")
+    store.complete_bind(555, update_offset=1)
+    store.stamp_welcomed()
+    store.stamp_commands_hash("abc123")
+    store.arm_bind("selly_bot", "n2", adapter="discord")  # same bot, different adapter
+    ch = store.get_channel()
+    assert ch["welcomed_at"] is None  # switch to different adapter must reset
+    assert ch["commands_hash"] is None
+    assert ch["adapter"] == "discord"
+
+
 def test_arm_bind_accepts_a_discord_adapter(store) -> None:
     store.arm_bind("SellyBot", "nonce-1", adapter="discord")
     ch = store.get_channel()
