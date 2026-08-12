@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import socket
 import threading
 
@@ -75,3 +76,22 @@ class FakeWebSocketServer:
         if self._conn is not None:
             self._conn.close()
         self._listener.close()
+
+
+class FakeGatewayServer(FakeWebSocketServer):
+    """Adds Discord Gateway op-code framing on top of the raw text send/recv the base class gives:
+    send_op/recv_op work in parsed dicts, matching what GatewaySession actually exchanges."""
+
+    def send_op(self, op: int, d=None, *, t=None, s=None) -> None:
+        payload: dict = {"op": op, "d": d}
+        if t is not None:
+            payload["t"] = t
+        if s is not None:
+            payload["s"] = s
+        self.send_text(json.dumps(payload))
+
+    def recv_op(self) -> dict:
+        return json.loads(self.recv_text())
+
+    def send_hello(self, heartbeat_interval_ms: int) -> None:
+        self.send_op(10, {"heartbeat_interval": heartbeat_interval_ms})
