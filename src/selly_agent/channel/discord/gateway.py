@@ -22,10 +22,11 @@ MESSAGE_CONTENT intent by Discord's own documented policy ("Content in DMs with 
 delivered without it), so this bot needs zero privileged grants and no GUILDS intent either — it
 never looks at guild events.
 
-This module holds session mechanics only (connect/Identify/heartbeat/Resume) — proved against a
-fake Gateway speaking real opcodes over a real local WebSocket connection in
-tests/test_channel_discord_gateway_session.py. Wiring Dispatch payloads into the store (bind, DM
-ingest, fast-paths) is a later task, appended below this point.
+This module holds session mechanics (connect/Identify/heartbeat/Resume — proved against a fake
+Gateway speaking real opcodes over a real local WebSocket connection in
+tests/test_channel_discord_gateway_session.py) and, in `DiscordGateway` below, the wiring of
+Dispatch payloads into the store: bind, DM ingest, and fast-path dispatch — the Discord analog of
+`telegram/poller.py`.
 """
 
 from __future__ import annotations
@@ -35,6 +36,10 @@ import logging
 import random
 import time
 
+from selly_agent import paths
+from selly_agent.channel import fastpaths, outbound, routing
+from selly_agent.channel.discord import transport as discord_transport
+from selly_agent.channel.discord.transport import ChannelError, DiscordClient
 from selly_agent.channel.discord.ws_client import ConnectionClosed, connect
 
 log = logging.getLogger(__name__)
@@ -182,3 +187,186 @@ class GatewaySession:
     def close(self) -> None:
         if self._ws is not None:
             self._ws.close()
+
+
+class DiscordGateway:
+    """Owns the Discord Gateway connection end to end: which of off/awaiting-bind/bound applies
+    (derived from durable rows each reconnect, exactly like `telegram/poller.py`'s three states),
+    the bind-nonce match, and dispatching a bound DM's MESSAGE_CREATE/INTERACTION_CREATE into the
+    same ingest -> fast-path -> routing pipeline the Telegram poller uses. Run `run()` on its own
+    thread; `stop_event` is shared with the daemon's shutdown."""
+
+    def __init__(self, *, store, config, bus, stop_event=None, client_factory=None):
+        self.store = store
+        self.config = config
+        self.bus = bus
+        self.stop = stop_event
+        self._client_factory = client_factory or self._default_client_factory
+        self._backoff = 0.0
+
+    def _default_client_factory(self, token: str) -> DiscordClient:
+        return DiscordClient(token, api_base=self.config.discord_api_base)
+
+    def run(self) -> None:
+        while self.stop is None or not self.stop.is_set():
+            token = self._read_token()
+            ch = self.store.get_channel()
+            state = self._state(token, ch)
+            if state == "off":
+                if self.stop is not None:
+                    self.stop.wait(OFF_IDLE_SEC)
+                continue
+            try:
+                self._run_session(token)
+            except Exception:
+                self._arm_backoff()
+                log.exception("Discord gateway session failed (backing off %.0fs)", self._backoff)
+                if self.stop is not None:
+                    self.stop.wait(self._backoff)
+            else:
+                self._backoff = 0.0
+
+    @staticmethod
+    def _read_token() -> str | None:
+        from selly_agent import secrets
+
+        return secrets.read_discord_bot_token()
+
+    def _arm_backoff(self) -> None:
+        self._backoff = min(
+            self._backoff * 2 if self._backoff else BACKOFF_BASE_SEC, BACKOFF_CAP_SEC
+        )
+
+    @staticmethod
+    def _state(token, ch) -> str:
+        if not token:
+            return "off"
+        if ch["chat_id"] is not None:
+            return "bound"
+        if ch["bind_nonce"]:
+            return "awaiting_bind"
+        return "off"
+
+    def _run_session(self, token: str) -> None:
+        client = self._client_factory(token)
+        session = GatewaySession(
+            token=token, on_dispatch=lambda t, d: self._on_dispatch(client, t, d)
+        )
+        try:
+            session.connect_and_identify()
+            session._pump_until_stopped(self.stop if self.stop is not None else _NeverStop())
+        finally:
+            session.close()
+
+    def _on_dispatch(self, client: DiscordClient, event_type, data) -> None:
+        if event_type not in ("MESSAGE_CREATE", "INTERACTION_CREATE"):
+            return
+        # Re-checked per message (not trusted from when the session started) — a bind can
+        # complete mid-session, and this is cheap (one indexed row read).
+        ch = self.store.get_channel()
+        if ch["chat_id"] is None:
+            if event_type == "MESSAGE_CREATE":
+                self._handle_awaiting_bind_message(data)
+            return
+        if event_type == "MESSAGE_CREATE":
+            self._handle_bound_message(data, client=client)
+        else:
+            self._handle_interaction(data, client=client)
+
+    def _handle_awaiting_bind_message(self, data: dict) -> None:
+        if (data.get("author") or {}).get("bot"):
+            return
+        ch = self.store.get_channel()
+        nonce = ch["bind_nonce"]
+        if nonce is None or data.get("content") != nonce:
+            return  # unattributable pre-bind traffic — never adopts a stranger
+        channel_id = int(data["channel_id"])
+        self.store.complete_bind(channel_id, 0)
+        ch = self.store.get_channel()
+        if not ch["welcomed_at"]:
+            try:
+                outbound.queue_welcome(self.store)
+            except Exception:
+                log.exception("welcome queue failed (bind still complete)")
+        self.bus.publish("channel.bound", {"bot_username": ch["bot_username"]})
+
+    def _handle_bound_message(self, data: dict, *, client: DiscordClient | None = None) -> None:
+        # `client` defaults to None so a test (or any other caller without a live session) can
+        # inject a dispatch payload directly, the same way `_handle_awaiting_bind_message` needs
+        # no client at all — `_on_dispatch` always supplies the session's client explicitly.
+        if client is None:
+            client = self._client_factory(self._read_token())
+        ch = self.store.get_channel()
+        if int(data["channel_id"]) != ch["chat_id"]:
+            return  # not the authorized DM — dropped, never ingested
+        event = discord_transport._normalize({"t": "MESSAGE_CREATE", "d": data})
+        if event is None:
+            return
+        if event["kind"] == "photo":
+            event["media_paths"] = self._download_photo(client, event)
+        inserted = self.store.ingest_updates([event], 0)
+        for row in inserted:
+            routing.publish_channel_in(self.bus, row)
+        self._dispatch_fast_paths(client, ch["chat_id"], inserted)
+        routing.route_channel_pass(self.store, self.bus)
+
+    def _handle_interaction(self, data: dict, *, client: DiscordClient) -> None:
+        if data.get("type") != 3:  # only MESSAGE_COMPONENT (button) interactions
+            return
+        ch = self.store.get_channel()
+        if int(data["channel_id"]) != ch["chat_id"]:
+            return
+        event = discord_transport._normalize({"t": "INTERACTION_CREATE", "d": data})
+        if event is None:
+            return
+        inserted = self.store.ingest_updates([event], 0)
+        for row in inserted:
+            routing.publish_channel_in(self.bus, row)
+        self._dispatch_fast_paths(client, ch["chat_id"], inserted)
+        routing.route_channel_pass(self.store, self.bus)
+
+    def _dispatch_fast_paths(self, client: DiscordClient, channel_id, inserted) -> None:
+        """Mirrors `telegram/poller.py`'s `_dispatch_fast_paths`: answer deterministic fast paths
+        instantly, before any pass routing, so /pause is heard even mid-pass. An interaction is
+        acknowledged first (Discord requires the REST callback even though it arrived over the
+        Gateway); everything else stays pending for the channel pass. `controls` (the core's raw
+        (label, token) spec, or None) passes straight through to `send_message`, which builds
+        the components itself — no separate render step here, same reasoning as outbound.py's
+        deliver."""
+        handled: list = []
+        for row in inserted:
+            event = {"kind": row["kind"], "text": row["text"], "payload": row["payload"]}
+            if not fastpaths.is_fast_path(event):
+                continue
+            if fastpaths.is_settings_door(event):
+                text, controls = fastpaths.handle_settings_door(self.store, self.bus, event)
+            else:
+                text, controls = fastpaths.handle_fast_path(self.store, event)
+            interaction_id = row["payload"].get("interaction_id")
+            if interaction_id:
+                try:
+                    client.acknowledge_interaction(
+                        interaction_id, row["payload"]["interaction_token"]
+                    )
+                except ChannelError as exc:
+                    log.warning("interaction acknowledge failed: %s", exc)
+            try:
+                client.send_message(channel_id, text, components=controls)
+            except ChannelError as exc:
+                log.warning("fast-path reply send failed: %s", exc)
+            handled.append(row["id"])
+            self.bus.publish("channel.handled", {"kind": row["kind"], "by": "fast_path"})
+        if handled:
+            self.store.mark_inbox_handled(handled, "fast_path")
+
+    def _download_photo(self, client: DiscordClient, event: dict) -> list:
+        url = event["payload"].get("url")
+        if not url:
+            return []
+        dest = paths.media_dir() / str(event["event_id"]) / "photo.jpg"
+        try:
+            client.download_attachment(url, dest)
+        except ChannelError as exc:
+            log.warning("photo download failed for event %s: %s", event["event_id"], exc)
+            return []
+        return [str(dest)]
