@@ -7,10 +7,12 @@ import re
 import pytest
 
 import selly_agent.tools  # noqa: F401  ensures every tool is registered
+from selly_agent.tools import registry
 from selly_agent.tools.registry import (
     TIER_ATTENDED,
     TIER_PASS_PUBLISH,
     ToolError,
+    ToolSpec,
     UnknownTool,
     dispatch,
     tools_for_tier,
@@ -146,6 +148,36 @@ def test_a_failing_call_pairs_its_error_with_the_same_call_id(make_ctx, bus) -> 
         dispatch("get_item", {"item_id": "item_nope"}, ctx)
     call_id = _events(bus, "tool.call")[0].payload["call_id"]
     assert _events(bus, "tool.error")[0].payload["call_id"] == call_id
+
+
+def test_unhandled_handler_exception_becomes_a_correlatable_internal_error(make_ctx, bus) -> None:
+    # A handler bug (or an unwrapped OSError/sqlite lock) must never leak internals over MCP —
+    # but the caller still needs *something* to act on, so the same call_id already published
+    # on tool.call is folded into the message as a correlation handle back to the logged
+    # traceback (`log.exception` in dispatch's except-Exception branch).
+    def _boom(ctx, params):
+        raise RuntimeError("some internal detail that must not reach the caller")
+
+    registry.register(
+        ToolSpec(
+            name="_test_boom",
+            description="test-only tool that always raises",
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            handler=_boom,
+            tiers=frozenset({TIER_ATTENDED}),
+        )
+    )
+    try:
+        ctx = make_ctx(TIER_ATTENDED)
+        with pytest.raises(ToolError) as exc:
+            dispatch("_test_boom", {}, ctx)
+        call_id = _events(bus, "tool.call")[0].payload["call_id"]
+        message = str(exc.value)
+        assert call_id in message
+        assert "RuntimeError" not in message
+        assert "internal detail" not in message
+    finally:
+        del registry._REGISTRY["_test_boom"]
 
 
 def test_secret_param_is_masked_in_every_event(make_ctx, bus, store) -> None:
