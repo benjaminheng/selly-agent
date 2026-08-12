@@ -130,16 +130,17 @@ def test_a_linux_host_swaps_the_forwarder_for_the_host_network() -> None:
 
 
 def test_the_container_refuses_to_start_without_a_timezone_or_a_token() -> None:
-    """Both absences are silent: a UTC clock moves quiet hours, a missing token dies at the first
-    pass. The entrypoint checks, not compose — compose interpolates on every command, so a
-    `${VAR:?}` here would refuse to build an image containing neither value."""
+    """Both absences are silent: a UTC clock moves quiet hours, having neither credential dies at
+    the first pass. The entrypoint checks, not compose — compose interpolates on every command,
+    so a `${VAR:?}` here would refuse to build an image containing none of these values."""
     assert "TZ: ${TZ:-}" in COMPOSE
     assert "CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}" in COMPOSE
+    assert "ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}" in COMPOSE
     directives = [line for line in COMPOSE.splitlines() if not line.strip().startswith("#")]
     assert ":?" not in "\n".join(directives)
 
     assert "error: TZ is unset" in ENTRYPOINT
-    assert "error: CLAUDE_CODE_OAUTH_TOKEN is unset" in ENTRYPOINT
+    assert "error: neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set" in ENTRYPOINT
     assert "exit 1" in ENTRYPOINT
 
 
