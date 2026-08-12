@@ -1,11 +1,13 @@
 """carousell_ai_create_checkout_link — the checkout-at-close, composed atomically.
 
 Legacy's three-step choreography (precheck → LLM MCP call → record) collapses into one tool:
-floor gate → sale-id idempotency → resolve listing_id → mint over the rail (outside any store
-transaction) → fail-closed URL-base validation → record. The floor never crosses the boundary: a
-below-floor close returns a structured below_floor error carrying no value, a floorless below-list
-close returns no_floor (ask the seller), and an unpublished item returns not_published naming the
-publish tool — the legacy self-heal (inline create-then-checkout) is deliberately not ported.
+sale-id idempotency → floor gate → resolve listing_id → mint over the rail (outside any store
+transaction) → fail-closed URL-base validation → record. Idempotency runs first so an
+already-issued link is returned as-is even if the floor moved since — the floor gate only guards
+genuinely new checkout attempts. The floor never crosses the boundary: a below-floor close returns
+a structured below_floor error carrying no value, a floorless below-list close returns no_floor
+(ask the seller), and an unpublished item returns not_published naming the publish tool — the
+legacy self-heal (inline create-then-checkout) is deliberately not ported.
 """
 
 from __future__ import annotations
@@ -50,7 +52,15 @@ def _create_checkout_link(ctx: ToolContext, params: dict) -> dict:
     if item is None:
         raise ToolError(f"no item with id {item_id!r}")
 
-    # floor gate first — the store returns only a status, never the floor value
+    # Idempotency first: an already-issued link for this exact (item, thread, price) returns
+    # as-is — the floor can have moved since the deal closed, and nothing about a recorded sale
+    # needs re-validating against it.
+    sale_id = _sale_id(item_id, thread_id, price)
+    existing = ctx.store.get_checkout(sale_id)
+    if existing:
+        return {"checkout_url": existing["checkout_url"], "already_issued": True}
+
+    # floor gate — the store returns only a status, never the floor value
     try:
         gate = ctx.store.checkout_floor_gate(item_id, price)
     except StoreError as exc:
@@ -61,11 +71,6 @@ def _create_checkout_link(ctx: ToolContext, params: dict) -> dict:
         raise ToolError(
             "no floor is set and the price is below list — ask the seller for their floor first"
         )
-
-    sale_id = _sale_id(item_id, thread_id, price)
-    existing = ctx.store.get_checkout(sale_id)
-    if existing:
-        return {"checkout_url": existing["checkout_url"], "already_issued": True}
 
     listing_id = _listing_id(item)
     if not listing_id:

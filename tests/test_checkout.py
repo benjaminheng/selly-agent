@@ -66,6 +66,30 @@ def test_idempotent_second_call_returns_existing_link(make_ctx, store) -> None:
     assert rail.calls == 1  # never minted a second link
 
 
+def test_idempotent_return_survives_a_later_floor_increase(make_ctx, store) -> None:
+    """set_floor(force=True) has no awareness of existing checkouts. If the seller raises the
+    floor after a deal already closed above the old floor, re-fetching that already-issued link
+    must not re-run the floor gate against the new floor — nothing about the recorded sale needs
+    re-validating."""
+    item = _published_item(store, list_price=100.0, floor=50.0)
+    rail = FakeRail()
+    ctx = _ctx(make_ctx, rail)
+    first = dispatch(
+        "carousell_ai_create_checkout_link",
+        {"item_id": item["id"], "thread_id": "fb:1", "agreed_price": 60.0},
+        ctx,
+    )
+    store.set_floor(item["id"], 70.0, "seller", force=True)
+    second = dispatch(
+        "carousell_ai_create_checkout_link",
+        {"item_id": item["id"], "thread_id": "fb:1", "agreed_price": 60.0},
+        ctx,
+    )
+    assert second["already_issued"] is True
+    assert second["checkout_url"] == first["checkout_url"]
+    assert rail.calls == 1  # never re-minted
+
+
 def test_below_floor_refused_without_leaking_value(make_ctx, store) -> None:
     item = _published_item(store, list_price=100.0, floor=80.0)
     with pytest.raises(ToolError) as exc:
