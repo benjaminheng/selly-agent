@@ -61,6 +61,25 @@ def test_a_version_is_provisioned_before_it_becomes_current(xdg_tmp, tree, monke
     assert materialize.current_version() == "1.0.0"
 
 
+def test_a_failed_provision_does_not_leave_a_fake_installed_version(
+    xdg_tmp, tree, monkeypatch
+) -> None:
+    """A version that never got its dependencies must not look installed: `--rollback` reads
+    `previous_version()`, and a half-built directory there is a broken rollback target."""
+    materialize.install_version(tree, "1.0.0")
+
+    def explode(dest):
+        raise RuntimeError("no network")
+
+    monkeypatch.setattr(materialize.runtime, "provision", explode)
+    with pytest.raises(RuntimeError):
+        materialize.install_version(tree, "2.0.0")
+
+    assert [v.name for v in materialize.installed_versions()] == ["1.0.0"]
+    assert materialize.previous_version() is None
+    assert not (paths.versions_dir() / "2.0.0").exists()
+
+
 def test_provisioning_is_injectable(xdg_tmp, tree) -> None:
     seen = []
     materialize.install_version(tree, "1.0.0", provision=seen.append)

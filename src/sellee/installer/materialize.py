@@ -247,7 +247,13 @@ def install_version(tree, version: str, *, provision=None) -> Path:
     paths.ensure_runtime_dirs()
     _guard_current_is_ours()
     dest = stage_version(tree, version)
-    (provision if provision is not None else runtime.provision)(dest)
+    try:
+        (provision if provision is not None else runtime.provision)(dest)
+    except Exception:
+        # A version without dependencies must never look installed: left in place, its normal
+        # name would make `installed_versions`/`previous_version` offer it as a rollback target.
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
     swap_current(dest)
     return dest
 
