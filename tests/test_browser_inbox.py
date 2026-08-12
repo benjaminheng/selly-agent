@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from sellee.browser import inbox
+from sellee.browser import inbox, reconcile
 from sellee.browser.client import BrowserToolError, BrowserUnavailable
 from sellee.browser.markets import carousell as carousell_market
 from sellee.config import Config
@@ -393,6 +393,46 @@ def test_a_tail_that_disagrees_with_the_conversation_list_is_blind(store, bus, s
     inbox.inbox_lane(deps)
     assert deps.blind.get("carousell") == 1
     assert store.count_queued_notices() == 1
+
+
+def test_a_repeat_past_the_tail_window_is_blind_not_a_quiet_buyer(store, bus, seeded) -> None:
+    """When a buyer's last TAIL_BUBBLES bubbles are all textually identical, every trailing-window
+    overlap size content-matches trivially, so the aligner always concludes the whole tail is
+    already stored — a repeat beyond the window is silently never recorded, and `new_rows` returns
+    no fresh rows indistinguishable from the buyer having said nothing. The marketplace's own
+    unread count is the backstop: an empty-fresh read on a conversation still reporting unread
+    messages is unreadable, not quiet."""
+    _thread(store, seeded)
+    tail = [_bubble("hi")] * reconcile.TAIL_BUBBLES
+    client = StubClient(conversations=[_conv(unread=1)], tails={"99": tail})
+    deps = _deps(store, bus, client, browser_blind_after=1)
+    inbox.inbox_lane(deps)  # first read: records all TAIL_BUBBLES occurrences of "hi"
+    assert len(store.get_thread("carousell:99")["messages"]) == reconcile.TAIL_BUBBLES
+    assert "carousell" not in deps.blind
+
+    inbox.inbox_lane(deps)  # buyer sends a 9th, identical "hi" — the visible tail is unchanged
+    assert deps.blind.get("carousell") == 1
+    assert store.count_queued_notices() == 1
+    # still not silently swallowed as "recorded" — the message count did not grow, but it was
+    # flagged rather than treated as a quiet buyer
+    assert len(store.get_thread("carousell:99")["messages"]) == reconcile.TAIL_BUBBLES
+
+
+def test_a_repeat_past_the_tail_window_with_no_unread_still_reads_quiet(store, bus, seeded) -> None:
+    """The unread count is what makes a uniform-tail repeat detectable. Without it (nothing new
+    reported by the marketplace), the read still can't tell a real 9th repeat from a truly quiet
+    buyer — this pins that known limit rather than claiming blindness on every read of a
+    uniform tail."""
+    _thread(store, seeded)
+    tail = [_bubble("hi")] * reconcile.TAIL_BUBBLES
+    client = StubClient(conversations=[_conv(unread=0, last_message="hi")], tails={"99": tail})
+    deps = _deps(store, bus, client, browser_blind_after=1, inbox_full_sweep_every=1)
+    inbox.inbox_lane(deps)
+    assert "carousell" not in deps.blind
+
+    inbox.inbox_lane(deps)
+    assert "carousell" not in deps.blind
+    assert store.count_queued_notices() == 0
 
 
 # --- login and availability ---------------------------------------------------------------------
