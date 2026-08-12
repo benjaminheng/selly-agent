@@ -241,6 +241,11 @@ def report_settled(deps: CrosslistDeps) -> int:
 # Deliberately code, not registry data: this changes only when the rail's enum does. It must stay
 # injective — the rail rejects a set carrying the same platform twice — and a market with no entry
 # here is left out of the pushed set entirely, never sent as an unspecified platform.
+# A market absent here is never cross-linked back onto the rail listing (desired_external_urls
+# below silently excludes it) — not an oversight for Craigslist specifically, but a rail-side proto
+# enum this layer has no visibility into. Adding a guessed enum name would be rejected by the
+# rail's protojson and retry forever as a RailError, worse than the current silent no-op — leave it
+# out until a real enum value exists.
 MARKET_PLATFORMS = {
     "carousell": "EXTERNAL_PLATFORM_CAROUSELL",
     "fb": "EXTERNAL_PLATFORM_FACEBOOK_MARKETPLACE",

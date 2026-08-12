@@ -225,8 +225,9 @@ Mercari link.
   (an always-empty list, an always-`null` tail) rather than DOM scrapers with
   nothing yet to scrape.
 - **The registry records no `urls.inbox` for this market**, so the read lane's
-  own "no recorded inbox URL — skip" path keeps it fully inert in the
-  background lane: no per-tick navigation, and no change to how any other
+  own "no recorded inbox URL — skip" path keeps it out of the browser
+  entirely: no per-tick navigation or evaluate call (just a single
+  debug-level log line noting the skip), and no change to how any other
   market's read behaves.
 - **`login_js` is still real and still used** — `selly-agent connect craigslist`
   and the healthcheck's per-market login line navigate to
@@ -236,6 +237,9 @@ Mercari link.
   a country-level map would silently misroute most sellers. The registry falls
   back to the bare `craigslist.org` host; the publish skill finds the seller's
   actual city live, off the page, rather than the code guessing a subdomain.
+- **Not cross-linked back onto the rail listing.** `crosslist.py`'s
+  `MARKET_PLATFORMS` has no Craigslist entry, deliberately — see that
+  file's comment for why guessing one would be worse than leaving it out.
 - **The permalink id is the last numeric path segment before `.html`** —
   Craigslist's listing pages are plain server-rendered HTML, stable for years,
   unlike a hashed-class SPA.

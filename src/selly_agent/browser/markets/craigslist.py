@@ -43,18 +43,20 @@ CONVERSATION_TAIL_JS = """() => {
 }"""
 
 # Is the seller logged in? Three-state, and it must never answer logged_out on thin evidence — see
-# carousell.py's LOGIN_JS for why. Best effort: Craigslist's login lives at
-# accounts.craigslist.org; a signed-in page links to the post-login account home or a "log out"
-# action, a signed-out one only ever offers to log in. Needs confirming against a live account.
+# carousell.py's LOGIN_JS for why. logged_out requires a login CONTROL carrying login-labeled text,
+# never bare body text (a stray "log in" mention elsewhere on the page must not count) — best
+# effort: Craigslist's login lives at accounts.craigslist.org; a signed-in page links to the
+# post-login account home or a "log out" action, a signed-out one offers a labeled login link.
+# Needs confirming against a live account.
 LOGIN_JS = """() => {
   try {
     const loggedIn = !!document.querySelector(
       'a[href*="accounts.craigslist.org/login/home"], a[href*="/login/home"], a[href*="logout"]'
     );
     if (loggedIn) return { state: 'logged_in' };
-    const loginLink = !!document.querySelector('a[href*="accounts.craigslist.org/login"]');
-    const text = (document.body && document.body.innerText) || '';
-    if (loginLink || /\\blog\\s?in\\b/i.test(text)) return { state: 'logged_out' };
+    const loginControl = document.querySelector('a[href*="accounts.craigslist.org/login"]');
+    const labeled = loginControl && /\\blog\\s?in\\b/i.test(loginControl.textContent || '');
+    if (labeled) return { state: 'logged_out' };
     return { state: 'unknown' };
   } catch (e) {
     return { state: 'unknown' };

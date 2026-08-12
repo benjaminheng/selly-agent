@@ -42,7 +42,8 @@ all. There is no page to scrape a thread from.
 exist.** The registry entry records no `urls.inbox` for Craigslist (see "Changes" below), so the
 read lane's existing, generic "no recorded inbox URL — skip" path (already there for exactly this
 situation) means the lane never navigates anywhere for Craigslist and never calls its
-`conversations_list_js`/`conversation_tail_js` at all — no per-tick cost, and critically, **no
+`conversations_list_js`/`conversation_tail_js` at all — no per-tick browser or navigation cost
+(just a single debug-level log line noting the skip), and critically, **no
 change to any existing test's navigation or notice assertions**, since nothing about how the lane
 processes Carousell changes. `conversations_list_js` still permanently returns `{conversations:
 []}` and `conversation_tail_js` still returns `null`, to satisfy `MarketAdapter`'s required-field
@@ -54,7 +55,10 @@ dead code, though: `selly-agent connect craigslist` and the healthcheck's per-ma
 `login_js` directly, for whichever markets the seller has actually enabled. That's where this
 adapter's login detection earns its keep. The upstream issue and PR both say plainly that
 Craigslist buyer-reply automation is out of scope because the platform has no on-platform channel
-for it, not because of missing engineering effort.
+for it, not because of missing engineering effort. One further consequence, also worth stating
+plainly: a published Craigslist listing is never cross-linked back onto its carousell.ai listing
+(`crosslist.py`'s `MARKET_PLATFORMS` has no entry for it, deliberately — a guessed rail-side proto
+enum would be worse than the current silent no-op) until a real one exists.
 
 **2. Craigslist is per-city, not per-country.** Every other registry entry's `domains` map is one
 host per ISO region (`SG → www.carousell.sg`). Craigslist runs one host per city

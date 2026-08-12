@@ -17,6 +17,18 @@ after publishing. Say so plainly in your report once the listing is live.
 
 ## Before you touch the page
 
+Load the remembered selectors for this flow in one call — `ui_cache_get` with market `craigslist`
+and flow `listing` — and keep the map for the whole pass. An entry marked stale counts as absent.
+Craigslist's posting pages are plain server-rendered HTML with far less DOM churn than a
+JavaScript-heavy marketplace, but the cache costs nothing to check and everything to skip: use it
+the same way every other market's flow does.
+
+**Snapshots are the expensive thing here, same as any other market.** One `browser_snapshot` per
+posting-wizard *step*, never one per field, and none at all on a step where the remembered
+selectors resolve. To check a single fact — a field's value, whether a photo attached — use a
+scoped `browser_evaluate` read, not a new snapshot. The wizard has more steps than Carousell's
+single-page composer, which makes this discipline matter more here, not less.
+
 **Open your own tab first** (`browser_tabs`, action `new`) and work only in it. Other tabs may be
 mid-flow for something else; never switch to one.
 
@@ -42,7 +54,9 @@ navigation target.
    neighborhood/zip for location — never a location Craigslist has not offered on the page.
 4. **Verify every field you filled, in ONE `browser_evaluate`** that returns all the values you
    set — never one read per field. Confirm each is what you sent (compare price on its digits —
-   the page may reformat it). A field that did not take gets re-filled individually.
+   the page may reformat it). A field that did not take gets re-filled individually; a selector
+   that resolved to the wrong thing gets `ui_cache_invalidate`d, re-found by looking at the page,
+   and `ui_cache_record`ed once it works.
 5. **Condition.** Set it from the item's condition, mapped to Craigslist's own condition options
    (new / like new / excellent / good / fair / salvage) — pick the closest when there is no exact
    match, and report which one you picked.

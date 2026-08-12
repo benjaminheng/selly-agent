@@ -170,7 +170,7 @@ def _read_market(deps: InboxDeps, client, adapter, region: str | None) -> None:
     market = adapter.market
     inbox_url = marketplaces.market_url(market, "inbox", region)
     if inbox_url is None:
-        log.warning("no recorded inbox URL for %s — skipping", market)
+        log.debug("no recorded inbox URL for %s — skipping", market)
         return
 
     client.navigate(inbox_url)
