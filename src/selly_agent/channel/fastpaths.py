@@ -107,10 +107,10 @@ def handle_fast_path(store, event: dict) -> tuple:
     pause wiring); the reads render from the store. Assumes is_fast_path(event) is True."""
     token = event["text"] if event["kind"] == "command" else event["payload"]["choice"]
     if token in ("/pause", CB_PAUSE):
-        store.set_paused(True, source="telegram")
+        store.set_paused(True, source="channel")
         return "Paused — I won't act on anything until you resume.", _control_spec(store)
     if token in ("/resume", CB_RESUME):
-        store.set_paused(False, source="telegram")
+        store.set_paused(False, source="channel")
         return "Resumed — I'm back on.", _control_spec(store)
     if token == "/status":
         return render_status(store), None

@@ -216,6 +216,7 @@ class Status:
     heartbeat_age_sec: float | None
     recent_events: list
     channel_bound: bool
+    channel_adapter: str | None
     paused: bool
     queued_notices: int
 
@@ -227,18 +228,26 @@ def _channel_snapshot() -> dict:
     import sqlite3
 
     db = paths.selly_db()
-    default = {"channel_bound": False, "paused": False, "queued_notices": 0}
+    default = {
+        "channel_bound": False,
+        "channel_adapter": None,
+        "paused": False,
+        "queued_notices": 0,
+    }
     if not db.exists():
         return default
     conn = connect_reader(db)
     try:
-        ch = conn.execute("SELECT chat_id FROM channel WHERE id = 1").fetchone()
+        ch = conn.execute("SELECT chat_id, adapter FROM channel WHERE id = 1").fetchone()
         ctrl = conn.execute("SELECT paused FROM control WHERE id = 1").fetchone()
         notices = conn.execute(
             "SELECT COUNT(*) AS n FROM notices WHERE status = 'queued'"
         ).fetchone()
         return {
             "channel_bound": ch is not None and ch["chat_id"] is not None,
+            "channel_adapter": (
+                ch["adapter"] if ch is not None and ch["chat_id"] is not None else None
+            ),
             "paused": bool(ctrl["paused"]) if ctrl else False,
             "queued_notices": notices["n"],
         }
@@ -305,6 +314,7 @@ def _status(*, label: str, mode: str, registered: bool, hb_age) -> Status:
         heartbeat_age_sec=hb_age,
         recent_events=recent,
         channel_bound=snap["channel_bound"],
+        channel_adapter=snap["channel_adapter"],
         paused=snap["paused"],
         queued_notices=snap["queued_notices"],
     )
