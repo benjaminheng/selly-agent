@@ -68,7 +68,7 @@ def test_idempotent_second_call_returns_existing_link(make_ctx, store) -> None:
 
 def test_below_floor_refused_without_leaking_value(make_ctx, store) -> None:
     item = _published_item(store, list_price=100.0, floor=80.0)
-    with pytest.raises(ToolError) as exc:
+    with pytest.raises(ToolError, match="below the seller's floor") as exc:
         dispatch(
             "carousell_ai_create_checkout_link",
             {"item_id": item["id"], "thread_id": "fb:1", "agreed_price": 70.0},
