@@ -98,6 +98,9 @@ def world(monkeypatch, xdg_tmp, tree):
     monkeypatch.setattr(settings_cli, "set_setting", fake_set_setting)
     monkeypatch.setattr(connect_cli, "market_flow", fake_market_flow)
     monkeypatch.setattr(connect_cli, "bind_flow", lambda *a, **k: calls.get("bind_rc", 0))
+    monkeypatch.setattr(
+        connect_cli, "discord_bind_flow", lambda *a, **k: calls.get("discord_bind_rc", 0)
+    )
     monkeypatch.setattr(pass_cli, "harness_config", lambda directory=None: 0)
     monkeypatch.setattr(
         setup_cli, "_provision_rail", lambda ui, region: calls.__setitem__("provisioned", region)
@@ -530,7 +533,7 @@ def test_picking_a_marketplace_records_the_setting_then_signs_in(world, monkeypa
     # region confirmed, Carousell picked, window question defaulted, Telegram declined
     _answer(monkeypatch, ["y", "1", "", "n"])
 
-    assert setup_main("--manual") == 0
+    assert setup_main("--manual", "--skip-discord") == 0
 
     # The opt-in is recorded before the sign-in, so an interrupted sign-in still leaves the
     # seller's choice standing.
@@ -542,7 +545,7 @@ def test_skipping_the_marketplace_offer_enables_nothing(world, monkeypatch, caps
     # region confirmed, no marketplace picked, window question defaulted, Telegram declined
     _answer(monkeypatch, ["y", "", "", "n"])
 
-    assert setup_main("--manual") == 0
+    assert setup_main("--manual", "--skip-discord") == 0
 
     assert world.calls["settings"] == {}
     assert world.calls["markets"] == []
@@ -567,7 +570,7 @@ def test_a_region_with_no_marketplaces_says_so_rather_than_offering_an_empty_lis
 def test_declining_the_browser_window_question_records_the_setting(world, monkeypatch) -> None:
     # region confirmed, no marketplace, window declined, Telegram declined
     _answer(monkeypatch, ["y", "", "n", "n"])
-    assert setup_main("--manual") == 0
+    assert setup_main("--manual", "--skip-discord") == 0
     assert world.calls["settings"]["raise_browser"] == "false"
 
 
@@ -575,7 +578,7 @@ def test_accepting_the_browser_window_question_writes_nothing(world, monkeypatch
     """The default lives in code; writing it back would list the setting as customized on the
     /selly card."""
     _answer(monkeypatch, ["y", "", "", "n"])
-    assert setup_main("--manual") == 0
+    assert setup_main("--manual", "--skip-discord") == 0
     assert "raise_browser" not in world.calls["settings"]
 
 
@@ -585,7 +588,7 @@ def test_the_browser_question_comes_after_the_marketplace_sign_in(
     """The first window of an install must always come forward — a sign-in window the seller
     cannot find is a wall — so the question that could turn that off is asked only afterwards."""
     _answer(monkeypatch, ["y", "1", "n", "n"])
-    assert setup_main("--manual") == 0
+    assert setup_main("--manual", "--skip-discord") == 0
     assert world.calls["markets"] == ["carousell"]  # signed in under the raise-by-default
     out = capsys.readouterr().out
     assert out.index("Other marketplaces") < out.index("Keep bringing my window to the front?")
@@ -602,7 +605,7 @@ def test_an_os_that_cannot_raise_a_window_is_never_asked(world, monkeypatch, cap
     about their install — and would put a question in the script that has no answer to give."""
     monkeypatch.setattr(setup_cli.foreground, "is_supported", lambda: False)
     _answer(monkeypatch, ["y", "", "n"])  # region, no marketplace, Telegram — no window question
-    assert setup_main("--manual") == 0
+    assert setup_main("--manual", "--skip-discord") == 0
     out = capsys.readouterr().out
     assert "Browser window" not in out
     assert "raise_browser" not in world.calls["settings"]
@@ -652,6 +655,44 @@ def test_finish_points_an_unbound_install_at_the_terminal(world, capsys) -> None
     assert "Next: your first listing." in out
     assert "/sell" in out
     assert "Open Telegram" not in out  # no phone to send the photo to
+
+
+# --- Discord --------------------------------------------------------------------------------------
+
+
+def test_discord_is_offered_and_declining_points_at_the_verb(world, capsys) -> None:
+    # Not interactive, so the offer is declined for us — the path a piped install takes.
+    assert setup_main("--manual", "--skip-telegram") == 0
+    assert "selly-agent connect discord" in capsys.readouterr().out
+
+
+def test_an_already_bound_channel_is_not_offered_discord_either(world, capsys) -> None:
+    world.calls["bound"] = True
+    assert setup_main("--yes", "--manual") == 0
+    out = capsys.readouterr().out
+    assert out.count("already connected") == 2  # Telegram's own check, then Discord's
+
+
+def test_skip_discord_never_offers(world, capsys) -> None:
+    assert setup_main("--yes", "--manual", "--skip-discord") == 0
+    assert "Connect Discord now?" not in capsys.readouterr().out
+
+
+def test_a_telegram_bind_this_run_stops_discord_from_being_offered(
+    world, monkeypatch, capsys
+) -> None:
+    """The channel row is a shared singleton (see store.arm_bind) — binding Discord right after
+    Telegram would silently replace it. _offer_discord re-probes bound state itself rather than
+    taking a value threaded through, so a Telegram bind that happens during this same run is
+    picked up before Discord is offered."""
+    _answer(monkeypatch, ["y", "", "", "y"])  # region, no marketplace, window default, telegram: yes
+    monkeypatch.setattr(
+        connect_cli,
+        "bind_flow",
+        lambda *a, **k: world.calls.__setitem__("bound", True) or 0,
+    )
+    assert setup_main("--manual") == 0
+    assert "Connect Discord now?" not in capsys.readouterr().out
 
 
 # --- the attended workspace ----------------------------------------------------------------------

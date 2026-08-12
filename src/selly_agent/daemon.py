@@ -38,6 +38,7 @@ from selly_agent.browser import chrome, inbox
 from selly_agent.browser import client as browser_client
 from selly_agent.browser import sink as browser_sink
 from selly_agent.channel import outbound
+from selly_agent.channel.discord import provider as discord_provider
 from selly_agent.channel.manager import ChannelManager
 from selly_agent.channel.telegram import provider as telegram_provider
 from selly_agent.db import Database
@@ -315,7 +316,7 @@ def run_daemon(*, once: bool) -> int:
         None
         if once
         else ChannelManager(
-            providers={"telegram": telegram_provider},
+            providers={"telegram": telegram_provider, "discord": discord_provider},
             bus=bus,
             store=store,
             config=cfg,

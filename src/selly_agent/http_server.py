@@ -274,6 +274,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_enqueue_pass()
         elif route == "/control/connect-telegram":
             self._handle_connect_telegram()
+        elif route == "/control/connect-discord":
+            self._handle_connect_discord()
         elif route == "/control/settings-decide":
             self._handle_settings_decide()
         elif route == "/control/settings-set":
@@ -421,6 +423,30 @@ class _Handler(BaseHTTPRequestHandler):
         # runtime (a reconnect while running is a no-op; the live poller re-reads the new nonce).
         if self._app.channels is not None:
             self._app.channels.register("telegram")
+        self._send_json(200, result)
+
+    def _handle_connect_discord(self) -> None:
+        # Discord's analog of _handle_connect_telegram — same attended-only gate, same shape of
+        # BindError -> status mapping, same runtime provider start. What differs lives in
+        # bind.connect_discord itself: no deep link, an invite URL plus a nonce the seller DMs.
+        from selly_agent.channel.discord import bind
+
+        body = self._attended_body()
+        if body is None:
+            return
+        token = body.get("token")
+        if not isinstance(token, str):
+            self._send_json(400, {"error": "token (string) is required"})
+            return
+        try:
+            result = bind.connect_discord(self._app.store, self._app.config, token)
+        except bind.BindError as exc:
+            status = {"bad_token_format": 400, "unauthorized": 401}.get(exc.kind, 502)
+            self._send_json(status, {"error": exc.kind, "detail": str(exc)})
+            return
+        self._app.bus.publish("channel.bind_attempt", {"bot_username": result["bot_username"]})
+        if self._app.channels is not None:
+            self._app.channels.register("discord")
         self._send_json(200, result)
 
     def _handle_settings_decide(self) -> None:
@@ -675,11 +701,18 @@ class _Handler(BaseHTTPRequestHandler):
         )
 
     def _handle_channel_status(self, parsed) -> None:
-        from selly_agent.channel.telegram import bind
+        # The channel row is a singleton (one adapter bound at a time — see store.arm_bind), so
+        # which provider's channel_status answers is whichever adapter that row currently names.
+        # bind.channel_status is deliberately identical in shape between providers (bound /
+        # awaiting_bind / bot_username / chat_id), so the caller sees no difference either way.
+        from selly_agent.channel.discord import bind as discord_bind
+        from selly_agent.channel.telegram import bind as telegram_bind
 
         if self._attended_query(parsed) is None:
             return
-        self._send_json(200, bind.channel_status(self._app.store))
+        adapter = self._app.store.get_channel()["adapter"]
+        bind_module = discord_bind if adapter == "discord" else telegram_bind
+        self._send_json(200, bind_module.channel_status(self._app.store))
 
     # --- web tail -------------------------------------------------------------------------
 

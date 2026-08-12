@@ -105,6 +105,7 @@ def _run(args, ui: Ui) -> None:
     _connect_markets(ui, args, port, token, region)
     _browser_window(ui, port, token)
     _offer_telegram(ui, args, port, token)
+    _offer_discord(ui, args, port, token)
     _attended_workspace(ui)
     # Re-probed here rather than threaded through: the bind may have just happened inside
     # _offer_telegram, and the closing next-step depends on where the seller can act.
@@ -125,7 +126,7 @@ def _intro(ui: Ui, platform) -> None:
     ui.say("  • install this version, plus the `selly-agent` command")
     ui.say("  • register and start the background worker")
     ui.say("  • record the region and currency to price in")
-    ui.say("  • optionally connect marketplaces and Telegram")
+    ui.say("  • optionally connect marketplaces, Telegram, and Discord")
     ui.say("")
     ui.say("Selly will be installed into the following locations:")
     for line in materialize.layout_preview(platform=platform):
@@ -149,7 +150,7 @@ def _intro_container(ui: Ui) -> None:
     ui.say("This will:")
     ui.say("  • record the region and currency to price in")
     ui.say("  • set up carousell.ai")
-    ui.say("  • optionally connect marketplaces and Telegram")
+    ui.say("  • optionally connect marketplaces, Telegram, and Discord")
     ui.say("  • write the workspace for the terminal session")
     ui.say("")
     ui.say("Everything it writes lands in the directory you mounted at /data, and nothing is")
@@ -641,6 +642,34 @@ def _offer_telegram(ui: Ui, args, port: int, token: str) -> None:
     code = connect_cli.bind_flow(port, token, interactive=ui.interactive)
     if code != 0:
         ui.say("not connected — resume later with `selly-agent connect telegram`")
+
+
+# --- Discord ------------------------------------------------------------------------------------
+
+
+def _offer_discord(ui: Ui, args, port: int, token: str) -> None:
+    """Offer Discord as an alternative channel. Comes right after `_offer_telegram` and, like it,
+    re-probes bound state itself rather than taking a value passed down — the channel row is a
+    singleton (one adapter bound at a time; see `store.arm_bind`), so a Telegram bind that just
+    happened above is picked up here by the same "already connected" check, and Discord is never
+    offered on top of a channel the seller just finished connecting."""
+    if args.skip_discord:
+        return
+    ui.step("Discord")
+    if _channel_bound(port, token):
+        ui.say("already connected")
+        return
+
+    ui.say("Discord delivers buyer chats to your phone or desktop. Connecting takes about two")
+    ui.say("minutes. Without it, anything needing you is queued for your next session in the")
+    ui.say("terminal.")
+    if not ui.interactive or not ui.confirm("Connect Discord now?", default=True, lead=False):
+        ui.say("skipped — connect later with `selly-agent connect discord`")
+        return
+
+    code = connect_cli.discord_bind_flow(port, token, interactive=ui.interactive)
+    if code != 0:
+        ui.say("not connected — resume later with `selly-agent connect discord`")
 
 
 def _channel_bound(port: int, token: str) -> bool:

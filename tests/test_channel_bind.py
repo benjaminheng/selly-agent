@@ -13,6 +13,9 @@ import threading
 import urllib.error
 import urllib.request
 
+from fake_discord_api import BOT as DISCORD_BOT
+from fake_discord_api import FAKE_TOKEN as DISCORD_FAKE_TOKEN
+from fake_discord_api import FakeDiscordAPI
 from fake_telegram_api import BOT, CHAT_ID, FAKE_TOKEN, FakeTelegramAPI
 from selly_agent import secrets
 from selly_agent.channel import fastpaths, outbound
@@ -206,7 +209,7 @@ def test_bound_downloads_photo_before_ingest(store, bus, xdg_tmp) -> None:
 
 
 class _Server:
-    def __init__(self, store, bus, api, channels=None):
+    def __init__(self, store, bus, api, channels=None, config=None):
         self.srv = HttpServer(
             port=0,
             bus=bus,
@@ -214,7 +217,7 @@ class _Server:
             events_db_path=bus.store.db.path,
             context_factory=lambda s: None,
             attended_token="attended-secret",
-            config=Config(telegram_api_base=api.base_url),
+            config=config or Config(telegram_api_base=api.base_url),
             channels=channels,
         )
 
@@ -322,3 +325,94 @@ def test_bind_attempt_event_carries_only_bot_username(store, bus, xdg_tmp) -> No
     # the token appears in no event payload
     for e in bus.store.read():
         assert FAKE_TOKEN not in json.dumps(e.payload)
+
+
+# --- Discord: the same control routes, mirroring the Telegram coverage above -----------------
+
+
+def _discord_config(api) -> Config:
+    return Config(discord_api_base=api.base_url + "/api/v10")
+
+
+def test_discord_connect_route_validates_and_returns_invite_url(store, bus, xdg_tmp) -> None:
+    with FakeDiscordAPI() as api, _Server(store, bus, api, config=_discord_config(api)) as server:
+        status, body = _post(server, "/control/connect-discord", {"token": DISCORD_FAKE_TOKEN})
+        assert status == 200
+        assert body["bot_username"] == DISCORD_BOT["username"]
+        assert body["invite_url"].startswith("https://discord.com/oauth2/authorize?client_id=")
+        assert secrets.read_discord_bot_token() == DISCORD_FAKE_TOKEN
+        assert store.get_channel()["bind_nonce"] == body["nonce"]
+        assert store.get_channel()["adapter"] == "discord"
+
+
+def test_discord_connect_route_rejects_bad_token_format(store, bus, xdg_tmp) -> None:
+    with FakeDiscordAPI() as api, _Server(store, bus, api, config=_discord_config(api)) as server:
+        status, body = _post(server, "/control/connect-discord", {"token": "not-a-token"})
+        assert status == 400 and body["error"] == "bad_token_format"
+
+
+def test_discord_connect_route_requires_attended_token(store, bus, xdg_tmp) -> None:
+    with FakeDiscordAPI() as api, _Server(store, bus, api, config=_discord_config(api)) as server:
+        status, _ = _post(
+            server, "/control/connect-discord", {"token": DISCORD_FAKE_TOKEN}, token="nope"
+        )
+        assert status == 401
+
+
+def test_discord_channel_status_reports_states(store, bus, xdg_tmp) -> None:
+    with FakeDiscordAPI() as api, _Server(store, bus, api, config=_discord_config(api)) as server:
+        base = "/control/channel-status?token=attended-secret"
+        assert _get(server, base) == {
+            "bound": False,
+            "awaiting_bind": False,
+            "bot_username": None,
+            "chat_id": None,
+        }
+        _post(server, "/control/connect-discord", {"token": DISCORD_FAKE_TOKEN})
+        awaiting = _get(server, base)
+        assert awaiting["awaiting_bind"] is True and awaiting["bound"] is False
+        store.complete_bind(111, update_offset=1)
+        bound = _get(server, base)
+        assert bound["bound"] is True and bound["chat_id"] == 111
+
+
+def test_discord_connect_route_registers_the_provider(store, bus, xdg_tmp) -> None:
+    channels = _RecordingChannels()
+    with FakeDiscordAPI() as api:
+        cfg = _discord_config(api)
+        with _Server(store, bus, api, channels=channels, config=cfg) as server:
+            status, _ = _post(server, "/control/connect-discord", {"token": DISCORD_FAKE_TOKEN})
+            assert status == 200
+    assert channels.registered == ["discord"]
+
+
+def test_discord_bind_attempt_event_carries_only_bot_username(store, bus, xdg_tmp) -> None:
+    with FakeDiscordAPI() as api, _Server(store, bus, api, config=_discord_config(api)) as server:
+        _post(server, "/control/connect-discord", {"token": DISCORD_FAKE_TOKEN})
+    attempts = [e for e in bus.store.read() if e.kind == "channel.bind_attempt"]
+    assert attempts and attempts[0].payload == {"bot_username": DISCORD_BOT["username"]}
+    for e in bus.store.read():
+        assert DISCORD_FAKE_TOKEN not in json.dumps(e.payload)
+
+
+def test_channel_status_follows_whichever_adapter_is_actually_bound(store, bus, xdg_tmp) -> None:
+    """The channel row is a shared singleton (one adapter bound at a time — see store.arm_bind):
+    connecting Discord after Telegram replaces the bound adapter, and /control/channel-status must
+    switch to answering from Discord's own channel_status, not keep reporting Telegram's stale
+    (now-superseded) bot identity."""
+    with FakeTelegramAPI() as tg_api, FakeDiscordAPI() as dc_api:
+        cfg = Config(
+            telegram_api_base=tg_api.base_url, discord_api_base=dc_api.base_url + "/api/v10"
+        )
+        with _Server(store, bus, tg_api, config=cfg) as server:
+            _post(server, "/control/connect-telegram", {"token": FAKE_TOKEN})
+            base = "/control/channel-status?token=attended-secret"
+            status = _get(server, base)
+            assert status["bot_username"] == BOT["username"]
+            assert status["awaiting_bind"] is True
+
+            _post(server, "/control/connect-discord", {"token": DISCORD_FAKE_TOKEN})
+            status = _get(server, base)
+            assert status["bot_username"] == DISCORD_BOT["username"]
+            assert status["awaiting_bind"] is True
+            assert store.get_channel()["adapter"] == "discord"
