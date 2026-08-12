@@ -82,3 +82,11 @@ def read_telegram_bot_token() -> str | None:
 
 def write_telegram_bot_token(value: str) -> None:
     write_secret(paths.telegram_bot_token_path(), value)
+
+
+def read_discord_bot_token() -> str | None:
+    return read_secret(paths.discord_bot_token_path())
+
+
+def write_discord_bot_token(value: str) -> None:
+    write_secret(paths.discord_bot_token_path(), value)

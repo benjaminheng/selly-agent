@@ -68,6 +68,9 @@ class Config:
     # The Telegram Bot API base. Overridable so the channel tests point the real transport at a
     # local fake server; production uses the default.
     telegram_api_base: str = "https://api.telegram.org"
+    # The Discord REST API base. Overridable so the channel tests point the real transport at a
+    # local fake server; production uses the default.
+    discord_api_base: str = "https://discord.com/api/v10"
     # The warm Chrome's CDP port. The daemon attaches to the Chrome listening here, and starts one
     # on this port if none is — always after probing, since two Chromes cannot share the profile.
     chrome_cdp_port: int = 9222
@@ -210,7 +213,12 @@ def _validate(raw: dict) -> Config:
             )
         values["node_bin_dir"] = node_bin_dir.strip() if node_bin_dir is not None else None
 
-    for key in ("carousell_ai_api_base", "carousell_ai_web_base_url", "telegram_api_base"):
+    for key in (
+        "carousell_ai_api_base",
+        "carousell_ai_web_base_url",
+        "telegram_api_base",
+        "discord_api_base",
+    ):
         if key in raw:
             base = raw[key]
             if (
