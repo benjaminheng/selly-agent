@@ -383,7 +383,9 @@ class NoticeRecord(TypedDict):
     """One needs-me notice (see `_notice_from_row`) — a queued or delivered outbound message.
     `holdable` marks a proactive notice the drain may defer during quiet hours (seller-facing
     notices are not holdable and deliver at any hour); `controls` is an optional provider-neutral
-    list of [label, token] button pairs the channel renders into a native keyboard."""
+    list of [label, token] button pairs the channel renders into a native keyboard. `sent_chunks`
+    is how many chunks of a long, chunked notice already reached the seller — the resume point
+    for a retry after a partial send."""
 
     id: int
     text: str
@@ -396,6 +398,7 @@ class NoticeRecord(TypedDict):
     pass_id: str | None
     holdable: bool
     controls: list | None
+    sent_chunks: int
 
 
 class EscalationRecord(TypedDict):
@@ -625,6 +628,7 @@ def _notice_from_row(row: sqlite3.Row) -> NoticeRecord:
         "pass_id": row["pass_id"],
         "holdable": bool(row["holdable"]),
         "controls": json.loads(row["controls"]) if row["controls"] else None,
+        "sent_chunks": row["sent_chunks"],
     }
 
 

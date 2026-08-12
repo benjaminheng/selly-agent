@@ -10,7 +10,7 @@ import pytest
 from fake_telegram_api import CHAT_ID, FAKE_TOKEN, FakeTelegramAPI
 from sellee import secrets
 from sellee.channel import outbound
-from sellee.channel.telegram.transport import ChannelError, TelegramClient
+from sellee.channel.telegram.transport import ChannelError, TelegramClient, chunk_text
 from sellee.tools import TIER_ATTENDED
 from sellee.tools.registry import dispatch
 
@@ -22,8 +22,10 @@ def _bind(store):
 
 
 def _deliver(api):
-    def deliver(chat_id, text, controls=None):
-        TelegramClient(FAKE_TOKEN, api_base=api.base_url).send_message(chat_id, text)
+    def deliver(chat_id, text, controls=None, *, start_chunk=0):
+        TelegramClient(FAKE_TOKEN, api_base=api.base_url).send_message(
+            chat_id, text, start_chunk=start_chunk
+        )
 
     return deliver
 
@@ -51,13 +53,36 @@ def test_drain_transport_failure_bumps_attempts_and_raises(store, bus, xdg_tmp) 
     _bind(store)
     nid = store.queue_notice("ping")
 
-    def failing_deliver(chat_id, text, controls=None):
+    def failing_deliver(chat_id, text, controls=None, *, start_chunk=0):
         raise ChannelError("Bot API sendMessage HTTP 500")
 
     with pytest.raises(ChannelError):
         outbound.drain_notices(store=store, bus=bus, deliver=failing_deliver)
     queued = store.list_queued_notices()
     assert len(queued) == 1 and queued[0]["id"] == nid and queued[0]["attempts"] == 1
+
+
+def test_a_chunked_notice_resumes_after_a_later_chunk_fails(store, bus, xdg_tmp) -> None:
+    """A later chunk's send can fail after an earlier one already reached the seller (e.g. a
+    per-chat rate limit mid-loop). The retry must resume at the failed chunk, not re-post the
+    whole notice from chunk 0 — or the seller sees the first chunk twice."""
+    _bind(store)
+    text = "a" * 5000  # chunks at the 4096 boundary -> 2 chunks
+    nid = store.queue_notice(text)
+    with FakeTelegramAPI(fail_send_at=2) as api:
+        with pytest.raises(ChannelError):
+            _drain(store, bus, api)
+        assert len(api.outbox) == 1  # only the first chunk got out
+        queued = store.list_queued_notices()
+        assert len(queued) == 1 and queued[0]["id"] == nid
+        assert queued[0]["sent_chunks"] == 1
+        assert queued[0]["attempts"] == 1
+
+        api.fail_send_at = None  # the retry succeeds
+        _drain(store, bus, api)
+        assert len(api.outbox) == 2  # chunk 0 was never re-sent
+        assert [m["text"] for m in api.outbox] == chunk_text(text)
+        assert store.count_queued_notices() == 0
 
 
 # --- no-op when unbound / paused ------------------------------------------------------------

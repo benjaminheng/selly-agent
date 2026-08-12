@@ -161,6 +161,27 @@ def test_send_message_chunks_and_keyboard_on_last() -> None:
         assert api.outbox[1]["reply_markup"] == kb
 
 
+def test_send_message_resumes_after_a_mid_chunk_failure() -> None:
+    """A later chunk's send can fail after an earlier one already reached the seller (e.g. a
+    per-chat rate limit mid-loop). The raised error reports how many chunks this call delivered
+    before failing, and a retry that resumes at that point must not re-send what already went
+    out — or the seller sees the first chunk twice."""
+    text = "a" * 5000  # chunks at the 4096 boundary -> 2 chunks
+    with FakeTelegramAPI(fail_send_at=2) as api:
+        client = TelegramClient(FAKE_TOKEN, api_base=api.base_url)
+        with pytest.raises(ChannelError) as excinfo:
+            client.send_message(CHAT_ID, text)
+        assert excinfo.value.chunks_sent == 1  # chunk 0 got out before chunk 1 failed
+        assert len(api.outbox) == 1
+        assert api.outbox[0]["text"] == chunk_text(text)[0]
+
+        api.fail_send_at = None  # the retry succeeds
+        ids = client.send_message(CHAT_ID, text, start_chunk=1)
+        assert len(ids) == 1
+        assert len(api.outbox) == 2  # chunk 0 was never re-sent
+        assert api.outbox[1]["text"] == chunk_text(text)[1]
+
+
 def test_get_updates_and_actions() -> None:
     with FakeTelegramAPI() as api:
         api.inject_text("hello")

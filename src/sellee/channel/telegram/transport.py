@@ -196,16 +196,33 @@ class TelegramClient:
             {"offset": offset, "timeout": timeout, "allowed_updates": allowed_updates},
         )
 
-    def send_message(self, chat_id: int, text: str, *, reply_markup: dict | None = None) -> list:
-        """Send text (chunked at the 4096-char limit) to a chat. An inline keyboard, if any,
-        attaches to the last chunk only. Returns the message_ids of the sent chunks."""
+    def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        reply_markup: dict | None = None,
+        start_chunk: int = 0,
+    ) -> list:
+        """Send text (chunked at the 4096-char limit) to a chat, skipping the first `start_chunk`
+        chunks — already delivered by an earlier, partially-failed call. An inline keyboard, if
+        any, attaches to the last chunk only. Returns the message_ids of the chunks this call sent.
+
+        On failure the raised ChannelError carries `.chunks_sent` — how many chunks beyond
+        `start_chunk` landed before the failure — so the caller can persist the new resume point.
+        """
         chunks = chunk_text(text)
         message_ids: list = []
-        for i, chunk in enumerate(chunks):
+        for offset, chunk in enumerate(chunks[start_chunk:]):
+            i = start_chunk + offset
             params = {"chat_id": chat_id, "text": chunk}
             if reply_markup is not None and i == len(chunks) - 1:
                 params["reply_markup"] = reply_markup
-            result = self._api("sendMessage", params)
+            try:
+                result = self._api("sendMessage", params)
+            except ChannelError as exc:
+                exc.chunks_sent = offset
+                raise
             if isinstance(result, dict):
                 message_ids.append(result.get("message_id"))
         return message_ids

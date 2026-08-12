@@ -21,10 +21,16 @@ def _client(config) -> TelegramClient:
 
 
 def make_deliver(config):
-    def deliver(chat_id, text, controls=None) -> None:
+    def deliver(chat_id, text, controls=None, *, start_chunk: int = 0) -> None:
         # A notice may carry provider-neutral controls (an approval notice's Approve/Cancel, an echo
-        # notice's Undo); render them into an inline keyboard on the last chunk.
-        _client(config).send_message(chat_id, text, reply_markup=commands.render_controls(controls))
+        # notice's Undo); render them into an inline keyboard on the last chunk. Resume semantics
+        # for `start_chunk` live in send_message.
+        _client(config).send_message(
+            chat_id,
+            text,
+            reply_markup=commands.render_controls(controls),
+            start_chunk=start_chunk,
+        )
 
     return deliver
 

@@ -151,8 +151,10 @@ def _bind(store):
 
 
 def _drain(store, bus, api) -> list:
-    def deliver(chat_id, text, controls=None):
-        TelegramClient(FAKE_TOKEN, api_base=api.base_url).send_message(chat_id, text)
+    def deliver(chat_id, text, controls=None, *, start_chunk=0):
+        TelegramClient(FAKE_TOKEN, api_base=api.base_url).send_message(
+            chat_id, text, start_chunk=start_chunk
+        )
 
     outbound.drain_notices(store=store, bus=bus, deliver=deliver)
     return [m["text"] for m in api.outbox]

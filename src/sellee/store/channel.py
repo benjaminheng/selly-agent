@@ -356,6 +356,14 @@ class ChannelMixin:
             row = conn.execute("SELECT attempts FROM notices WHERE id = ?", (notice_id,)).fetchone()
             return row["attempts"] if row else 0
 
+    def advance_notice_progress(self, notice_id: int, sent_chunks: int) -> None:
+        """Record a partially-sent chunked notice's progress, so the retry resumes at
+        `sent_chunks` instead of re-sending chunks the seller already has."""
+        with self._db.transaction() as conn:
+            conn.execute(
+                "UPDATE notices SET sent_chunks = ? WHERE id = ?", (sent_chunks, notice_id)
+            )
+
     def count_queued_notices(self) -> int:
         rows = self._db.query("SELECT COUNT(*) AS n FROM notices WHERE status = 'queued'")
         return rows[0]["n"]

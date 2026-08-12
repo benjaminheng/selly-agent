@@ -3,9 +3,9 @@ settled-pass inbox fold, the escalation-push bus subscriber, and the daemon-auth
 messages (the bind welcome and the first-listing nudge).
 
 The mechanism — how a message or typing action actually reaches the seller — is the provider's:
-`drain_notices` and `pulse_typing` take an injected `deliver(chat_id, text)` / `typing(chat_id)`
-callable, so the policy (when bound and not paused, FIFO, bump-and-retry on failure) lives here
-once and every provider reuses it.
+`drain_notices` and `pulse_typing` take an injected `deliver(chat_id, text, controls, *,
+start_chunk)` / `typing(chat_id)` callable, so the policy (when bound and not paused, FIFO,
+bump-and-retry-with-resume on failure) lives here once and every provider reuses it.
 """
 
 from __future__ import annotations
@@ -58,7 +58,9 @@ def drain_notices(*, store, bus, deliver, limit: int = _NOTICE_DRAIN_BATCH, now=
     — seller-facing ones (channel-pass replies, settings approvals, escalation pushes) deliver at
     any hour, so seller-initiated chat is never gated. A delivery failure bumps the notice's
     attempts (the row stays queued — visible in catchup, never dropped) and re-raises so the
-    scheduler backs the lane off."""
+    scheduler backs the lane off. If some of a long notice's chunks got out before the failure
+    (`deliver` reports this as `.chunks_sent` on the raised exception), that progress is persisted
+    so the retry resumes rather than re-sending them."""
     if store.is_paused():
         return
     ch = store.get_channel()
@@ -67,8 +69,16 @@ def drain_notices(*, store, bus, deliver, limit: int = _NOTICE_DRAIN_BATCH, now=
     in_quiet = _in_quiet_hours(store, now)
     for notice in store.claim_queued_notices(limit, in_quiet=in_quiet):
         try:
-            deliver(ch["chat_id"], notice["text"], notice["controls"])
-        except Exception:
+            deliver(
+                ch["chat_id"],
+                notice["text"],
+                notice["controls"],
+                start_chunk=notice["sent_chunks"],
+            )
+        except Exception as exc:
+            chunks_sent = getattr(exc, "chunks_sent", 0)
+            if chunks_sent:
+                store.advance_notice_progress(notice["id"], notice["sent_chunks"] + chunks_sent)
             store.bump_notice_attempts(notice["id"])
             raise
         store.mark_notice_delivered(notice["id"], "channel")

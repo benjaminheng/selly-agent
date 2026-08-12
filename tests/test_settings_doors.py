@@ -148,7 +148,7 @@ def test_drain_defers_holdable_but_delivers_seller_facing_in_quiet_hours(store, 
     store.queue_notice("reply to the seller")  # seller-facing (default) — delivered at any hour
     sent: list = []
 
-    def deliver(chat_id, text, controls=None):
+    def deliver(chat_id, text, controls=None, *, start_chunk=0):
         sent.append(text)
 
     noon = datetime.fromisoformat("2026-07-22T12:00:00").timestamp()

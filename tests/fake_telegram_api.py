@@ -32,11 +32,15 @@ FAKE_TOKEN = "123456789:ZZfakeBotTokenForTestsOnlyNeverRealXX"
 
 
 class FakeTelegramAPI:
-    def __init__(self, *, longpoll_cap_sec: float = 0.3):
+    def __init__(self, *, longpoll_cap_sec: float = 0.3, fail_send_at: int | None = None):
         self._lock = threading.Lock()
         self._next_update_id = 1
         self._queue: list = []
         self.offset = 0
+        # 1-indexed position (by call order) of a sendMessage to fail with a transport error
+        # instead of succeeding — for testing a failure partway through a multi-chunk send. None
+        # (the default) never fails a send. Cleared or reset by the test once it has fired.
+        self.fail_send_at = fail_send_at
         self.outbox: list = []
         self.calls: list = []
         self.commands: list | None = None
@@ -168,14 +172,18 @@ class FakeTelegramAPI:
                 if method == "sendMessage":
                     with api._lock:
                         mid = len(api.outbox) + 1
-                        api.outbox.append(
-                            {
-                                "message_id": mid,
-                                "chat_id": p.get("chat_id"),
-                                "text": p.get("text", ""),
-                                "reply_markup": p.get("reply_markup"),
-                            }
-                        )
+                        should_fail = api.fail_send_at == mid
+                        if not should_fail:
+                            api.outbox.append(
+                                {
+                                    "message_id": mid,
+                                    "chat_id": p.get("chat_id"),
+                                    "text": p.get("text", ""),
+                                    "reply_markup": p.get("reply_markup"),
+                                }
+                            )
+                    if should_fail:
+                        return self._reply({"ok": False, "description": "Too Many Requests"}, 429)
                     return self._reply(
                         {"ok": True, "result": {"message_id": mid, "text": p.get("text", "")}}
                     )

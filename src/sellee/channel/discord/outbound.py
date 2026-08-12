@@ -20,7 +20,10 @@ def _client(config) -> DiscordClient:
 
 
 def make_deliver(config):
-    def deliver(chat_id, text, controls=None) -> None:
+    def deliver(chat_id, text, controls=None, *, start_chunk: int = 0) -> None:
+        # No resume yet: this transport reports no per-chunk progress on failure, so a notice's
+        # resume point stays 0 and a retry re-sends from the first chunk.
+        del start_chunk
         _client(config).send_message(chat_id, text, components=controls)
 
     return deliver

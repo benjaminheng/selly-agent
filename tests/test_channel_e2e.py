@@ -127,8 +127,10 @@ def _post(server, path, body, token=_ATTENDED):
 
 
 def _deliver(api):
-    def deliver(chat_id, text, controls=None):
-        TelegramClient(FAKE_TOKEN, api_base=api.base_url).send_message(chat_id, text)
+    def deliver(chat_id, text, controls=None, *, start_chunk=0):
+        TelegramClient(FAKE_TOKEN, api_base=api.base_url).send_message(
+            chat_id, text, start_chunk=start_chunk
+        )
 
     return deliver
 
