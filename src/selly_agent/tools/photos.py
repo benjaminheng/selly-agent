@@ -56,7 +56,10 @@ def _sniff(path: Path) -> tuple:
     try:
         head = path.open("rb").read(_MAGIC_READ_BYTES)
     except OSError as exc:
-        raise ToolError(f"cannot read {path.name}: {type(exc).__name__}") from exc
+        raise ToolError(
+            f"couldn't read {path.name} — it may have moved or its permissions changed; "
+            "re-attach the photo and try again"
+        ) from exc
     for magic, kind, suffix, content_type in _MAGIC:
         if head.startswith(magic):
             return kind, suffix, content_type
