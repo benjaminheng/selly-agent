@@ -156,7 +156,7 @@ class DiscordClient:
             if components is not None and i == len(chunks) - 1:
                 body["components"] = build_components(components)
             result = self._request("POST", f"/channels/{channel_id}/messages", body)
-            message_id = result.get("id") if isinstance(result, dict) else None
+            message_id = int(result["id"]) if isinstance(result, dict) and "id" in result else None
         return message_id
 
     def trigger_typing(self, channel_id: int) -> None:

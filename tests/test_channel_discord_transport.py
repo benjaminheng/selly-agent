@@ -120,6 +120,15 @@ def test_send_message_over_the_2000_char_limit_is_chunked() -> None:
         assert all(len(m["content"]) <= 2000 for m in api.outbox)
 
 
+def test_send_message_returns_the_message_id_as_an_int() -> None:
+    # Discord serializes snowflake ids as JSON strings (the fake mirrors this: {"id": "111", ...}),
+    # so send_message must cast before returning — its declared -> int signature must match reality.
+    with FakeDiscordAPI() as api:
+        message_id = _client(api).send_message(CHANNEL_ID, "hi")
+        assert isinstance(message_id, int)
+        assert message_id == 111
+
+
 def test_trigger_typing() -> None:
     with FakeDiscordAPI() as api:
         _client(api).trigger_typing(CHANNEL_ID)
