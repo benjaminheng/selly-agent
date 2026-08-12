@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import pytest
 
+from sellee.config import Config
 from sellee.store import ItemNotFound, Scope, ScopedStore, ThreadNotFound
 from sellee.tools.registry import Session, ToolContext, ToolError, dispatch
 
@@ -78,6 +79,23 @@ def test_the_browser_layers_accessors_are_scope_guarded(store) -> None:
     with pytest.raises(ItemNotFound, match=i2["id"]):
         scoped.qa_add(i2["id"], "q", "a", "seller")
     assert scoped.qa_search(i2["id"]) == []  # another item's taught answers stay invisible
+
+
+def test_a_two_id_accessor_denies_on_the_id_that_actually_failed(store) -> None:
+    """`negotiate_offer` is guarded on both item_id and thread_id. `_deny` used to always raise
+    using the *first* guarded parameter's kind regardless of which one actually failed the scope
+    check — an out-of-scope thread paired with a perfectly valid, in-scope item raised
+    ItemNotFound naming the (real, in-scope) item instead of ThreadNotFound naming the actual
+    out-of-scope thread. Still correctly denied either way; only the exception's kind/message
+    should point at the thread."""
+    i1, _, _, _ = _two_of_everything(store)
+    # a second, real thread on the same item — out of scope, unlike fb:1
+    store.create_thread(
+        thread_id="fb:3", side="sell", market="fb", counterpart_handle="d", item_id=i1["id"]
+    )
+    scoped = ScopedStore(store, Scope.of(threads={"fb:1"}, items={i1["id"]}))
+    with pytest.raises(ThreadNotFound, match="fb:3"):
+        scoped.negotiate_offer(i1["id"], "fb:3", "buyer", 90.0, config=Config())
 
 
 def test_list_reads_are_filtered_to_scope(store) -> None:
