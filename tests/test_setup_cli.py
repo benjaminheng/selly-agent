@@ -27,6 +27,7 @@ from selly_agent import (
     settings_cli,
     setup_cli,
 )
+from selly_agent.browser import markets as market_adapters
 from selly_agent.installer import checks, materialize, preflight
 from selly_agent.installer import region as region_guess
 
@@ -555,8 +556,13 @@ def test_skip_markets_never_offers(world) -> None:
 
 
 def test_a_region_with_no_marketplaces_says_so_rather_than_offering_an_empty_list(
-    world, capsys
+    world, capsys, monkeypatch
 ) -> None:
+    """No marketplace has a site in a region only once nothing can be driven there at all —
+    Craigslist's registry entry carries no domains map, so it resolves (and is offered) in every
+    region alike; this exercises the message via the only remaining "nothing available" case: no
+    adapters registered at all."""
+    monkeypatch.setattr(market_adapters, "_ADAPTERS", {})
     assert setup_main("--yes", "--manual", "--region", "US") == 0
     assert "none available in this region" in capsys.readouterr().out
 

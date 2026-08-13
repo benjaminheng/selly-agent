@@ -163,11 +163,14 @@ identifiers instead.
 
 `data/marketplaces.json` says a market is `connector.type == "browser"`;
 `browser_markets()` returns the active ones in registry order. Several entries
-qualify today (Facebook, Mercari, OfferUp, Poshmark, Craigslist) and **only
-Carousell has an adapter** — the lane skips a registry entry with no adapter, so
-listing a market in the registry does not make it read. Page URLs come from the
-registry's `urls` templates and the region→host `domains` map, never from a guess:
-an unrecorded template resolves to `None` and the caller reports that.
+still qualify with no adapter at all (Facebook, Mercari, OfferUp, Poshmark) —
+the lane skips a registry entry with no adapter, so listing a market in the
+registry does not make it read. Carousell and Craigslist both have adapters;
+Craigslist's is listing-only (see below) and its registry entry records no
+`urls.inbox`, so it is skipped by the same "no recorded inbox URL" path rather
+than actually being read. Page URLs come from the registry's `urls` templates
+and the region→host `domains` map, never from a guess: an unrecorded template
+resolves to `None` and the caller reports that.
 
 Whether a market can be *published* to is two facts with two homes:
 
@@ -212,6 +215,34 @@ Mercari link.
 - **There is no send-button selector**, because there is nothing addressable to
   click: the send icon's ancestors are undecorated elements with no role, no
   label and no cursor change, while the message box handles Enter itself.
+
+### Adapter: Craigslist
+
+- **Listing/publish only — there is no in-page buyer inbox to read.** A buyer's
+  reply to a Craigslist posting is relayed through an anonymized email address
+  and lands in the seller's own email, a channel this layer never touches.
+  `conversations_list_js` and `conversation_tail_js` are permanent, honest stubs
+  (an always-empty list, an always-`null` tail) rather than DOM scrapers with
+  nothing yet to scrape.
+- **The registry records no `urls.inbox` for this market**, so the read lane's
+  own "no recorded inbox URL — skip" path keeps it out of the browser
+  entirely: no per-tick navigation or evaluate call (just a single
+  debug-level log line noting the skip), and no change to how any other
+  market's read behaves.
+- **`login_js` is still real and still used** — `selly-agent connect craigslist`
+  and the healthcheck's per-market login line navigate to
+  `marketplaces.market_home()` directly, independent of `urls.inbox`, and
+  evaluate it for whichever markets the seller has enabled.
+- **No `domains` map.** Craigslist runs one host per city, not one per country —
+  a country-level map would silently misroute most sellers. The registry falls
+  back to the bare `craigslist.org` host; the publish skill finds the seller's
+  actual city live, off the page, rather than the code guessing a subdomain.
+- **Not cross-linked back onto the rail listing.** `crosslist.py`'s
+  `MARKET_PLATFORMS` has no Craigslist entry, deliberately — see that
+  file's comment for why guessing one would be worse than leaving it out.
+- **The permalink id is the last numeric path segment before `.html`** —
+  Craigslist's listing pages are plain server-rendered HTML, stable for years,
+  unlike a hashed-class SPA.
 
 ## The read lane
 
@@ -485,6 +516,11 @@ re-arming them errs toward reading more rather than less.
 4. **A publish recipe skill**, if the market should be publishable, pointed at by
    the registry's `listing_flow`. Steps 2 and 4 together are what make the market
    selectable in `crosslist_markets` — there is no separate switch to remember.
+
+A market need not fit every part of this shape. Craigslist (`### Adapter:
+Craigslist` above) has no in-page buyer inbox at all, so it ships with no
+`domains` map and no `urls.inbox` — the two required-looking pieces in step 1
+are a norm most markets follow, not a hard requirement of the protocol itself.
 
 Nothing else in the layer changes: the read lane, reconcile, the sink and the
 selector cache are all written against the protocol.

@@ -115,6 +115,10 @@ _SKILL_BLURBS = (
     ("seller-comms", "how to frame a decision the seller has to make"),
     ("listing-flow", "photos in, live listing out"),
     ("listing-flow-carousell", "the same, filled into Carousell's own composer in the browser"),
+    (
+        "listing-flow-craigslist",
+        "the same, filled into Craigslist's own posting form in the browser",
+    ),
     ("buyer-conversation", "how a buyer's message is classified, answered, and negotiated"),
     ("scam-guard", "the never-engage rule, and what to do with a flagged thread"),
 )

@@ -433,6 +433,17 @@ def test_an_unknown_login_state_still_reads(store, bus, seeded) -> None:
     assert store.count_queued_notices() == 0
 
 
+def test_a_market_with_no_recorded_inbox_url_is_never_navigated_to(store, bus, seeded) -> None:
+    """Craigslist has no in-page inbox and the registry records no `urls.inbox` for it — the lane
+    must skip it via the existing "no recorded inbox URL" path, never touching the browser for it,
+    and Carousell's own read must be completely unaffected."""
+    _thread(store, seeded)
+    client = StubClient(conversations=[_conv()], tails={"99": [_bubble("hi")]})
+    inbox.inbox_lane(_deps(store, bus, client))
+    assert all("craigslist" not in url for url in client.navigations)
+    assert store.get_thread("carousell:99")["message_count"] == 1
+
+
 def test_no_browser_degrades_with_one_notice_and_no_crash(store, bus, seeded) -> None:
     def factory():
         raise BrowserUnavailable("npx not found")

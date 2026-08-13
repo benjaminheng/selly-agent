@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import re
+
 from selly_agent import marketplaces
 from selly_agent.browser import markets as market_adapters
+from selly_agent.browser.markets.craigslist import LISTING_ID_PATTERN
 from selly_agent.engines import hosts
 
 
@@ -63,9 +66,9 @@ def test_allowlist_covers_markets_without_adapters() -> None:
 
 
 def test_supported_markets_is_the_adapter_registry() -> None:
-    """Only carousell today — every other browser entry is a host the scanner needs, not a market
-    anything can drive."""
-    assert market_adapters.supported_markets() == ["carousell"]
+    """Carousell and Craigslist today — every other browser entry is a host the scanner needs, not
+    a market anything can drive."""
+    assert market_adapters.supported_markets() == ["carousell", "craigslist"]
 
 
 def test_supported_market_needs_both_an_adapter_and_a_recipe(monkeypatch) -> None:
@@ -78,11 +81,12 @@ def test_supported_market_needs_both_an_adapter_and_a_recipe(monkeypatch) -> Non
 
 
 def test_publishable_markets_follow_the_seller_region() -> None:
-    """Carousell runs no US site, so a US seller has nowhere to be listed there; with no region
-    recorded that is true of every marketplace."""
-    assert market_adapters.publishable_markets("SG") == ["carousell"]
-    assert market_adapters.publishable_markets("US") == []
-    assert market_adapters.publishable_markets(None) == []
+    """Carousell runs no US site, so a US seller has nowhere to be listed there. Craigslist has no
+    domains map at all (see test_resolve_falls_back_to_listing_url_host), so it resolves for every
+    region alike -- including no region at all."""
+    assert market_adapters.publishable_markets("SG") == ["carousell", "craigslist"]
+    assert market_adapters.publishable_markets("US") == ["craigslist"]
+    assert market_adapters.publishable_markets(None) == ["craigslist"]
 
 
 # --- region resolution: a domains map is exhaustive --------------------------------------------
@@ -106,3 +110,37 @@ def test_no_entry_ever_resolves_to_a_bare_host_suffix() -> None:
         for region in ("SG", "US", "MY", "ZZ", None):
             host = marketplaces.resolve_domain(entry["id"], region)
             assert host is None or not host.endswith("."), (entry["id"], region, host)
+
+
+# --- craigslist: registry entry -----------------------------------------------------------------
+
+
+def test_craigslist_registry_entry_is_complete() -> None:
+    assert marketplaces.listing_flow("craigslist") == "listing-flow-craigslist"
+    assert marketplaces.market_url("craigslist", "sell", "US") == "https://craigslist.org/"
+    assert marketplaces.market_url("craigslist", "sell", None) == "https://craigslist.org/"
+
+
+def test_craigslist_has_no_recorded_inbox_url() -> None:
+    """Craigslist has no in-page buyer inbox, so the read lane must never be pointed at one —
+    covered end to end in test_browser_inbox.py."""
+    assert marketplaces.urls("craigslist").get("inbox") is None
+
+
+def test_craigslist_adapter_is_listing_only() -> None:
+    """The inbox-related artifacts still exist to satisfy MarketAdapter's required shape, but
+    there is never a composer or a submit mechanism because there is never a chat to reply in."""
+    assert market_adapters.CRAIGSLIST.chat_message_submit_js == ""
+    assert market_adapters.CRAIGSLIST.composer == ()
+    assert market_adapters.CRAIGSLIST.system_handles == frozenset()
+
+
+def test_craigslist_listing_id_pattern_matches_a_real_shaped_permalink() -> None:
+    url = "https://sfbay.craigslist.org/sfc/mob/d/san-francisco-iphone-13/7654321098.html"
+    match = re.search(LISTING_ID_PATTERN, url)
+    assert match is not None
+    assert match.group(1) == "7654321098"
+
+
+def test_craigslist_listing_id_pattern_rejects_a_non_listing_page() -> None:
+    assert re.search(LISTING_ID_PATTERN, "https://sfbay.craigslist.org/search/sss") is None

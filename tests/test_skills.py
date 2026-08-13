@@ -19,6 +19,7 @@ EXPECTED_SKILL_SETS = {
     ("publish", ()): ("selly-conventions", "listing-flow"),
     ("publish", (("market", "carousell-ai"),)): ("selly-conventions", "listing-flow"),
     ("publish", (("market", "carousell"),)): ("selly-conventions", "listing-flow-carousell"),
+    ("publish", (("market", "craigslist"),)): ("selly-conventions", "listing-flow-craigslist"),
     ("channel", ()): ("selly-conventions", "voice-and-style", "seller-comms", "listing-flow"),
     ("reply", ()): (
         "selly-conventions",

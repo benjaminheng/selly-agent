@@ -631,7 +631,9 @@ def _crosslist_help() -> str:
     supported = market_adapters.supported_markets()
     if not supported:
         return "no other marketplaces are supported yet — carousell.ai only"
-    return f"the only other marketplace I can list on is {_market_names(supported)}"
+    if len(supported) == 1:
+        return f"the only other marketplace I can list on is {_market_names(supported)}"
+    return f"the other marketplaces I can list on are {_market_names(supported)}"
 
 
 def _parse_crosslist_markets(raw: object) -> list:

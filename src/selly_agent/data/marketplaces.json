@@ -145,7 +145,11 @@
       "connector": {
         "type": "browser"
       },
-      "status": "active"
+      "status": "active",
+      "urls": {
+        "sell": "/"
+      },
+      "listing_flow": "listing-flow-craigslist"
     }
   ]
 }
