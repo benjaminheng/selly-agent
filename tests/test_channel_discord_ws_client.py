@@ -1,9 +1,14 @@
-"""The socket-owning half of ws_client: the RFC 6455 handshake and send/recv over a real (local,
-TLS-free) TCP connection to the fake WS server double — so this is the real client's real I/O path,
-not a mock.
+"""This module's own contract on top of `websockets`: the host/port/path -> URI translation, our
+exception types (`HandshakeError`, `ConnectionClosed`) in place of the library's, and `recv_text`'s
+timeout — driven against a real (local, TLS-free) fake WS server, not a mock. RFC 6455 protocol
+correctness itself (framing, masking, ping/pong, fragmentation) is the `websockets` library's own
+test suite's job, not this one's.
 """
 
 from __future__ import annotations
+
+import socket
+import threading
 
 import pytest
 
@@ -29,9 +34,6 @@ def test_handshake_succeeds_and_can_exchange_text(server) -> None:
 
 
 def test_handshake_fails_against_a_plain_http_server() -> None:
-    import socket
-    import threading
-
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
@@ -39,6 +41,12 @@ def test_handshake_fails_against_a_plain_http_server() -> None:
 
     def _serve_one():
         conn, _ = listener.accept()
+        # Read (some of) the request before responding — the client library's background reader
+        # thread starts as soon as the socket connects, before the handshake request is even
+        # sent, so a response arriving unprompted races the client's own send-then-check-state
+        # ordering and fails with the wrong exception. A real HTTP server always reads a request
+        # first; this fake one has to as well to be a faithful enough double of one.
+        conn.recv(4096)
         conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
         conn.close()
 
@@ -48,58 +56,25 @@ def test_handshake_fails_against_a_plain_http_server() -> None:
     listener.close()
 
 
-def test_recv_transparently_answers_a_ping(server) -> None:
-    from selly_agent.channel.discord.ws_client import OPCODE_PING, encode_frame
-
+def test_recv_text_raises_timeout_error_with_nothing_pending(server) -> None:
     ws = connect(server.host, server.port, "/", use_tls=False, timeout=2.0)
     server.wait_for_connection()
-    server.send_raw(encode_frame(OPCODE_PING, b"ping-payload"))
-    server.send_text('{"after": "ping"}')
-    assert ws.recv_text() == '{"after": "ping"}'
+    with pytest.raises(TimeoutError):
+        ws.recv_text(timeout=0.2)
     ws.close()
 
 
-def test_recv_raises_connection_closed_on_a_close_frame(server) -> None:
-    from selly_agent.channel.discord.ws_client import OPCODE_CLOSE, encode_frame
-
-    ws = connect(server.host, server.port, "/", use_tls=False, timeout=2.0)
-    server.wait_for_connection()
-    server.send_raw(encode_frame(OPCODE_CLOSE, (1000).to_bytes(2, "big")))
-    with pytest.raises(ConnectionClosed):
-        ws.recv_text()
-
-
-def test_wait_readable_times_out_with_nothing_pending(server) -> None:
-    ws = connect(server.host, server.port, "/", use_tls=False, timeout=2.0)
-    server.wait_for_connection()
-    assert ws.wait_readable(0.2) is False
-    ws.close()
-
-
-def test_wait_readable_true_once_the_server_sends(server) -> None:
+def test_recv_text_returns_once_the_server_sends(server) -> None:
     ws = connect(server.host, server.port, "/", use_tls=False, timeout=2.0)
     server.wait_for_connection()
     server.send_text('{"x": 1}')
-    assert ws.wait_readable(2.0) is True
-    assert ws.recv_text() == '{"x": 1}'
+    assert ws.recv_text(timeout=2.0) == '{"x": 1}'
     ws.close()
 
 
-def test_wait_readable_returns_true_when_ssl_socket_has_pending_data() -> None:
-    """Verify that wait_readable() checks SSL socket's internal buffer (via .pending()) before
-    calling select(). This catches the case where TLS record decryption buffered plaintext bytes
-    that select() wouldn't see, which would delay Gateway message dispatch. Uses duck-typing:
-    any socket-like object with a .pending() method returning > 0 should be treated as readable."""
-    from selly_agent.channel.discord.ws_client import WebSocket
-
-    class FakePendingSocket:
-        """Mimics an ssl.SSLSocket with pending buffered data."""
-
-        def pending(self):
-            return 42  # Non-zero = data buffered in SSL's internal buffer
-
-    fake_sock = FakePendingSocket()
-    ws = WebSocket(fake_sock)
-    # Should return True immediately because pending() > 0, without needing select() to work.
-    # Since select() would fail on the fake socket, this proves the pending() check runs first.
-    assert ws.wait_readable(0.001) is True
+def test_recv_text_raises_connection_closed_after_the_peer_closes(server) -> None:
+    ws = connect(server.host, server.port, "/", use_tls=False, timeout=2.0)
+    server.wait_for_connection()
+    server.close()
+    with pytest.raises(ConnectionClosed):
+        ws.recv_text(timeout=2.0)

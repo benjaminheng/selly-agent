@@ -168,13 +168,16 @@ class GatewaySession:
                 next_heartbeat_at = time.monotonic() + self._heartbeat_interval_sec * jitter
                 first_heartbeat = False
             wait_for = max(0.0, next_heartbeat_at - time.monotonic())
-            if not self._ws.wait_readable(wait_for):
+            try:
+                message = json.loads(self._ws.recv_text(timeout=wait_for))
+            except TimeoutError:
                 if self._ack_pending:
-                    raise ConnectionClosed("zombied: no Heartbeat ACK before the next was due")
+                    raise ConnectionClosed(
+                        "zombied: no Heartbeat ACK before the next was due"
+                    ) from None
                 self._send_heartbeat()
                 next_heartbeat_at = None  # re-armed (full interval) on the next loop iteration
                 continue
-            message = json.loads(self._ws.recv_text())
             if message.get("s") is not None:
                 self._seq = message["s"]
             op = message["op"]

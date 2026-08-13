@@ -27,7 +27,7 @@ OWN_TOP_LEVEL = "selly_agent"
 # pyproject.toml — this set is the review gate, so a name appears here only alongside a
 # relocked uv.lock and a reviewer who accepted the dependency.
 # Import names, not distribution names: pillow imports as PIL, pillow-heif as pillow_heif.
-ALLOWED_RUNTIME_DEPS = {"psutil", "segno", "PIL", "pillow_heif"}
+ALLOWED_RUNTIME_DEPS = {"psutil", "segno", "PIL", "pillow_heif", "websockets"}
 
 # Network / async modules a runtime module may not import unless its src-relative path is
 # listed here. Every entry is a deliberate decision: adding a module here means it is allowed
@@ -42,7 +42,6 @@ NETWORK_ALLOWLIST: set[str] = {
     "selly_agent/rail/client.py",  # carousell.ai MCP client + live listing verify
     "selly_agent/rail/provision.py",  # carousell.ai guest-key provisioning
     "selly_agent/channel/telegram/transport.py",  # the Telegram Bot API transport (one pipe)
-    "selly_agent/channel/discord/ws_client.py",  # the hand-rolled RFC 6455 WebSocket client
     "selly_agent/channel/discord/transport.py",  # the Discord REST API transport (one pipe)
     "selly_agent/channel/discord/gateway.py",  # the Gateway session (opens the WS connection)
     "selly_agent/browser/chrome.py",  # the warm Chrome's CDP readiness probe (loopback GET)

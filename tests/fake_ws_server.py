@@ -1,81 +1,58 @@
-"""A minimal, test-only server-side WebSocket endpoint: one TCP listener, one accepted connection,
-speaking just enough RFC 6455 to drive the real client end to end. No TLS (tests connect with
-use_tls=False) and no concurrency — one connection at a time is all `ws_client` tests need.
+"""A minimal, test-only server-side WebSocket endpoint, built on the same `websockets` library the
+real client (`ws_client.py`) uses — so these tests drive the real client against a real protocol
+implementation on both ends, over a real local socket, rather than a hand-rolled double of either
+side. No TLS (tests connect with use_tls=False) and no concurrency: one connection at a time is
+all these tests need.
 """
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
-import socket
+import queue
 import threading
 
-from selly_agent.channel.discord.ws_client import decode_frame_header, encode_frame
-
-_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+from websockets.sync.server import ServerConnection, serve
 
 
 class FakeWebSocketServer:
     def __init__(self):
-        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._listener.bind(("127.0.0.1", 0))
-        self._listener.listen(1)
-        self.host, self.port = self._listener.getsockname()
-        self._conn: socket.socket | None = None
-        self._accept_thread = threading.Thread(target=self._accept, daemon=True)
-        self._accept_thread.start()
+        self._accepted: queue.Queue[ServerConnection] = queue.Queue()
+        # serve()'s handler must stay on the stack for the connection's whole lifetime — once it
+        # returns, the library closes the connection out from under whoever is still using it —
+        # so the handler thread blocks here until the test is done (`close()` releases it), while
+        # the connection itself is handed to the test via the queue above.
+        self._release = threading.Event()
+        self._server = serve(self._handle, "127.0.0.1", 0)
+        self.host, self.port = self._server.socket.getsockname()
+        self._serve_thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._serve_thread.start()
+        self._conn: ServerConnection | None = None
 
-    def _accept(self) -> None:
-        conn, _ = self._listener.accept()
-        self._handshake(conn)
-        self._conn = conn
-
-    def _handshake(self, conn: socket.socket) -> None:
-        buf = b""
-        while b"\r\n\r\n" not in buf:
-            buf += conn.recv(1)
-        head = buf.decode("iso-8859-1")
-        key = next(
-            line.split(":", 1)[1].strip()
-            for line in head.split("\r\n")
-            if line.lower().startswith("sec-websocket-key:")
-        )
-        accept = base64.b64encode(hashlib.sha1((key + _GUID).encode("ascii")).digest()).decode()
-        conn.sendall(
-            b"HTTP/1.1 101 Switching Protocols\r\n"
-            b"Upgrade: websocket\r\n"
-            b"Connection: Upgrade\r\n" + f"Sec-WebSocket-Accept: {accept}\r\n\r\n".encode("ascii")
-        )
+    def _handle(self, conn: ServerConnection) -> None:
+        self._accepted.put(conn)
+        self._release.wait()
 
     def wait_for_connection(self, timeout: float = 5.0) -> None:
-        self._accept_thread.join(timeout)
-        if self._conn is None:
-            raise TimeoutError("no client connected in time")
+        try:
+            self._conn = self._accepted.get(timeout=timeout)
+        except queue.Empty:
+            raise TimeoutError("no client connected in time") from None
 
     def send_text(self, text: str) -> None:
-        # Server frames are never masked (RFC 6455 §5.1).
-        self._conn.sendall(encode_frame(0x1, text.encode("utf-8")))
+        self._conn.send(text)
 
-    def send_raw(self, data: bytes) -> None:
-        self._conn.sendall(data)
-
-    def recv_text(self) -> str:
-        buf = b""
-        while True:
-            frame_and_len = decode_frame_header(buf)
-            if frame_and_len is not None:
-                frame, _ = frame_and_len
-                return frame.payload.decode("utf-8")
-            chunk = self._conn.recv(4096)
-            if not chunk:
-                raise ConnectionError("client closed")
-            buf += chunk
+    def recv_text(self, timeout: float | None = None) -> str:
+        return self._conn.recv(timeout=timeout)
 
     def close(self) -> None:
         if self._conn is not None:
-            self._conn.close()
-        self._listener.close()
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+        self._release.set()  # let the handler return so shutdown()'s join doesn't hang
+        self._server.shutdown()
+        self._serve_thread.join(timeout=2.0)
 
 
 class FakeGatewayServer(FakeWebSocketServer):
