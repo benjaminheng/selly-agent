@@ -18,8 +18,9 @@ services:
     restart: unless-stopped
 
     environment:
-      # Both required; the entrypoint refuses to start without them. Not `${VAR:?}`, which
-      # compose evaluates on every command — including a build that needs neither.
+      # TZ plus one of the two credentials is required; the entrypoint refuses to start
+      # otherwise. Not `${VAR:?}`, which compose evaluates on every command — including a
+      # build that needs none of them.
       TZ: ${TZ:-}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

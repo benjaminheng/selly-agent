@@ -8,12 +8,16 @@
 
 set -eu
 
-# Both fail silently if unset — UTC moves the seller's quiet hours, no token dies at the first
-# pass — so refuse to start. Checked here because compose interpolation runs on every command,
-# including a build that needs neither.
+# Both fail silently if unset — UTC moves the seller's quiet hours, having neither credential
+# dies at the first pass — so refuse to start. Checked here because compose interpolation runs
+# on every command, including a build that needs none of them.
 missing=0
 if [ -z "${TZ:-}" ]; then
 	echo "error: TZ is unset" >&2
+	missing=1
+fi
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+	echo "error: neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set" >&2
 	missing=1
 fi
 [ "$missing" = 0 ] || exit 1
