@@ -196,6 +196,7 @@ class DiscordGateway:
         self._client_factory = client_factory or self._default_client_factory
         self._backoff = 0.0
         self._refused_token: str | None = None
+        self._refused_bind_nonce: str | None = None
 
     def _default_client_factory(self, token: str) -> DiscordClient:
         return DiscordClient(token, api_base=self.config.discord_api_base)
@@ -206,7 +207,8 @@ class DiscordGateway:
             token = self._read_token()
             ch = self.store.get_channel()
             state = self._state(token, ch)
-            if state == "off" or token == self._refused_token:
+            latched = token == self._refused_token and ch["bind_nonce"] == self._refused_bind_nonce
+            if state == "off" or latched:
                 stopper.wait(OFF_IDLE_SEC)
                 continue
             try:
@@ -223,12 +225,21 @@ class DiscordGateway:
                 self._backoff = 0.0
 
     def _latch_off(self, token: str, code: int, reason: str) -> None:
-        """Stay down until the token file's value changes. Discord closed with a code that says
-        this token will never be accepted, so reconnecting only re-IDENTIFIEs into the same
-        refusal forever. Tell the seller once — the notice reaches them through the needs-me queue
-        even though the channel it would normally ride on is the thing that is down — and idle
-        until `_read_token` returns something different."""
+        """Stay down until the token changes OR the seller arms a fresh bind. Discord closed with a
+        code that says this token will never be accepted, so reconnecting only re-IDENTIFIEs into
+        the same refusal forever. Tell the seller once — the notice reaches them through the
+        needs-me queue even though the channel it would normally ride on is the thing that is down
+        — and idle.
+
+        The latch is keyed on the bind nonce as well as the token: `connect discord` calls
+        `arm_bind`, which mints a fresh nonce on every attempt regardless of whether the token
+        string is the same as before. Some non-resumable codes (a stale intents grant, or a
+        transient false-positive) don't actually mean *this token* is bad, so a seller re-pasting
+        the identical value after fixing the real cause has to clear the latch too — keying on the
+        token alone would leave the gateway parked until a daemon restart even though `connect
+        discord` reported success."""
         self._refused_token = token
+        self._refused_bind_nonce = self.store.get_channel()["bind_nonce"]
         self._backoff = 0.0
         log.error(
             "Discord refused this bot token (close %s: %s) — gateway off until it changes",

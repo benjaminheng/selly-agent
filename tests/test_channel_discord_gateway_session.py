@@ -435,6 +435,33 @@ def test_a_new_token_clears_the_latch_without_a_restart(store, bus, xdg_tmp, mon
         server.close()
 
 
+def test_a_fresh_bind_attempt_clears_the_latch_even_with_the_same_token(
+    store, bus, xdg_tmp, monkeypatch
+) -> None:
+    """Not every non-resumable code is really about the token's identity — a stale intents grant
+    (4013/4014) or a transient false-positive 4004 doesn't mean *this token* is bad. A seller who
+    fixes the real cause and re-runs `connect discord` with the SAME token must still recover
+    without a daemon restart: `bind.connect_discord` calls `store.arm_bind` on every attempt,
+    minting a fresh nonce regardless of whether the token string changed, so the latch has to key
+    off that too — keying on the token alone would leave the gateway parked forever on a `connect`
+    call that the seller was told succeeded."""
+    server = FakeGatewayServer()
+    gw, stop, thread = _armed_gateway(store, bus, monkeypatch, server)
+    try:
+        _serve_hello_and_read_identify(server)
+        server.close_connection(4004, "Authentication failed.")
+        with pytest.raises(TimeoutError):
+            server.wait_for_connection(timeout=0.3)
+
+        store.arm_bind("selly_test_bot", "nonce-xyz789", adapter="discord")  # same token, new nonce
+        identify = _serve_hello_and_read_identify(server)  # redials despite the identical token
+        assert identify["d"]["token"] == FAKE_TOKEN
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
+        server.close()
+
+
 def test_a_resumable_close_reconnects_and_reidentifies(store, bus, xdg_tmp, monkeypatch) -> None:
     """Every close code outside the non-resumable set — 4000 here, but a bare network drop is the
     common one — is transient, so the gateway backs off and identifies again."""
