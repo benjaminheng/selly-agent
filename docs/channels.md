@@ -86,12 +86,12 @@ real items never sees it.
 
 ## Bind (Discord)
 
-`selly-agent connect discord` reads the Discord bot token and the bot's application ID
-— neither from argv, so they stay out of `ps`/shell history — and sends them to the
-running daemon, which:
+`selly-agent connect discord` reads the Discord bot token — never from argv, so it stays
+out of `ps`/shell history — and sends it to the running daemon, which:
 
-1. validates them against the Discord API, writes them to a 0600 file, and mints a
-   one-time **nonce**;
+1. validates it against the Discord API and reads the bot's application ID from
+   `GET /oauth2/applications/@me` (the seller never has to find it), writes the token to
+   a 0600 file, and mints a one-time **nonce**;
 2. returns a zero-permission OAuth authorize link (`scope=bot&permissions=0` — the bot
    only ever DMs, so it needs no guild permission grant at all) and starts the provider;
 3. binds the DM from the first user who sends the nonce code — and no other.
@@ -108,6 +108,13 @@ minimal. Reading DM text needs no privileged grant: Discord exempts DM content f
 `MESSAGE_CONTENT` intent, which otherwise gates a bot's access to message text and takes
 per-server approval.
 
+A dropped connection reconnects on a 5s→60s backoff. The exception is a close code that
+will never resolve itself — a revoked token, a refused intent — where reconnecting would
+re-authenticate into the same refusal every minute forever. There the gateway goes quiet
+for that token, queues one notice explaining why (it surfaces in the needs-me queue, since
+the channel that would normally carry it is what is down), and comes back on its own as
+soon as `connect discord` writes a different token. No daemon restart needed.
+
 On bind the daemon queues a deterministic welcome as ordinary notices (drain-
 delivered, retried, catchup-backstopped — never a fire-and-forget send), stamping
 `welcomed_at` in the same transaction so the same bot never re-greets. A seller
@@ -115,7 +122,7 @@ with nothing listed yet also gets the **first-listing CTA** — "send a photo of
 something you want to sell" — with an inline *Skip for now* button; a seller with
 real items never sees it.
 
-## The poller's three states
+## The Telegram poller's three states
 
 One thread owns *all* Bot API traffic, so "an unbound channel consumes nothing"
 is a property of that single consumer. State is derived from durable rows each
@@ -125,6 +132,11 @@ tick, always failing toward the less-capable one:
 - **awaiting-bind** — token + nonce, no chat: only a `/start` matching the nonce
   binds; everything else is consumed and discarded.
 - **bound** — a chat is bound: only that chat's updates are ingested.
+
+Discord's gateway derives the same three states from the same rows, re-reading
+them on every reconnect and on every inbound message (a bind can complete
+mid-session). The difference is what "off" costs: a poller makes no API call,
+while the gateway holds no WebSocket open at all.
 
 ## Durable inbox
 

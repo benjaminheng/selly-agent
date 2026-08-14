@@ -41,19 +41,21 @@ user does.
 
 ## Network access is allowlisted
 
-Most of `src/` does no network I/O. A module that imports a network stdlib
-package (`socket`, `ssl`, `urllib`, `http`, `asyncio`, …) must be added by its
-src-relative path to `NETWORK_ALLOWLIST` in
+Most of `src/` does no network I/O. A module that imports a network package
+(`socket`, `ssl`, `urllib`, `http`, `asyncio`, `websockets`, …) must be added by
+its src-relative path to `NETWORK_ALLOWLIST` in
 `tests/guard/test_stdlib_only.py`, or the guard fails. Adding an entry is a
 deliberate act: it grants that module the capability to open sockets, and a
 reviewer should treat it as such. Everything else stays network-free.
 
-The channel poller thread is the **one consumer** of all Telegram Bot API
-traffic — only `channel/telegram/transport.py` talks to the network, and the
-poller is its only caller of `get_updates`. That single-consumer property is
-what makes "an unbound channel consumes nothing" a state of one thread rather
-than a convention; keep it that way (a guard also pins that the channel *core*
-imports no provider).
+Each channel provider owns its own pipe, and **one thread is the sole consumer
+of each**. Telegram: `channel/telegram/transport.py`, with the poller its only
+caller of `get_updates`. Discord: `channel/discord/transport.py` for REST, plus
+`channel/discord/ws_client.py` for the Gateway's persistent WebSocket (via the
+`websockets` dependency), both driven by the gateway thread. That
+single-consumer property is what makes "an unbound channel consumes nothing" a
+state of one thread rather than a convention; keep it that way (a guard also
+pins that the channel *core* imports no provider).
 
 ## The interpreter is pinned; the syntax floor deliberately lags it
 
