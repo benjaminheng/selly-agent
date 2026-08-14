@@ -561,6 +561,11 @@ def _want_from_row(row: sqlite3.Row) -> WantRecord:
     return record  # type: ignore[return-value]
 
 
+# The channel adapters that exist. `channel.adapter` carries no enumerating CHECK — widening one
+# means recreating the table in SQLite — so this is where an adapter name is validated, on the way
+# in through `arm_bind`. A guard test pins it against the daemon's actual provider map.
+KNOWN_ADAPTERS = ("telegram", "discord")
+
 _DEFAULT_CHANNEL: ChannelRecord = {
     "adapter": "telegram",
     "bot_username": None,
@@ -2860,7 +2865,13 @@ class Store:
         NULL, cursor 0, the connecting bot's username, the new nonce. welcomed_at and commands_hash
         survive only when the SAME bot on the SAME adapter re-binds — a re-connect must neither
         re-greet nor re-register commands; a different bot, or a switch to the other provider,
-        resets both, so the new bot greets and registers."""
+        resets both, so the new bot greets and registers.
+
+        `adapter` must name a known provider: this is the only write path to the column, so it is
+        where an adapter typo is caught rather than silently binding to a provider that will never
+        be started."""
+        if adapter not in KNOWN_ADAPTERS:
+            raise ValueError(f"unknown channel adapter: {adapter!r}")
         now = _now()
         with self._db.transaction() as conn:
             existing = conn.execute("SELECT * FROM channel WHERE id = 1").fetchone()

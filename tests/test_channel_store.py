@@ -93,6 +93,14 @@ def test_arm_bind_still_defaults_to_telegram(store) -> None:
     assert ch["adapter"] == "telegram"
 
 
+def test_arm_bind_refuses_an_unknown_adapter(store) -> None:
+    """The column takes any non-empty string, so arm_bind is where an adapter name is checked —
+    binding to a provider the daemon will never start would leave the seller waiting forever."""
+    with pytest.raises(ValueError, match="unknown channel adapter"):
+        store.arm_bind("SellyBot", "nonce-1", adapter="whatsapp")
+    assert store.get_channel()["bind_nonce"] is None  # nothing armed
+
+
 def test_advance_offset_only_moves_forward(store) -> None:
     store.arm_bind("selly_bot", "n1")
     store.complete_bind(555, update_offset=10)
