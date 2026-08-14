@@ -31,8 +31,21 @@ ALLOWED_RUNTIME_DEPS = {"psutil", "segno", "PIL", "pillow_heif", "websockets"}
 
 # Network / async modules a runtime module may not import unless its src-relative path is
 # listed here. Every entry is a deliberate decision: adding a module here means it is allowed
-# to open sockets, and a review should treat that as a real capability grant.
-NETWORK_MODULES = {"socket", "ssl", "urllib", "http", "asyncio", "ftplib", "smtplib", "telnetlib"}
+# to open sockets, and a review should treat that as a real capability grant. `websockets` is a
+# dependency rather than stdlib, but it opens sockets like any of the others, so it is gated the
+# same way — being on ALLOWED_RUNTIME_DEPS only says the project may use it somewhere, not that
+# every module may.
+NETWORK_MODULES = {
+    "socket",
+    "ssl",
+    "urllib",
+    "http",
+    "asyncio",
+    "ftplib",
+    "smtplib",
+    "telnetlib",
+    "websockets",
+}
 NETWORK_ALLOWLIST: set[str] = {
     "selly_agent/http_server.py",  # the daemon's localhost HTTP server (MCP + tail + control)
     "selly_agent/mcp_proxy.py",  # stdio shim forwarding JSON-RPC to the daemon over HTTP
@@ -43,7 +56,7 @@ NETWORK_ALLOWLIST: set[str] = {
     "selly_agent/rail/provision.py",  # carousell.ai guest-key provisioning
     "selly_agent/channel/telegram/transport.py",  # the Telegram Bot API transport (one pipe)
     "selly_agent/channel/discord/transport.py",  # the Discord REST API transport (one pipe)
-    "selly_agent/channel/discord/gateway.py",  # the Gateway session (opens the WS connection)
+    "selly_agent/channel/discord/ws_client.py",  # the Gateway's WebSocket connection
     "selly_agent/browser/chrome.py",  # the warm Chrome's CDP readiness probe (loopback GET)
 }
 
