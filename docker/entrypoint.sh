@@ -22,6 +22,12 @@ if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; the
 fi
 [ "$missing" = 0 ] || exit 1
 
+# Both set is usually an accident. API key billing takes precedence, which is rarely what the user wants if they also have an active subscription.
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+	echo "selly-agent: both CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_API_KEY are set;" \
+		"the claude CLI will use ANTHROPIC_API_KEY (per-token Console billing)" >&2
+fi
+
 port="${SELLY_CDP_PORT:-9222}"
 # Docker Desktop's name for the host. Podman calls it host.containers.internal.
 host="${SELLY_CDP_HOST:-host.docker.internal}"
