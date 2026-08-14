@@ -30,6 +30,7 @@ class ChannelManager:
         self._deps = {"bus": bus, "store": store, "config": config, "scheduler": scheduler}
         self._handles: dict = {}
         self._lock = threading.Lock()
+        self._register_lock = threading.Lock()
 
     def register(self, name: str) -> None:
         """Start `name` and track its handle. Idempotent — a re-register while running is a no-op
@@ -37,20 +38,21 @@ class ChannelManager:
         to be running (see module docstring), so registering a different provider first
         deregisters whichever one is currently running rather than letting both stay up.
 
-        The check is repeated under the final lock because the sibling deregister above releases
-        it: the control server is threaded, so two concurrent connect calls can both get past the
-        first check, and without the second one the loser's handle would overwrite the winner's —
-        leaking a live provider thread and silently taking over its scheduler task names."""
-        with self._lock:
-            if name in self._handles:
-                return
-            others = [n for n in self._handles if n != name]
-        for other in others:
-            self.deregister(other)
-        with self._lock:
-            if name in self._handles:
-                return
-            self._handles[name] = self._providers[name].start(**self._deps)
+        The whole method runs under `_register_lock`, held for the full deregister-then-start
+        sequence rather than just around the `_handles` reads/writes: the control server is
+        threaded, so two connect calls can land at once, and a lock scoped only to the dict
+        accesses would still let two *different* names both see an empty `others` and both start —
+        two providers live together, silently colliding on the scheduler task names they share.
+        Serializing the whole method closes that the same way it closes the same-name case."""
+        with self._register_lock:
+            with self._lock:
+                if name in self._handles:
+                    return
+                others = [n for n in self._handles if n != name]
+            for other in others:
+                self.deregister(other)
+            with self._lock:
+                self._handles[name] = self._providers[name].start(**self._deps)
 
     def deregister(self, name: str) -> None:
         """Stop `name` (join its thread, remove its scheduler lanes) and drop it. No-op if not

@@ -139,6 +139,55 @@ def test_concurrent_registers_of_the_same_provider_start_it_once(bus) -> None:
     assert mgr._handles["discord"] is discord.handle
 
 
+def test_concurrent_registers_of_different_providers_start_only_one(bus) -> None:
+    """The same-provider race above has a cross-provider twin: from a state where telegram is
+    already running, two connect calls for two DIFFERENT other providers can both compute the same
+    non-empty `others = ["telegram"]` before either has finished tearing it down. `deregister` pops
+    with a default, so only one of the two actually removes telegram's handle and calls shutdown —
+    the other's `deregister` call is a silent no-op. Without a lock spanning the whole method, that
+    second caller then walks straight into its own final block against an untouched `_handles` and
+    starts its own provider on top of the winner's: both end up running, silently colliding on the
+    scheduler task names they share. `register` now holds `_register_lock` for the entire
+    deregister-then-start sequence, so the second caller cannot even begin its own attempt until
+    the first has completely finished — by which point it sees the first provider running and
+    tears it down before starting its own, same as any other provider switch.
+
+    Made deterministic: the winner of the deregister race is parked inside telegram's `shutdown()`
+    — after it has already popped the handle out of `_handles`, the exact state a second caller
+    would otherwise race in against."""
+    entered_teardown = threading.Event()
+    release_teardown = threading.Event()
+
+    class _BlockingHandle(_FakeHandle):
+        def shutdown(self) -> None:
+            entered_teardown.set()
+            release_teardown.wait(timeout=5.0)
+            super().shutdown()
+
+    telegram = _FakeProvider(configured=True)
+    telegram.handle = _BlockingHandle()
+    discord = _FakeProvider(configured=True)
+    whatsapp = _FakeProvider(configured=True)
+    mgr = _manager({"telegram": telegram, "discord": discord, "whatsapp": whatsapp}, bus)
+    mgr.register("telegram")
+
+    first = threading.Thread(target=mgr.register, args=("discord",), daemon=True)
+    first.start()
+    assert entered_teardown.wait(timeout=5.0)  # telegram's handle is already popped from _handles
+
+    second = threading.Thread(target=mgr.register, args=("whatsapp",), daemon=True)
+    second.start()
+
+    release_teardown.set()
+    first.join(timeout=5.0)
+    second.join(timeout=5.0)
+
+    assert discord.started == 1
+    assert whatsapp.started == 1
+    assert discord.handle.shutdowns == 1  # torn down once whatsapp registered, not left dangling
+    assert mgr._handles == {"whatsapp": whatsapp.handle}
+
+
 class _FakeStore:
     def __init__(self, adapter: str):
         self._adapter = adapter
