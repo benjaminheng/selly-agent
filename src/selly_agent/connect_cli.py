@@ -55,8 +55,7 @@ _DEVELOPER_PORTAL_GUIDANCE = (
 
 def _read_token(interactive: bool, *, prompt: str = "Paste your BotFather bot token: ") -> str:
     """Read the bot token. Interactive: a non-echoed getpass prompt (a credential must stay off
-    the scrollback). Piped: one readline, no prompt. `prompt` is the only provider-specific bit —
-    Telegram's flow leaves it at its default, Discord's passes its own wording."""
+    the scrollback). Piped: one readline, no prompt."""
     if interactive:
         try:
             return getpass.getpass(prompt).strip()
@@ -288,11 +287,7 @@ def _await_bind(
     interactive: bool,
     timeout_message: str = _TELEGRAM_TIMEOUT_MSG,
 ) -> int:
-    """Poll /control/channel-status until bound or timeout — 100% shared between the two
-    providers (the response shape is identical either way). `timeout_message` is the one
-    provider-specific bit: what /start means for Telegram has no Discord equivalent (there is no
-    deep link, only a DM), so the default stays Telegram's exact wording and `discord_bind_flow`
-    passes its own."""
+    """Poll /control/channel-status until bound or timeout."""
     deadline = time.monotonic() + timeout
     next_notice = timeout - _REMAINING_NOTICE_SEC
     while True:
@@ -323,10 +318,9 @@ _DISCORD_TIMEOUT_MSG = (
 def discord_bind_flow(
     port: int, mcp_token: str, *, timeout: int | None = None, interactive: bool | None = None
 ) -> int:
-    """The Discord analog of `bind_flow`: guidance -> token read -> POST /control/connect-discord
-    -> print the invite URL (as a terminal QR, same as Telegram's deep link) plus the nonce the
-    seller DMs the bot -> poll channel-status. Two steps instead of Telegram's one tap, because a
-    Discord bot can only be DMed once it shares a server with the user."""
+    """Two steps instead of Telegram's one-tap deep link: a Discord bot can only be DMed once it
+    shares a server with the user, so the seller first adds the bot via the invite URL, then DMs
+    it the nonce."""
     if interactive is None:
         interactive = sys.stdin.isatty()
     if timeout is None:
@@ -376,9 +370,6 @@ def discord_bind_flow(
 def _print_discord_bind_prompt(
     bot_username: str, invite_url: str, nonce: str, *, timeout: int
 ) -> None:
-    """Two things to show, since bind is two steps here: the invite (as a QR, same rendering
-    `_print_bind_prompt` uses for Telegram's deep link) and the nonce itself, which Telegram's
-    flow never has to print separately because its deep link carries the nonce invisibly."""
     print(f"Bot @{bot_username} validated.\n")
     print(qr.render_terminal(invite_url))
     print("Scan the code — or open this link — to add the bot to any server you're in")

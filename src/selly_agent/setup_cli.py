@@ -648,11 +648,9 @@ def _offer_telegram(ui: Ui, args, port: int, token: str) -> None:
 
 
 def _offer_discord(ui: Ui, args, port: int, token: str) -> None:
-    """Offer Discord as an alternative channel. Comes right after `_offer_telegram` and, like it,
-    re-probes bound state itself rather than taking a value passed down — the channel row is a
-    singleton (one adapter bound at a time; see `store.arm_bind`), so a Telegram bind that just
-    happened above is picked up here by the same "already connected" check, and Discord is never
-    offered on top of a channel the seller just finished connecting."""
+    """Offer Discord as an alternative channel. Re-probes bound state itself (like
+    `_offer_telegram`) so a Telegram bind that just happened above reads as "already connected"
+    and Discord is never offered on top of it."""
     if args.skip_discord:
         return
     ui.step("Discord")

@@ -1,8 +1,9 @@
 """DiscordGateway: the off/awaiting-bind/bound state derivation, nonce-in-a-DM bind matching, and
 fast-path dispatch — the Discord analog of tests/test_channel_bind.py + the poller half of
 test_channel_transport.py, driven against the fake REST API for sends and a direct on_dispatch
-call for the Gateway side (the full-stack WS round trip is covered by Task 7's session tests, so
-this task's tests inject dispatch payloads directly rather than re-proving the transport).
+call for the Gateway side. The full-stack WS round trip is covered by
+tests/test_channel_discord_gateway_session.py, so these inject dispatch payloads directly rather
+than re-proving the transport.
 """
 
 from __future__ import annotations

@@ -77,13 +77,9 @@ def _identify_payload(token: str) -> dict:
 
 
 class _NeverStop:
-    """A stop_event stand-in for a session run outside the daemon (tests, or a caller with its own
-    lifecycle) — `is_set()` is always False, so `_pump_until_stopped` only returns via an exception.
-    `wait(timeout)` actually sleeps, so `DiscordGateway.run()`'s off-idle and error-backoff waits
-    still throttle even with no real stop_event supplied — without this, a `DiscordGateway()`
-    built with the constructor's own `stop_event=None` default would busy-spin at 100% CPU while
-    off, and reconnect/IDENTIFY with zero delay after every failed session (an unthrottled storm
-    against gateway.discord.gg — exactly what Discord's session_start_limit exists to punish)."""
+    """A stop_event stand-in when none is supplied: `is_set()` is always False, and `wait()`
+    actually sleeps — so the off-idle and error-backoff waits still throttle, and a bare
+    `DiscordGateway()` never busy-spins while off or reconnects without delay."""
 
     def is_set(self) -> bool:
         return False
@@ -205,10 +201,6 @@ class DiscordGateway:
         return DiscordClient(token, api_base=self.config.discord_api_base)
 
     def run(self) -> None:
-        # Resolved once, not per-branch: `_NeverStop.wait` actually sleeps, so the off-idle and
-        # error-backoff waits below throttle unconditionally even with the constructor's own
-        # `stop_event=None` default — a bare `DiscordGateway()` must never busy-spin re-reading the
-        # token/channel row, nor reconnect/IDENTIFY with zero delay after a failed session.
         stopper = self.stop or _NeverStop()
         while not stopper.is_set():
             token = self._read_token()
@@ -286,8 +278,7 @@ class DiscordGateway:
     def _on_dispatch(self, client: DiscordClient, event_type, data) -> None:
         if event_type not in ("MESSAGE_CREATE", "INTERACTION_CREATE"):
             return
-        # Re-checked per message (not trusted from when the session started) — a bind can
-        # complete mid-session, and this is cheap (one indexed row read).
+        # Re-checked per message — a bind can complete mid-session.
         ch = self.store.get_channel()
         if ch["chat_id"] is None:
             if event_type == "MESSAGE_CREATE":
@@ -316,9 +307,6 @@ class DiscordGateway:
         self.bus.publish("channel.bound", {"bot_username": ch["bot_username"]})
 
     def _handle_bound_message(self, data: dict, *, client: DiscordClient | None = None) -> None:
-        # `client` defaults to None so a test (or any other caller without a live session) can
-        # inject a dispatch payload directly, the same way `_handle_awaiting_bind_message` needs
-        # no client at all — `_on_dispatch` always supplies the session's client explicitly.
         if client is None:
             client = self._client_factory(self._read_token())
         ch = self.store.get_channel()
@@ -351,13 +339,10 @@ class DiscordGateway:
         routing.route_channel_pass(self.store, self.bus)
 
     def _dispatch_fast_paths(self, client: DiscordClient, channel_id, inserted) -> None:
-        """Mirrors `telegram/poller.py`'s `_dispatch_fast_paths`: answer deterministic fast paths
-        instantly, before any pass routing, so /pause is heard even mid-pass. An interaction is
-        acknowledged first (Discord requires the REST callback even though it arrived over the
-        Gateway); everything else stays pending for the channel pass. `controls` (the core's raw
-        (label, token) spec, or None) passes straight through to `send_message`, which builds
-        the components itself — no separate render step here, same reasoning as outbound.py's
-        deliver."""
+        """Answer deterministic fast paths instantly, before any pass routing, so /pause is heard
+        even mid-pass. An interaction is acknowledged first (Discord requires the REST callback
+        even though it arrived over the Gateway); everything else stays pending for the channel
+        pass."""
         handled: list = []
         for row in inserted:
             event = {"kind": row["kind"], "text": row["text"], "payload": row["payload"]}

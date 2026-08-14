@@ -104,11 +104,9 @@ the nonce flow harder to race.
 The provider uses Discord's Gateway connection (WebSocket) instead of long-poll,
 connecting once and streaming all events. The gateway intent is scoped to **DIRECT_MESSAGES**
 only — it receives only DMs and ignores all server traffic — keeping the connection
-minimal. Discord requires the **DM message content** exemption to read DM text without
-the `MESSAGE_CONTENT` intent (the privacy-gating mechanism for bot access to message content
-in servers). Without this exemption, the bot would need `MESSAGE_CONTENT` intent and explicit
-approval from every server it joins; the DM exemption bypasses this for direct messages
-alone, a non-obvious platform fact to record for future readers.
+minimal. Reading DM text needs no privileged grant: Discord exempts DM content from the
+`MESSAGE_CONTENT` intent, which otherwise gates a bot's access to message text and takes
+per-server approval.
 
 On bind the daemon queues a deterministic welcome as ordinary notices (drain-
 delivered, retried, catchup-backstopped — never a fire-and-forget send), stamping

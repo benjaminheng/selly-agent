@@ -289,13 +289,9 @@ def test_a_container_status_never_resolves_a_host_platform(container, xdg_tmp, m
 
 
 def test_gather_status_reads_channel_adapter_when_bound(store, xdg_tmp, monkeypatch) -> None:
-    """The channel_adapter field in Status should read the bound adapter correctly."""
     paths.ensure_state_dirs()
-    # Bind with a specific adapter (discord)
     store.arm_bind("test_bot", "nonce1", adapter="discord")
     store.complete_bind(12345, 1)  # chat_id, update_offset
-
-    # Monkeypatch supervisor to read from the store's database
     monkeypatch.setattr(supervisor.paths, "selly_db", lambda: store._db.path)
 
     status = supervisor.gather_status()
@@ -304,9 +300,7 @@ def test_gather_status_reads_channel_adapter_when_bound(store, xdg_tmp, monkeypa
 
 
 def test_gather_status_channel_adapter_none_when_unbound(store, xdg_tmp, monkeypatch) -> None:
-    """The channel_adapter field should be None when the channel is unbound."""
     paths.ensure_state_dirs()
-    # Monkeypatch supervisor to read from the store's database
     monkeypatch.setattr(supervisor.paths, "selly_db", lambda: store._db.path)
 
     status = supervisor.gather_status()

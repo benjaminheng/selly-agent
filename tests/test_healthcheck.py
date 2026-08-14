@@ -58,14 +58,14 @@ def test_a_bound_channel_passes_and_an_unbound_one_only_warns() -> None:
 
 
 def test_a_bound_discord_channel_shows_the_adapter_name() -> None:
-    """A bound channel with a Discord adapter should display 'Discord connected'."""
     result = healthcheck.channel_check(bound=True, adapter="discord")
     assert result.status == checks.OK
     assert result.detail == "Discord connected"
 
 
 def test_a_bound_channel_without_adapter_defaults_to_telegram() -> None:
-    """A bound channel without an explicit adapter should default to 'Telegram'."""
+    """A row predating the adapter column carries no adapter, and it can only be a Telegram bind —
+    so it names Telegram rather than rendering a bound channel as connected to nothing."""
     result = healthcheck.channel_check(bound=True, adapter=None)
     assert result.status == checks.OK
     assert result.detail == "Telegram connected"

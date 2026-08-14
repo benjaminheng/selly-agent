@@ -426,9 +426,6 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, result)
 
     def _handle_connect_discord(self) -> None:
-        # Discord's analog of _handle_connect_telegram — same attended-only gate, same shape of
-        # BindError -> status mapping, same runtime provider start. What differs lives in
-        # bind.connect_discord itself: no deep link, an invite URL plus a nonce the seller DMs.
         from selly_agent.channel.discord import bind
 
         body = self._attended_body()
@@ -702,9 +699,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _handle_channel_status(self, parsed) -> None:
         # The channel row is a singleton (one adapter bound at a time — see store.arm_bind), so
-        # which provider's channel_status answers is whichever adapter that row currently names.
-        # bind.channel_status is deliberately identical in shape between providers (bound /
-        # awaiting_bind / bot_username / chat_id), so the caller sees no difference either way.
+        # whichever adapter it names answers channel_status.
         from selly_agent.channel.discord import bind as discord_bind
         from selly_agent.channel.telegram import bind as telegram_bind
 

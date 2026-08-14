@@ -77,13 +77,10 @@ def test_register_configured_starts_only_configured(bus) -> None:
 
 
 def test_register_deregisters_any_other_running_provider(bus) -> None:
-    """Reproduces the collision: both providers register scheduler tasks under identical literal
-    names (notice_drain/typing_pulse — see channel/discord/provider.py, channel/telegram/
-    provider.py). Before this fix, `register` never tore down a different provider that was
-    already running, so switching providers left the old one's handle (and, in production, its
-    scheduler task registrations) dangling — and a later reconnect back to the first provider was
-    a no-op that never reclaimed its scheduler lanes, silently routing its notices through the
-    other provider's transport instead."""
+    """Both providers register scheduler tasks under identical literal names (notice_drain /
+    typing_pulse), so switching providers has to tear the old one down: a dangling handle keeps
+    its scheduler lanes, and a later reconnect back to the first provider would be a no-op that
+    never reclaims them — silently routing its notices through the other provider's transport."""
     telegram = _FakeProvider(configured=True)
     discord = _FakeProvider(configured=True)
     mgr = _manager({"telegram": telegram, "discord": discord}, bus)

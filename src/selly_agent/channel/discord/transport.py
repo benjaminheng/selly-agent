@@ -1,15 +1,13 @@
-"""The Discord REST transport — a dumb pipe, in-process, over `urllib` (the one network module in
-this file, allowlisted). Decides nothing: fast-path dispatch and Gateway session logic live in
-`gateway.py`; this only puts bytes on the wire and normalizes what comes back.
+"""The Discord REST transport — a dumb pipe, in-process, over `urllib`. Decides nothing: fast-path
+dispatch and Gateway session logic live in `gateway.py`; this only puts bytes on the wire and
+normalizes what comes back.
 
 `_normalize` is a pure function of one Gateway dispatch payload (`{"t": ..., "d": ...}`), so the
 dispatch → ingest path is unit-testable with no network. It maps MESSAGE_CREATE to our event shape
 (text|command|photo), dropping the bot's own messages (echoed back over the Gateway like any other
-message in the channel) and any dispatch kind we don't care about. There is no Discord slash-command
-menu (commands.py) — plain DM text starting with "/" is lifted to `kind: "command"` (text truncated
-to the leading token), the same as Telegram's own `/pause` etc., so `channel.fastpaths` recognizes
-it without any provider-specific casing. A button click (INTERACTION_CREATE, type 3 =
-MESSAGE_COMPONENT) becomes an `action` event carrying the interaction id/token gateway.py needs to
+message in the channel) and any dispatch kind we don't care about. A button click
+(INTERACTION_CREATE, type 3 = MESSAGE_COMPONENT) becomes an `action` event carrying the
+interaction id/token gateway.py needs to
 acknowledge it — Discord requires a REST acknowledgment even for a Gateway-delivered interaction.
 `event_id` is cast to `int`: `channel_inbox.event_id` is an INTEGER UNIQUE column and Discord ids
 arrive as decimal-string snowflakes, which always fit a 64-bit integer.
@@ -100,10 +98,8 @@ def _normalize(event: dict) -> dict | None:
             }
         content = data.get("content", "")
         if content.startswith("/"):
-            # No slash-command menu on this provider (commands.py) — a fast-path command is just
-            # plain DM text starting with "/", exactly like Telegram's own `/pause` etc. Text is
-            # truncated to the leading token so it compares equal to fastpaths._FAST_PATH_COMMANDS,
-            # mirroring telegram/transport.py's own `command, _, argument = text.partition(" ")`.
+            # No slash-command menu on this provider — "/" text is lifted to a command, truncated
+            # to the leading token so fastpaths matches it.
             command, _, _argument = content.partition(" ")
             return {
                 "event_id": int(data["id"]),
