@@ -13,6 +13,10 @@ import threading
 
 from websockets.sync.server import ServerConnection, serve
 
+# Generous next to anything these tests legitimately wait for (a heartbeat interval is tens of
+# milliseconds here), tight enough that a wedged client fails the suite rather than stalling it.
+_RECV_TIMEOUT_SEC = 5.0
+
 
 class FakeWebSocketServer:
     def __init__(self):
@@ -41,7 +45,10 @@ class FakeWebSocketServer:
     def send_text(self, text: str) -> None:
         self._conn.send(text)
 
-    def recv_text(self, timeout: float | None = None) -> str:
+    def recv_text(self, timeout: float | None = _RECV_TIMEOUT_SEC) -> str:
+        """Bounded by default: nothing configures pytest-timeout, so an unbounded read turns a
+        client that never sends into a suite that hangs with no message instead of one failing
+        test."""
         return self._conn.recv(timeout=timeout)
 
     def close_connection(self, code: int = 1000, reason: str = "") -> None:

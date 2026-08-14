@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -38,7 +39,7 @@ from fake_ws_server import FakeGatewayServer
 from selly_agent import secrets
 from selly_agent.channel.discord import gateway as gateway_mod
 from selly_agent.channel.discord.gateway import DiscordGateway, GatewaySession
-from selly_agent.channel.discord.ws_client import connect
+from selly_agent.channel.discord.ws_client import ConnectionClosed, connect
 from selly_agent.config import Config
 
 
@@ -47,6 +48,26 @@ def _connect_and_serve_hello(server, heartbeat_ms=50):
     server.wait_for_connection()
     server.send_hello(heartbeat_ms)
     return ws
+
+
+def _poll_until(predicate, timeout: float = 5.0) -> bool:
+    """Wait for a background thread to reach an observable state. A fixed sleep would have to be
+    long enough for the slowest machine and would still be a race on it; this fails fast on the
+    quick path and only spends the full timeout when the property never holds."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+def _pin_first_heartbeat_jitter(monkeypatch) -> None:
+    """The first heartbeat is deliberately jittered across the interval (`random.random()`), which
+    leaves a timing test measuring the RNG as much as the code. Pinned to the full interval — the
+    largest legitimate delay, so the gap to a starved implementation stays widest. Swapped in the
+    gateway's own namespace rather than on the stdlib module, so nothing else sees a rigged RNG."""
+    monkeypatch.setattr(gateway_mod, "random", SimpleNamespace(random=lambda: 1.0))
 
 
 def test_identify_sent_after_hello() -> None:
@@ -95,7 +116,8 @@ def test_session_id_captured_from_ready() -> None:
         server.close()
 
 
-def test_heartbeat_sent_on_schedule_and_acked() -> None:
+def test_heartbeat_sent_on_schedule_and_acked(monkeypatch) -> None:
+    _pin_first_heartbeat_jitter(monkeypatch)
     server = FakeGatewayServer()
     try:
         ws = _connect_and_serve_hello(server, heartbeat_ms=120)
@@ -104,7 +126,6 @@ def test_heartbeat_sent_on_schedule_and_acked() -> None:
         session._ws = ws
         session._read_until_ready()
         server.recv_op()  # consume IDENTIFY
-        session._heartbeat_interval_sec = 0.12
 
         stop = threading.Event()
         thread = threading.Thread(target=session._pump_until_stopped, args=(stop,), daemon=True)
@@ -112,16 +133,16 @@ def test_heartbeat_sent_on_schedule_and_acked() -> None:
         heartbeat = server.recv_op()
         assert heartbeat["op"] == 1
         server.send_op(11)  # Heartbeat ACK
-        time.sleep(0.05)
-        assert session._ack_pending is False
+        assert _poll_until(lambda: session._ack_pending is False)
         stop.set()
         thread.join(timeout=1.0)
+        assert not thread.is_alive()
         ws.close()
     finally:
         server.close()
 
 
-def test_heartbeat_not_delayed_by_frequent_messages() -> None:
+def test_heartbeat_not_delayed_by_frequent_messages(monkeypatch) -> None:
     """The heartbeat deadline is a fixed wall-clock schedule, not something inbound traffic resets.
     A naive loop that recomputes `wait_for` from the full interval on every message would never
     reach the timeout branch (where the heartbeat is actually sent) on a connection receiving
@@ -137,6 +158,7 @@ def test_heartbeat_not_delayed_by_frequent_messages() -> None:
     test did, by calling `send_op` and `recv_op` from the same sequential loop) would floor the
     measurement at the flood's own duration regardless of when the heartbeat actually went out,
     making it unable to distinguish a fixed implementation from a starved one."""
+    _pin_first_heartbeat_jitter(monkeypatch)
     server = FakeGatewayServer()
     try:
         ws = _connect_and_serve_hello(server, heartbeat_ms=100)
@@ -145,7 +167,6 @@ def test_heartbeat_not_delayed_by_frequent_messages() -> None:
         session._ws = ws
         session._read_until_ready()
         server.recv_op()  # consume IDENTIFY
-        session._heartbeat_interval_sec = 0.1
 
         stop = threading.Event()
         pump_thread = threading.Thread(
@@ -168,11 +189,11 @@ def test_heartbeat_not_delayed_by_frequent_messages() -> None:
         heartbeat = server.recv_op()  # blocks until the pump actually sends one
         elapsed = time.monotonic() - started_at
         assert heartbeat["op"] == 1
-        # A "reset the wait on every message" bug would push the heartbeat out past the entire
-        # 240ms flood (to ~240ms + a further 100ms interval, since messages never stop arriving
-        # faster than the interval); the fix keeps it pinned near the original ~0-100ms deadline
-        # regardless of the concurrent traffic. 0.2s sits with a wide margin on both sides.
-        assert elapsed < 0.2
+        # With the jitter pinned to the full interval the heartbeat is due at ~100ms. A "reset the
+        # wait on every message" bug would push it out past the entire 240ms flood (to ~340ms,
+        # since messages never stop arriving faster than the interval), so the bound below leaves
+        # generous slack over the real deadline while staying far under the buggy one.
+        assert elapsed < 0.22
 
         server.send_op(11)  # ACK, so the pump thread exits cleanly instead of zombie-raising
         stop.set()
@@ -194,7 +215,6 @@ def test_zombied_connection_without_ack_raises_for_reconnect() -> None:
         session._ws = ws
         session._read_until_ready()
         server.recv_op()  # consume IDENTIFY
-        session._heartbeat_interval_sec = 0.03
 
         stop = threading.Event()
         with pytest.raises(ConnectionClosed):
@@ -205,6 +225,124 @@ def test_zombied_connection_without_ack_raises_for_reconnect() -> None:
         assert heartbeat["op"] == 1
     finally:
         server.close()
+
+
+def _ready_session(server, heartbeat_ms=50, on_dispatch=None):
+    """A session through HELLO -> IDENTIFY -> READY, with IDENTIFY consumed off the wire."""
+    ws = _connect_and_serve_hello(server, heartbeat_ms)
+    server.send_op(0, {"session_id": "sess-abc"}, t="READY", s=1)
+    session = GatewaySession(
+        token="fake-token", on_dispatch=on_dispatch or (lambda t, d: None), use_tls=False
+    )
+    session._ws = ws
+    session._read_until_ready()
+    server.recv_op()  # consume IDENTIFY
+    return session, ws
+
+
+def test_a_dispatch_before_ready_is_still_forwarded() -> None:
+    """Discord can send Dispatch payloads between IDENTIFY and READY. Dropping them would lose a
+    seller's message outright — the handshake is not a quiet period."""
+    server = FakeGatewayServer()
+    seen: list = []
+    try:
+        ws = _connect_and_serve_hello(server)
+        session = GatewaySession(
+            token="fake-token", on_dispatch=lambda t, d: seen.append((t, d)), use_tls=False
+        )
+        session._ws = ws
+
+        thread = threading.Thread(target=session._read_until_ready, daemon=True)
+        thread.start()
+        server.recv_op()  # IDENTIFY
+        server.send_op(0, {"content": "early"}, t="MESSAGE_CREATE", s=1)
+        server.send_op(0, {"session_id": "sess-abc"}, t="READY", s=2)
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+
+        assert seen == [("MESSAGE_CREATE", {"content": "early"})]
+        assert session._session_id == "sess-abc"
+        ws.close()
+    finally:
+        server.close()
+
+
+def test_a_server_initiated_heartbeat_is_answered_immediately() -> None:
+    """Discord may ask for a heartbeat (op 1) off-schedule rather than waiting for ours. Ignoring
+    it gets the connection dropped as unresponsive."""
+    server = FakeGatewayServer()
+    try:
+        session, ws = _ready_session(server, heartbeat_ms=5000)  # far off, so ours can't race it
+        stop = threading.Event()
+        thread = threading.Thread(target=session._pump_until_stopped, args=(stop,), daemon=True)
+        thread.start()
+
+        server.send_op(1)  # server-initiated Heartbeat
+        assert server.recv_op()["op"] == 1  # answered without waiting for the schedule
+
+        stop.set()
+        server.send_op(11)
+        thread.join(timeout=5.0)
+        ws.close()
+    finally:
+        server.close()
+
+
+def test_a_reconnect_request_ends_the_session() -> None:
+    """op 7 is Discord asking us to reconnect (it moves sessions between gateways routinely).
+    `run()` treats the raised close as transient and dials again."""
+    server = FakeGatewayServer()
+    try:
+        session, ws = _ready_session(server, heartbeat_ms=5000)
+        server.send_op(7)
+        with pytest.raises(ConnectionClosed, match="reconnect"):
+            session._pump_until_stopped(threading.Event())
+        ws.close()
+    finally:
+        server.close()
+
+
+def test_a_non_resumable_invalid_session_clears_the_session_id() -> None:
+    """Invalid Session with d=false means the session is gone for good, so its id must not be
+    carried into the next connection."""
+    server = FakeGatewayServer()
+    try:
+        session, ws = _ready_session(server, heartbeat_ms=5000)
+        assert session._session_id == "sess-abc"
+
+        server.send_op(9, False)
+        with pytest.raises(ConnectionClosed, match="invalid session"):
+            session._pump_until_stopped(threading.Event())
+        assert session._session_id is None
+        ws.close()
+    finally:
+        server.close()
+
+
+def test_a_resumable_invalid_session_keeps_the_session_id() -> None:
+    server = FakeGatewayServer()
+    try:
+        session, ws = _ready_session(server, heartbeat_ms=5000)
+        server.send_op(9, True)
+        with pytest.raises(ConnectionClosed):
+            session._pump_until_stopped(threading.Event())
+        assert session._session_id == "sess-abc"
+        ws.close()
+    finally:
+        server.close()
+
+
+def test_backoff_doubles_and_caps() -> None:
+    """The reconnect delay grows from a cold 5s to a 60s ceiling, so a Gateway that is down stops
+    being dialled every few seconds without the delay running away either."""
+    gw = DiscordGateway(store=None, config=Config(), bus=None)
+    delays = []
+    for _ in range(8):
+        gw._arm_backoff()
+        delays.append(gw._backoff)
+    assert delays[:4] == [5.0, 10.0, 20.0, 40.0]
+    assert delays[-1] == gateway_mod.BACKOFF_CAP_SEC
+    assert max(delays) == gateway_mod.BACKOFF_CAP_SEC
 
 
 # --- run()'s close-code policy, end to end over a real socket ---------------------------------

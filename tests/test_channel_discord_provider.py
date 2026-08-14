@@ -24,9 +24,14 @@ def test_configured_once_a_token_is_written(xdg_tmp) -> None:
 def test_start_registers_drain_and_typing_lanes_then_shutdown_removes_them(
     store, bus, xdg_tmp
 ) -> None:
+    # `start` spins a real DiscordGateway.run() thread. It stays off the network only because the
+    # fresh store leaves the channel row unbound, so run() never leaves its off-idle branch —
+    # arming a bind here would dial gateway.discord.gg for real, since the gateway's host
+    # constants are what tests override to reach a fake (see the session tests).
     secrets.write_discord_bot_token(FAKE_TOKEN)
     scheduler = Scheduler(bus, tick_interval_sec=100.0)
     handle = provider.start(bus=bus, store=store, config=Config(), scheduler=scheduler)
+    assert store.get_channel()["chat_id"] is None
     assert "notice_drain" in scheduler._reg.tasks
     assert "typing_pulse" in scheduler._reg.tasks
     handle.shutdown()

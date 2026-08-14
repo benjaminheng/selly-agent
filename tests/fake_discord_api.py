@@ -14,11 +14,10 @@ APPLICATION_ID = "123456789012345678"
 BOT = {"id": BOT_ID, "username": "selly_test_bot", "bot": True}
 CHANNEL_ID = 987654321098765432
 # A structurally fake Discord bot token (three dot-separated base64url-shaped segments), never a
-# real credential. Its third segment is 54 chars — over the 45-char cap the leak guard's
-# DISCORD_TOKEN_RE checks — so it never matches that pattern either, same discipline as Telegram's
-# own FAKE_TOKEN deliberately not matching its regex. Assembled from separate parts, none of which
-# is itself a single three-dot-segment literal, so pattern-based secret scanners (GitHub's push
-# protection included) never see the whole shape sitting in one string in the source.
+# real credential. Assembled from separate parts, none of which is itself a single
+# three-dot-segment literal, so neither the leak guard nor a pattern-based secret scanner
+# (GitHub's push protection included) ever sees the whole shape sitting in one string in the
+# source — the assembly is what keeps it clear of those patterns, not the segment lengths.
 _FAKE_SNOWFLAKE_SEGMENT = "OTIzNDU2Nzg5MDEyMzQ1Njc4"
 _FAKE_TIMESTAMP_SEGMENT = "YIz98g"
 _FAKE_HMAC_SEGMENT = "NOTAREALSECRET" + "x" * 40

@@ -9,6 +9,7 @@ than re-proving the transport.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +17,7 @@ from fake_discord_api import CHANNEL_ID, FAKE_TOKEN, FakeDiscordAPI
 from selly_agent import secrets
 from selly_agent.channel.discord import gateway
 from selly_agent.channel.discord.gateway import DiscordGateway
+from selly_agent.channel.discord.transport import DiscordClient
 from selly_agent.config import Config
 
 _NONCE = "nonce-abc123"
@@ -24,6 +26,10 @@ _NONCE = "nonce-abc123"
 def _gateway(store, bus, api):
     config = Config(discord_api_base=api.base_url + "/api/v10")
     return DiscordGateway(store=store, config=config, bus=bus)
+
+
+def _client(api) -> DiscordClient:
+    return DiscordClient(FAKE_TOKEN, api_base=api.base_url + "/api/v10")
 
 
 def test_state_off_with_no_token(store) -> None:
@@ -102,6 +108,156 @@ def test_free_text_stays_pending_for_the_channel_pass(store, bus, xdg_tmp) -> No
             }
         )
     assert store.has_active_channel_pass()
+
+
+def _bound(store) -> None:
+    secrets.write_discord_bot_token(FAKE_TOKEN)
+    store.arm_bind("selly_test_bot", _NONCE, adapter="discord")
+    store.complete_bind(CHANNEL_ID, 0)
+
+
+def _dm(content="hello", event_id="1", channel_id=CHANNEL_ID, attachments=None):
+    return {
+        "id": event_id,
+        "channel_id": str(channel_id),
+        "author": {"id": "555", "bot": False},
+        "content": content,
+        "attachments": attachments or [],
+        "timestamp": "2026-08-12T00:00:00+00:00",
+    }
+
+
+def test_a_dm_in_another_channel_is_never_ingested(store, bus, xdg_tmp) -> None:
+    """The bot shares a server with the seller, so it can be messaged in channels the seller never
+    bound. Only the authorized DM is ingested — anything else is dropped before it can reach a
+    pass and be answered as if the seller had sent it."""
+    _bound(store)
+    with FakeDiscordAPI() as api:
+        _gateway(store, bus, api)._handle_bound_message(_dm(channel_id=CHANNEL_ID + 1))
+    assert store.count_pending_inbox() == 0
+    # Also that no pass was queued: an ingested row is immediately claimed into one, so the
+    # pending count alone would read 0 whether the message was dropped or answered.
+    assert not store.has_active_channel_pass()
+
+
+def test_bound_downloads_the_photo_before_ingest(store, bus, xdg_tmp) -> None:
+    _bound(store)
+    with FakeDiscordAPI() as api:
+        attachment = {
+            "id": "a1",
+            "filename": "photo.jpg",
+            "url": api.base_url + "/attachments/fake.jpg",
+            "size": 123,
+        }
+        _gateway(store, bus, api)._handle_bound_message(_dm("for sale", attachments=[attachment]))
+
+    queued = [e for e in bus.store.read() if e.kind == "pass.queued"]
+    rows = store.inbox_for_pass(queued[0].pass_id)
+    assert rows[0]["kind"] == "photo"
+    assert Path(rows[0]["media_paths"][0]).read_bytes() == b"\xff\xd8\xff\xe0fake-jpeg-bytes"
+
+
+def test_a_failed_photo_download_still_ingests_the_message(store, bus, xdg_tmp) -> None:
+    """A CDN failure must not swallow the message: the seller's caption is still theirs to answer,
+    and losing the row would leave them waiting on a reply that never comes."""
+    _bound(store)
+    with FakeDiscordAPI() as api:
+        attachment = {
+            "id": "a1",
+            "filename": "photo.jpg",
+            "url": api.base_url + "/api/v10/nope",  # 401, not an attachment path
+            "size": 123,
+        }
+        _gateway(store, bus, api)._handle_bound_message(_dm("for sale", attachments=[attachment]))
+
+    queued = [e for e in bus.store.read() if e.kind == "pass.queued"]
+    rows = store.inbox_for_pass(queued[0].pass_id)
+    assert rows[0]["kind"] == "photo"
+    assert rows[0]["text"] == "for sale"
+    assert rows[0]["media_paths"] == []
+
+
+# --- interactions (button clicks arrive over the Gateway, are acknowledged over REST) ---------
+
+
+def _interaction(choice="pause", event_id="111222333444555666", channel_id=CHANNEL_ID, type_=3):
+    return {
+        "id": event_id,
+        "token": "int-token",
+        "type": type_,
+        "channel_id": str(channel_id),
+        "data": {"custom_id": choice},
+    }
+
+
+def test_a_button_click_is_acknowledged_and_answered(store, bus, xdg_tmp) -> None:
+    """Discord requires a REST callback for an interaction even though it arrived over the
+    Gateway — without it the seller's client shows the click as failed, whatever the bot then
+    says. The fast-path reply follows as an ordinary message."""
+    _bound(store)
+    with FakeDiscordAPI() as api:
+        _gateway(store, bus, api)._handle_interaction(_interaction("pause"), client=_client(api))
+
+    assert api.acknowledged  # the callback fired
+    assert any("Paused" in m["content"] for m in api.outbox)
+    assert store.is_paused()
+
+
+def test_an_interaction_in_another_channel_is_dropped(store, bus, xdg_tmp) -> None:
+    _bound(store)
+    with FakeDiscordAPI() as api:
+        _gateway(store, bus, api)._handle_interaction(
+            _interaction("pause", channel_id=CHANNEL_ID + 1), client=_client(api)
+        )
+        assert not api.acknowledged
+    assert not store.has_active_channel_pass()
+    assert not store.is_paused()
+
+
+def test_a_non_component_interaction_is_ignored(store, bus, xdg_tmp) -> None:
+    """Only MESSAGE_COMPONENT (type 3) is ours. Slash commands and autocomplete are not registered
+    by this provider, so anything else arriving is not something we can answer."""
+    _bound(store)
+    with FakeDiscordAPI() as api:
+        _gateway(store, bus, api)._handle_interaction(
+            _interaction("pause", type_=2), client=_client(api)
+        )
+        assert not api.acknowledged
+    assert not store.has_active_channel_pass()
+
+
+# --- bind side effects -------------------------------------------------------------------------
+
+
+def test_binding_queues_the_welcome_and_publishes_channel_bound(store, bus, xdg_tmp) -> None:
+    secrets.write_discord_bot_token(FAKE_TOKEN)
+    store.arm_bind("selly_test_bot", _NONCE, adapter="discord")
+    with FakeDiscordAPI() as api:
+        _gateway(store, bus, api)._handle_awaiting_bind_message(
+            _dm(content=_NONCE) | {"author": {"id": "555", "bot": False}}
+        )
+
+    ch = store.get_channel()
+    assert ch["welcomed_at"]  # stamped, so a reconnect never re-greets
+    assert store.list_queued_notices()  # the greeting is queued, not fire-and-forget
+    assert [e for e in bus.store.read() if e.kind == "channel.bound"]
+
+
+def test_a_bot_authored_dm_never_binds(store, bus, xdg_tmp) -> None:
+    """The bot's own messages echo back over the Gateway, and other bots can DM it. Neither may
+    complete a bind, even holding the nonce."""
+    secrets.write_discord_bot_token(FAKE_TOKEN)
+    store.arm_bind("selly_test_bot", _NONCE, adapter="discord")
+    with FakeDiscordAPI() as api:
+        _gateway(store, bus, api)._handle_awaiting_bind_message(
+            {
+                "id": "1",
+                "channel_id": str(CHANNEL_ID),
+                "author": {"id": "999", "bot": True},
+                "content": _NONCE,
+            }
+        )
+    assert store.get_channel()["chat_id"] is None
 
 
 # --- run()'s throttling with no stop_event (the constructor's own default) --------------------
