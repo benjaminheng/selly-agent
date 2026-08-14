@@ -192,6 +192,21 @@ def test_upload_unprovisioned_names_the_fix(make_ctx, store, xdg_tmp) -> None:
         )
 
 
+def test_upload_names_a_gone_photo_plainly_not_a_raw_exception(make_ctx, store, xdg_tmp) -> None:
+    # _prepared_bytes (unlike _import_photos) has no existence check ahead of _sniff, so a file
+    # that moved/lost permissions/got cleaned up between import and upload is the realistic way
+    # this fires — not a should-never-happen case.
+    item = _item_with_photos(store)
+    Path(store.get_item(item["id"])["photos"][0]["path"]).unlink()
+    with pytest.raises(ToolError, match="re-attach the photo") as exc:
+        dispatch(
+            "carousell_ai_upload_photos",
+            {"item_id": item["id"]},
+            make_ctx(TIER_ATTENDED, rail_factory=lambda: FakeRail()),
+        )
+    assert "FileNotFoundError" not in str(exc.value)
+
+
 # --- conversion behind the platform seam --------------------------------------------------------
 
 

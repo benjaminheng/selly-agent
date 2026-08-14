@@ -286,6 +286,20 @@ def test_a_probe_that_raises_becomes_a_failed_check_not_a_crash() -> None:
     assert result.fix == "try again"
 
 
+def test_a_probe_that_raises_with_no_caller_fix_still_gets_a_next_step() -> None:
+    # Every setup_cli.py call site invokes fail_open(name, probe) with no fix argument, so a
+    # probe crash on the real preflight path always took this default before — Ui.fatal() only
+    # renders a "-> ..." line when check.fix is truthy, so an empty default silently dropped the
+    # one thing every other installer failure gives the seller.
+    def explode():
+        raise FileNotFoundError("no such file")
+
+    result = checks.fail_open("node", explode)
+    assert result.status == checks.FAIL
+    assert result.fix != ""
+    assert result.render()[-1].startswith("   → ")
+
+
 def test_render_and_exit_code() -> None:
     rendered = checks.render(
         [

@@ -56,7 +56,10 @@ def _create_checkout_link(ctx: ToolContext, params: dict) -> dict:
     except StoreError as exc:
         raise ToolError(str(exc)) from exc
     if gate["status"] == "below_floor":
-        raise ToolError("agreed price is not acceptable for this item")
+        raise ToolError(
+            "agreed price is below the seller's floor for this item — ask the buyer for a "
+            "higher price, or confirm a lower floor with the seller before closing"
+        )
     if gate["status"] == "no_floor":
         raise ToolError(
             "no floor is set and the price is below list — ask the seller for their floor first"

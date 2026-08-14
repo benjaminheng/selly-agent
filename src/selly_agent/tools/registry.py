@@ -178,7 +178,10 @@ def dispatch(name: str, params: dict, ctx: ToolContext) -> dict:
             {"call_id": call_id, "tool": name, "error": "internal error"},
             pass_id=ctx.session.pass_id,
         )
-        raise ToolError("internal error") from exc
+        raise ToolError(
+            f"internal error (ref {call_id}) — try again in a moment; if it keeps happening, "
+            f"check `selly-agent logs` for ref {call_id}"
+        ) from exc
 
     ctx.bus.publish(
         "tool.result",
