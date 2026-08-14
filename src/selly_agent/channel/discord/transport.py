@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 MAX_TEXT_LEN = 2000
@@ -68,6 +69,19 @@ def build_components(spec: list) -> list:
     ]
 
 
+def _epoch(timestamp: str | None) -> float | None:
+    """Discord's ISO 8601 message timestamp as a float. `src_ts` is a REAL column and rides on
+    `channel.in` bus events, so a provider that left the string in place would be the only one
+    putting text in a numeric field. An unparseable value degrades to None — src_ts is
+    informational, never the ordering clock, so it is not worth failing an ingest over."""
+    if not timestamp:
+        return None
+    try:
+        return datetime.fromisoformat(timestamp).timestamp()
+    except ValueError:
+        return None
+
+
 def _normalize(event: dict) -> dict | None:
     kind = event.get("t")
     data = event.get("d") or {}
@@ -82,7 +96,7 @@ def _normalize(event: dict) -> dict | None:
                 "kind": "photo",
                 "text": data.get("content", ""),
                 "payload": {"url": largest["url"], "filename": largest.get("filename")},
-                "src_ts": data.get("timestamp"),
+                "src_ts": _epoch(data.get("timestamp")),
             }
         content = data.get("content", "")
         if content.startswith("/"):
@@ -96,14 +110,14 @@ def _normalize(event: dict) -> dict | None:
                 "kind": "command",
                 "text": command,
                 "payload": {},
-                "src_ts": data.get("timestamp"),
+                "src_ts": _epoch(data.get("timestamp")),
             }
         return {
             "event_id": int(data["id"]),
             "kind": "text",
             "text": content,
             "payload": {},
-            "src_ts": data.get("timestamp"),
+            "src_ts": _epoch(data.get("timestamp")),
         }
     if kind == "INTERACTION_CREATE" and data.get("type") == 3:  # MESSAGE_COMPONENT
         custom_id = (data.get("data") or {}).get("custom_id", "")

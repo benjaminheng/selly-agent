@@ -23,8 +23,10 @@ APPROVED_FAKE_IDS = {
 
 # Telegram bot token shape: 8-12 digit bot id, colon, "AA..." auth part.
 TOKEN_RE = re.compile(r"\b\d{8,12}:AA[A-Za-z0-9_-]{25,}")
-# Discord bot token shape: three dot-separated base64url segments (user id, timestamp, HMAC).
-DISCORD_TOKEN_RE = re.compile(r"\b[A-Za-z0-9_-]{20,28}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,45}\b")
+# Discord bot token shape: three dot-separated base64url segments (user id, timestamp, HMAC). The
+# HMAC bound matches what bind.py's validator accepts — a narrower one here would let a real token
+# it happily binds slip past this guard.
+DISCORD_TOKEN_RE = re.compile(r"\b[A-Za-z0-9_-]{20,28}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,80}\b")
 # Long digit runs on lines that mention a chat/offset identifier.
 DIGIT_RUN_RE = re.compile(r"\d{6,}")
 IDENTIFIER_LINE_RE = re.compile(r"chat|update_offset")

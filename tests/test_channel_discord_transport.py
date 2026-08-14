@@ -7,6 +7,8 @@ covered end to end.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from fake_discord_api import BOT_ID, CHANNEL_ID, FAKE_TOKEN, FakeDiscordAPI
@@ -40,6 +42,24 @@ def test_normalize_text() -> None:
 
 def test_normalize_ignores_the_bot_s_own_messages() -> None:
     assert transport._normalize(_message_create("echo", author_bot=True)) is None
+
+
+def test_normalize_converts_the_iso_timestamp_to_an_epoch_float() -> None:
+    """`src_ts` is a REAL column and rides on `channel.in` bus events; Discord sends ISO 8601 text
+    where Telegram sends an epoch, so the conversion belongs here rather than leaving one provider
+    putting a string in a numeric field."""
+    ev = transport._normalize(_message_create("hello"))
+    assert isinstance(ev["src_ts"], float)
+    assert ev["src_ts"] == datetime(2026, 8, 12, tzinfo=timezone.utc).timestamp()
+
+
+@pytest.mark.parametrize("timestamp", [None, "", "not-a-timestamp"])
+def test_normalize_degrades_an_unusable_timestamp_to_none(timestamp) -> None:
+    """src_ts is informational, never the ordering clock, so a timestamp we cannot read must not
+    cost the seller the message itself."""
+    event = _message_create("hello")
+    event["d"]["timestamp"] = timestamp
+    assert transport._normalize(event)["src_ts"] is None
 
 
 def test_normalize_lifts_an_attachment_to_photo_kind() -> None:
