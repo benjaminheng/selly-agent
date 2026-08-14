@@ -35,7 +35,12 @@ class ChannelManager:
         """Start `name` and track its handle. Idempotent — a re-register while running is a no-op
         (the running provider picks up any new state on its own). Only one provider is ever meant
         to be running (see module docstring), so registering a different provider first
-        deregisters whichever one is currently running rather than letting both stay up."""
+        deregisters whichever one is currently running rather than letting both stay up.
+
+        The check is repeated under the final lock because the sibling deregister above releases
+        it: the control server is threaded, so two concurrent connect calls can both get past the
+        first check, and without the second one the loser's handle would overwrite the winner's —
+        leaking a live provider thread and silently taking over its scheduler task names."""
         with self._lock:
             if name in self._handles:
                 return
@@ -43,6 +48,8 @@ class ChannelManager:
         for other in others:
             self.deregister(other)
         with self._lock:
+            if name in self._handles:
+                return
             self._handles[name] = self._providers[name].start(**self._deps)
 
     def deregister(self, name: str) -> None:

@@ -101,6 +101,47 @@ def test_register_deregisters_any_other_running_provider(bus) -> None:
     assert discord.handle.shutdowns == 1
 
 
+def test_concurrent_registers_of_the_same_provider_start_it_once(bus) -> None:
+    """Two connect calls can land at once — the control server is a ThreadingHTTPServer — and
+    `register` releases the lock between its idempotency check and its handle insertion to tear
+    down the sibling provider. Both callers therefore reach the insertion, and only the re-check
+    under the final lock stops the loser starting a second provider whose handle overwrites the
+    winner's: a live gateway thread nothing will ever shut down, holding the scheduler task names
+    the surviving handle believes it owns.
+
+    Made deterministic rather than raced: the first caller is parked inside the sibling's
+    `shutdown()` — past the check, before the insertion — for exactly as long as the second caller
+    needs to complete the whole register."""
+    entered_teardown = threading.Event()
+    release_teardown = threading.Event()
+
+    class _BlockingHandle(_FakeHandle):
+        def shutdown(self) -> None:
+            entered_teardown.set()
+            release_teardown.wait(timeout=5.0)
+            super().shutdown()
+
+    telegram = _FakeProvider(configured=True)
+    telegram.handle = _BlockingHandle()
+    discord = _FakeProvider(configured=True)
+    mgr = _manager({"telegram": telegram, "discord": discord}, bus)
+    mgr.register("telegram")
+
+    first = threading.Thread(target=mgr.register, args=("discord",), daemon=True)
+    first.start()
+    assert entered_teardown.wait(timeout=5.0)
+
+    second = threading.Thread(target=mgr.register, args=("discord",), daemon=True)
+    second.start()
+    second.join(timeout=5.0)
+    assert discord.started == 1  # the second caller found no handle yet and started the provider
+
+    release_teardown.set()
+    first.join(timeout=5.0)
+    assert discord.started == 1  # the parked caller must not start a second one on top
+    assert mgr._handles["discord"] is discord.handle
+
+
 class _FakeStore:
     def __init__(self, adapter: str):
         self._adapter = adapter
