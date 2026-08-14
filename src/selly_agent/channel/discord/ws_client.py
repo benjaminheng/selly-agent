@@ -26,7 +26,25 @@ class HandshakeError(Exception):
 
 
 class ConnectionClosed(Exception):
-    """The peer closed the connection, or the socket dropped mid-read/write."""
+    """The peer closed the connection, or the socket dropped mid-read/write.
+
+    `code` is the WebSocket close code the peer sent, or None when there was no close frame (a
+    dropped socket) or the close was raised locally. The Gateway's reconnect policy keys off it:
+    some Discord close codes mean "never reconnect with this token"."""
+
+    def __init__(self, message: str, *, code: int | None = None, reason: str = ""):
+        super().__init__(message)
+        self.code = code
+        self.reason = reason
+
+
+def _closed(exc: _LibConnectionClosed) -> ConnectionClosed:
+    """Our exception carrying the *received* close code — what the peer said, not what we sent, so
+    a close we initiated is never mistaken for the server rejecting us."""
+    rcvd = exc.rcvd
+    if rcvd is None:
+        return ConnectionClosed(str(exc))
+    return ConnectionClosed(str(exc), code=rcvd.code, reason=rcvd.reason)
 
 
 class WebSocket:
@@ -41,7 +59,7 @@ class WebSocket:
         try:
             self._conn.send(text)
         except _LibConnectionClosed as exc:
-            raise ConnectionClosed(str(exc)) from exc
+            raise _closed(exc) from exc
 
     def recv_text(self, timeout: float | None = None) -> str:
         """Block for the next text message. With `timeout` set, raises the builtin
@@ -50,7 +68,7 @@ class WebSocket:
         try:
             message = self._conn.recv(timeout=timeout)
         except _LibConnectionClosed as exc:
-            raise ConnectionClosed(str(exc)) from exc
+            raise _closed(exc) from exc
         assert isinstance(message, str)  # Gateway payloads are JSON text, never binary
         return message
 

@@ -1,6 +1,7 @@
-"""The Gateway session state machine — HELLO -> IDENTIFY -> READY, heartbeating with ACK tracking,
-and RESUME on a dropped connection — driven against a fake Gateway server speaking real opcodes
-over a real (local) WebSocket connection. No bind/ingest wiring here (Task 8).
+"""The Gateway session state machine — HELLO -> IDENTIFY -> READY, heartbeating with ACK tracking —
+and `DiscordGateway.run()`'s close-code policy on top of it, driven against a fake Gateway server
+speaking real opcodes over a real (local) WebSocket connection. Bind and ingest wiring is covered
+by tests/test_channel_discord_gateway_dispatch.py.
 
 A note on ordering: `server.recv_op()` and `ws.recv_text()` are *blocking* reads — the peer's bytes
 must already be sent (into a kernel socket buffer, not necessarily "processed") before a blocking
@@ -32,9 +33,13 @@ import time
 
 import pytest
 
+from fake_discord_api import FAKE_TOKEN
 from fake_ws_server import FakeGatewayServer
-from selly_agent.channel.discord.gateway import GatewaySession
+from selly_agent import secrets
+from selly_agent.channel.discord import gateway as gateway_mod
+from selly_agent.channel.discord.gateway import DiscordGateway, GatewaySession
 from selly_agent.channel.discord.ws_client import connect
+from selly_agent.config import Config
 
 
 def _connect_and_serve_hello(server, heartbeat_ms=50):
@@ -202,22 +207,108 @@ def test_zombied_connection_without_ack_raises_for_reconnect() -> None:
         server.close()
 
 
-def test_resume_payload_shape() -> None:
-    from selly_agent.channel.discord.gateway import _resume_payload
-
-    payload = _resume_payload(token="fake-token", session_id="sess-abc", seq=42)
-    assert payload == {"op": 6, "d": {"token": "fake-token", "session_id": "sess-abc", "seq": 42}}
-
-
-@pytest.mark.parametrize("code", [4004, 4010, 4011, 4012, 4013, 4014])
-def test_non_resumable_close_codes(code) -> None:
-    from selly_agent.channel.discord.gateway import NON_RESUMABLE_CLOSE_CODES
-
-    assert code in NON_RESUMABLE_CLOSE_CODES
+# --- run()'s close-code policy, end to end over a real socket ---------------------------------
+#
+# A close code Discord will never stop sending (4004 and friends: bad token, shard, API version or
+# intent grant) must not be retried — the failure mode is a revoked token re-IDENTIFYing every 60s
+# forever. Everything else, including a bare drop, reconnects. Both are properties of
+# `DiscordGateway.run()` rather than of the constant, so they are driven against the fake Gateway.
 
 
-@pytest.mark.parametrize("code", [1000, 4000, 4001, 4009])
-def test_resumable_close_codes(code) -> None:
-    from selly_agent.channel.discord.gateway import NON_RESUMABLE_CLOSE_CODES
+def _point_gateway_at_fake(monkeypatch, server) -> None:
+    """Make `DiscordGateway.run()` dial the local fake instead of gateway.discord.gg: the
+    host/port/path constants, plus a session built with TLS off (the fake speaks plain ws)."""
+    monkeypatch.setattr(gateway_mod, "GATEWAY_HOST", server.host)
+    monkeypatch.setattr(gateway_mod, "GATEWAY_PORT", server.port)
+    monkeypatch.setattr(gateway_mod, "GATEWAY_PATH", "/")
+    real_session = gateway_mod.GatewaySession
+    monkeypatch.setattr(
+        gateway_mod,
+        "GatewaySession",
+        lambda *, token, on_dispatch: real_session(
+            token=token, on_dispatch=on_dispatch, use_tls=False
+        ),
+    )
 
-    assert code not in NON_RESUMABLE_CLOSE_CODES
+
+def _armed_gateway(store, bus, monkeypatch, server, token=FAKE_TOKEN):
+    """A gateway in the awaiting-bind state (token on disk, nonce armed) pointed at `server`, with
+    the idle and backoff waits shortened so a test doesn't sit through the real ones."""
+    _point_gateway_at_fake(monkeypatch, server)
+    monkeypatch.setattr(gateway_mod, "OFF_IDLE_SEC", 0.02)
+    monkeypatch.setattr(gateway_mod, "BACKOFF_BASE_SEC", 0.02)
+    secrets.write_discord_bot_token(token)
+    store.arm_bind("selly_test_bot", "nonce-abc123", adapter="discord")
+    stop = threading.Event()
+    gw = DiscordGateway(store=store, config=Config(), bus=bus, stop_event=stop)
+    thread = threading.Thread(target=gw.run, daemon=True)
+    thread.start()
+    return gw, stop, thread
+
+
+def _serve_hello_and_read_identify(server) -> dict:
+    server.wait_for_connection()
+    server.send_hello(50)
+    return server.recv_op()
+
+
+def test_a_non_resumable_close_stops_the_gateway_reconnecting(
+    store, bus, xdg_tmp, monkeypatch
+) -> None:
+    """4004 (authentication failed) is terminal for this token: the gateway must go quiet rather
+    than re-IDENTIFY on the backoff schedule forever, and must say so exactly once."""
+    server = FakeGatewayServer()
+    gw, stop, thread = _armed_gateway(store, bus, monkeypatch, server)
+    try:
+        assert _serve_hello_and_read_identify(server)["op"] == 2
+        server.close_connection(4004, "Authentication failed.")
+
+        with pytest.raises(TimeoutError):
+            server.wait_for_connection(timeout=0.5)  # no redial: several backoffs have elapsed
+        notices = store.list_queued_notices()
+        assert len(notices) == 1
+        assert "reconnect with `selly-agent connect discord`" in notices[0]["text"]
+        assert FAKE_TOKEN not in notices[0]["text"]
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
+        server.close()
+
+
+def test_a_new_token_clears_the_latch_without_a_restart(store, bus, xdg_tmp, monkeypatch) -> None:
+    """The latch is keyed to the refused token's value, so a seller re-running `connect discord`
+    with a fresh token is picked up by the running daemon — it must not need a restart to recover
+    from a revoked one."""
+    server = FakeGatewayServer()
+    gw, stop, thread = _armed_gateway(store, bus, monkeypatch, server)
+    try:
+        _serve_hello_and_read_identify(server)
+        server.close_connection(4004, "Authentication failed.")
+        with pytest.raises(TimeoutError):
+            server.wait_for_connection(timeout=0.3)
+
+        replacement = FAKE_TOKEN[:-1] + ("A" if FAKE_TOKEN[-1] != "A" else "B")
+        secrets.write_discord_bot_token(replacement)
+        identify = _serve_hello_and_read_identify(server)  # redials on the new value
+        assert identify["d"]["token"] == replacement
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
+        server.close()
+
+
+def test_a_resumable_close_reconnects_and_reidentifies(store, bus, xdg_tmp, monkeypatch) -> None:
+    """Every close code outside the non-resumable set — 4000 here, but a bare network drop is the
+    common one — is transient, so the gateway backs off and identifies again."""
+    server = FakeGatewayServer()
+    gw, stop, thread = _armed_gateway(store, bus, monkeypatch, server)
+    try:
+        assert _serve_hello_and_read_identify(server)["op"] == 2
+        server.close_connection(4000, "Unknown error.")
+
+        assert _serve_hello_and_read_identify(server)["op"] == 2  # dialed again
+        assert store.list_queued_notices() == []  # transient: nothing to tell the seller
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
+        server.close()

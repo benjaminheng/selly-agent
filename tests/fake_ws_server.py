@@ -44,6 +44,11 @@ class FakeWebSocketServer:
     def recv_text(self, timeout: float | None = None) -> str:
         return self._conn.recv(timeout=timeout)
 
+    def close_connection(self, code: int = 1000, reason: str = "") -> None:
+        """Close the current client connection with a specific close code, leaving the server up to
+        accept the next one — how a test drives the client's reconnect policy."""
+        self._conn.close(code, reason)
+
     def close(self) -> None:
         if self._conn is not None:
             try:

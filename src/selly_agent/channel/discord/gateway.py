@@ -5,13 +5,15 @@ long-poll loop; the state derivation (off/awaiting-bind/bound) and the 5s->60s b
 shape are the same idea, adapted to a connection that stays open rather than one HTTP call per
 tick.
 
-Opcodes and payload shapes below are Discord Gateway v10, confirmed against the official developer
-documentation (docs.discord.com/developers/events/gateway) at the time this was written:
-Dispatch=0, Heartbeat=1, Identify=2, Resume=6, Reconnect=7, Invalid Session=9, Hello=10,
-Heartbeat ACK=11. Close codes 4004/4010/4011/4012/4013/4014 must not reconnect (a bad token, shard,
-API version, or intent grant will never resolve itself); every other close — including a bare
-network drop — attempts Resume, falling back to a fresh Identify if the server says the session
-isn't resumable (Invalid Session with d=false).
+Payload shapes below are Discord Gateway v10. A session that ends re-IDENTIFIEs from scratch —
+there is no Resume: reconnects are rare at one-bot-one-seller scale, and `channel_inbox.event_id`
+is UNIQUE, so the replay a missed Resume would cause is deduped on ingest anyway.
+
+The exception is a close code in NON_RESUMABLE_CLOSE_CODES — a bad token, a bad shard, API version
+or intent grant, none of which resolve themselves. Reconnecting on those would re-IDENTIFY every
+60s forever against a Gateway that has already refused us (exactly what Discord's
+session_start_limit exists to punish), so the gateway latches off for that token instead: it tells
+the seller once and stays down until the token file's value changes.
 
 The Gateway URL is the well-known static host (gateway.discord.gg) rather than the one GET
 /gateway/bot returns dynamically: that endpoint's extra session_start_limit info matters for large,
@@ -22,11 +24,9 @@ MESSAGE_CONTENT intent by Discord's own documented policy ("Content in DMs with 
 delivered without it), so this bot needs zero privileged grants and no GUILDS intent either — it
 never looks at guild events.
 
-This module holds session mechanics (connect/Identify/heartbeat/Resume — proved against a fake
-Gateway speaking real opcodes over a real local WebSocket connection in
-tests/test_channel_discord_gateway_session.py) and, in `DiscordGateway` below, the wiring of
-Dispatch payloads into the store: bind, DM ingest, and fast-path dispatch — the Discord analog of
-`telegram/poller.py`.
+This module holds session mechanics (connect/Identify/heartbeat) and, in `DiscordGateway` below,
+the wiring of Dispatch payloads into the store: bind, DM ingest, and fast-path dispatch — the
+Discord analog of `telegram/poller.py`.
 """
 
 from __future__ import annotations
@@ -47,7 +47,6 @@ log = logging.getLogger(__name__)
 OP_DISPATCH = 0
 OP_HEARTBEAT = 1
 OP_IDENTIFY = 2
-OP_RESUME = 6
 OP_RECONNECT = 7
 OP_INVALID_SESSION = 9
 OP_HELLO = 10
@@ -75,10 +74,6 @@ def _identify_payload(token: str) -> dict:
             "properties": {"os": "linux", "browser": "selly-agent", "device": "selly-agent"},
         },
     }
-
-
-def _resume_payload(*, token: str, session_id: str, seq: int) -> dict:
-    return {"op": OP_RESUME, "d": {"token": token, "session_id": session_id, "seq": seq}}
 
 
 class _NeverStop:
@@ -117,16 +112,6 @@ class GatewaySession:
         self._ws = connect(GATEWAY_HOST, GATEWAY_PORT, GATEWAY_PATH, use_tls=self._use_tls)
         self._read_until_ready()
 
-    def connect_and_resume(self) -> None:
-        self._ws = connect(GATEWAY_HOST, GATEWAY_PORT, GATEWAY_PATH, use_tls=self._use_tls)
-        hello = json.loads(self._ws.recv_text())
-        self._heartbeat_interval_sec = hello["d"]["heartbeat_interval"] / 1000.0
-        self._ws.send_text(
-            json.dumps(
-                _resume_payload(token=self._token, session_id=self._session_id, seq=self._seq)
-            )
-        )
-
     def _read_until_ready(self) -> None:
         """Consume HELLO, send IDENTIFY, wait for READY (capturing session_id/seq)."""
         hello = json.loads(self._ws.recv_text())
@@ -151,7 +136,7 @@ class GatewaySession:
         """The steady-state loop: race "a message arrived" against "the heartbeat is due", for as
         long as `stop_event` isn't set. Raises ConnectionClosed on a close frame, a zombied
         connection (no ACK before the next heartbeat), or Reconnect/non-resumable Invalid Session —
-        the caller decides whether to Resume or re-Identify from there.
+        `DiscordGateway.run` decides from there whether to reconnect or latch off.
 
         The heartbeat deadline is an absolute wall-clock time (`next_heartbeat_at`), computed once
         when due and left alone until a heartbeat is actually sent — not recomputed on every loop
@@ -214,6 +199,7 @@ class DiscordGateway:
         self.stop = stop_event
         self._client_factory = client_factory or self._default_client_factory
         self._backoff = 0.0
+        self._refused_token: str | None = None
 
     def _default_client_factory(self, token: str) -> DiscordClient:
         return DiscordClient(token, api_base=self.config.discord_api_base)
@@ -228,17 +214,42 @@ class DiscordGateway:
             token = self._read_token()
             ch = self.store.get_channel()
             state = self._state(token, ch)
-            if state == "off":
+            if state == "off" or token == self._refused_token:
                 stopper.wait(OFF_IDLE_SEC)
                 continue
             try:
                 self._run_session(token)
-            except Exception:
+            except Exception as exc:
+                code = exc.code if isinstance(exc, ConnectionClosed) else None
+                if code in NON_RESUMABLE_CLOSE_CODES:
+                    self._latch_off(token, code, exc.reason)
+                    continue
                 self._arm_backoff()
                 log.exception("Discord gateway session failed (backing off %.0fs)", self._backoff)
                 stopper.wait(self._backoff)
             else:
                 self._backoff = 0.0
+
+    def _latch_off(self, token: str, code: int, reason: str) -> None:
+        """Stay down until the token file's value changes. Discord closed with a code that says
+        this token will never be accepted, so reconnecting only re-IDENTIFIEs into the same
+        refusal forever. Tell the seller once — the notice reaches them through the needs-me queue
+        even though the channel it would normally ride on is the thing that is down — and idle
+        until `_read_token` returns something different."""
+        self._refused_token = token
+        self._backoff = 0.0
+        log.error(
+            "Discord refused this bot token (close %s: %s) — gateway off until it changes",
+            code,
+            reason,
+        )
+        try:
+            self.store.queue_notice(
+                f"Discord disconnected me: {reason or f'close code {code}'} — "
+                "reconnect with `selly-agent connect discord`"
+            )
+        except Exception:
+            log.exception("could not queue the Discord disconnect notice")
 
     @staticmethod
     def _read_token() -> str | None:
