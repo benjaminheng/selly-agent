@@ -14,6 +14,10 @@ from selly_agent.channel.telegram import provider as telegram_provider
 from selly_agent.config import Config
 from selly_agent.scheduler import Scheduler
 
+# Every wait in the concurrency tests below is a backstop against a wedge, never a deadline an
+# assertion depends on — so it is set well past anything a loaded CI box could plausibly need.
+_DEADLOCK_BACKSTOP_SEC = 30.0
+
 
 class _FakeProvider:
     """A provider stub: records start/shutdown and whether it is 'configured'."""
@@ -99,23 +103,22 @@ def test_register_deregisters_any_other_running_provider(bus) -> None:
 
 
 def test_concurrent_registers_of_the_same_provider_start_it_once(bus) -> None:
-    """Two connect calls can land at once — the control server is a ThreadingHTTPServer — and
-    `register` releases the lock between its idempotency check and its handle insertion to tear
-    down the sibling provider. Both callers therefore reach the insertion, and only the re-check
-    under the final lock stops the loser starting a second provider whose handle overwrites the
-    winner's: a live gateway thread nothing will ever shut down, holding the scheduler task names
-    the surviving handle believes it owns.
+    """Two connect calls can land at once — the control server is a ThreadingHTTPServer. Because
+    `register` holds `_register_lock` across the whole deregister-then-start sequence, the second
+    caller cannot run concurrently at all: it queues, then finds the handle already there and
+    no-ops. Without that it would start a second provider on top of the winner's — a live gateway
+    thread nothing will ever shut down, holding the scheduler task names the survivor believes it
+    owns.
 
-    Made deterministic rather than raced: the first caller is parked inside the sibling's
-    `shutdown()` — past the check, before the insertion — for exactly as long as the second caller
-    needs to complete the whole register."""
+    Made deterministic: the first caller is parked inside the sibling's `shutdown()`, holding
+    `_register_lock`, until the test releases it."""
     entered_teardown = threading.Event()
     release_teardown = threading.Event()
 
     class _BlockingHandle(_FakeHandle):
         def shutdown(self) -> None:
             entered_teardown.set()
-            release_teardown.wait(timeout=5.0)
+            release_teardown.wait(timeout=_DEADLOCK_BACKSTOP_SEC)
             super().shutdown()
 
     telegram = _FakeProvider(configured=True)
@@ -126,16 +129,18 @@ def test_concurrent_registers_of_the_same_provider_start_it_once(bus) -> None:
 
     first = threading.Thread(target=mgr.register, args=("discord",), daemon=True)
     first.start()
-    assert entered_teardown.wait(timeout=5.0)
+    assert entered_teardown.wait(timeout=_DEADLOCK_BACKSTOP_SEC)
 
     second = threading.Thread(target=mgr.register, args=("discord",), daemon=True)
     second.start()
-    second.join(timeout=5.0)
-    assert discord.started == 1  # the second caller found no handle yet and started the provider
+    second.join(timeout=0.5)
+    assert second.is_alive()  # queued behind the first caller, not racing it
+    assert discord.started == 0
 
     release_teardown.set()
-    first.join(timeout=5.0)
-    assert discord.started == 1  # the parked caller must not start a second one on top
+    first.join(timeout=_DEADLOCK_BACKSTOP_SEC)
+    second.join(timeout=_DEADLOCK_BACKSTOP_SEC)
+    assert discord.started == 1  # the queued caller found the handle and no-oped
     assert mgr._handles["discord"] is discord.handle
 
 
@@ -161,7 +166,7 @@ def test_concurrent_registers_of_different_providers_start_only_one(bus) -> None
     class _BlockingHandle(_FakeHandle):
         def shutdown(self) -> None:
             entered_teardown.set()
-            release_teardown.wait(timeout=5.0)
+            release_teardown.wait(timeout=_DEADLOCK_BACKSTOP_SEC)
             super().shutdown()
 
     telegram = _FakeProvider(configured=True)
@@ -173,14 +178,15 @@ def test_concurrent_registers_of_different_providers_start_only_one(bus) -> None
 
     first = threading.Thread(target=mgr.register, args=("discord",), daemon=True)
     first.start()
-    assert entered_teardown.wait(timeout=5.0)  # telegram's handle is already popped from _handles
+    # telegram's handle is already popped from _handles by the time teardown is entered
+    assert entered_teardown.wait(timeout=_DEADLOCK_BACKSTOP_SEC)
 
     second = threading.Thread(target=mgr.register, args=("whatsapp",), daemon=True)
     second.start()
 
     release_teardown.set()
-    first.join(timeout=5.0)
-    second.join(timeout=5.0)
+    first.join(timeout=_DEADLOCK_BACKSTOP_SEC)
+    second.join(timeout=_DEADLOCK_BACKSTOP_SEC)
 
     assert discord.started == 1
     assert whatsapp.started == 1
