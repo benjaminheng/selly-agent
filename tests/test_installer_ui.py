@@ -7,12 +7,12 @@ import io
 
 import pytest
 
-from selly_agent.installer.ui import Abort, Ui
+from sellee.installer.ui import Abort, Ui
 
 
 def make_ui(**kwargs) -> tuple:
     out, err = io.StringIO(), io.StringIO()
-    defaults = {"stream": out, "err": err, "interactive": False, "color": False, "width": 100}
+    defaults = {"stream": out, "err": err, "interactive": False, "color": False}
     defaults.update(kwargs)
     return Ui(**defaults), out, err
 
@@ -21,9 +21,9 @@ def test_a_step_opens_with_a_blank_line_and_what_follows_is_flat() -> None:
     # The blank line above a heading is the whole navigation scheme: it is what separates one
     # phase's report from the next in a scroll that runs for pages. Nothing else is indented.
     ui, out, _ = make_ui()
-    ui.step("Installing Selly")
+    ui.step("Installing Sellee")
     ui.say("/opt/versions/1.0.0")
-    assert out.getvalue().splitlines() == ["", "Installing Selly", "/opt/versions/1.0.0"]
+    assert out.getvalue().splitlines() == ["", "Installing Sellee", "/opt/versions/1.0.0"]
 
 
 def test_colour_marks_headings_and_questions_but_not_what_they_report() -> None:
@@ -44,33 +44,15 @@ def test_no_color_strips_escapes(monkeypatch) -> None:
     monkeypatch.setenv("NO_COLOR", "1")
     out = io.StringIO()
     out.isatty = lambda: True  # a TTY that has nonetheless asked for no colour
-    ui = Ui(stream=out, interactive=False, width=100)
+    ui = Ui(stream=out, interactive=False)
     ui.say("hello")
     assert "\033" not in out.getvalue()
 
 
 def test_color_is_off_when_the_stream_is_not_a_tty(monkeypatch) -> None:
     monkeypatch.delenv("NO_COLOR", raising=False)
-    ui = Ui(stream=io.StringIO(), interactive=False, width=100)
+    ui = Ui(stream=io.StringIO(), interactive=False)
     assert ui.color is False
-
-
-def test_narrow_terminal_falls_back_to_a_one_line_banner() -> None:
-    ui, out, _ = make_ui(width=40)
-    ui.banner("1.2.3")
-    assert out.getvalue() == "Selly v1.2.3\n"
-
-
-def test_wide_terminal_draws_the_banner() -> None:
-    ui, out, _ = make_ui(width=100)
-    ui.banner("1.2.3")
-    assert len(out.getvalue().splitlines()) > 1
-
-
-def test_banner_art_fits_its_own_width_gate() -> None:
-    from selly_agent.installer import ui as ui_module
-
-    assert max(len(line) for line in ui_module.BANNER) <= ui_module.BANNER_MIN_COLUMNS
 
 
 # --- prompts ---------------------------------------------------------------------------------
