@@ -36,11 +36,11 @@ import pytest
 
 from fake_discord_api import FAKE_TOKEN
 from fake_ws_server import FakeGatewayServer
-from selly_agent import secrets
-from selly_agent.channel.discord import gateway as gateway_mod
-from selly_agent.channel.discord.gateway import DiscordGateway, GatewaySession
-from selly_agent.channel.discord.ws_client import ConnectionClosed, connect
-from selly_agent.config import Config
+from sellee import secrets
+from sellee.channel.discord import gateway as gateway_mod
+from sellee.channel.discord.gateway import DiscordGateway, GatewaySession
+from sellee.channel.discord.ws_client import ConnectionClosed, connect
+from sellee.config import Config
 
 
 def _connect_and_serve_hello(server, heartbeat_ms=50):
@@ -205,7 +205,7 @@ def test_heartbeat_not_delayed_by_frequent_messages(monkeypatch) -> None:
 
 
 def test_zombied_connection_without_ack_raises_for_reconnect() -> None:
-    from selly_agent.channel.discord.ws_client import ConnectionClosed
+    from sellee.channel.discord.ws_client import ConnectionClosed
 
     server = FakeGatewayServer()
     try:
@@ -376,7 +376,7 @@ def _armed_gateway(store, bus, monkeypatch, server, token=FAKE_TOKEN):
     monkeypatch.setattr(gateway_mod, "OFF_IDLE_SEC", 0.02)
     monkeypatch.setattr(gateway_mod, "BACKOFF_BASE_SEC", 0.02)
     secrets.write_discord_bot_token(token)
-    store.arm_bind("selly_test_bot", "nonce-abc123", adapter="discord")
+    store.arm_bind("sellee_test_bot", "nonce-abc123", adapter="discord")
     stop = threading.Event()
     gw = DiscordGateway(store=store, config=Config(), bus=bus, stop_event=stop)
     thread = threading.Thread(target=gw.run, daemon=True)
@@ -405,7 +405,7 @@ def test_a_non_resumable_close_stops_the_gateway_reconnecting(
             server.wait_for_connection(timeout=0.5)  # no redial: several backoffs have elapsed
         notices = store.list_queued_notices()
         assert len(notices) == 1
-        assert "reconnect with `selly-agent connect discord`" in notices[0]["text"]
+        assert "reconnect with `sellee connect discord`" in notices[0]["text"]
         assert FAKE_TOKEN not in notices[0]["text"]
     finally:
         stop.set()
@@ -453,7 +453,8 @@ def test_a_fresh_bind_attempt_clears_the_latch_even_with_the_same_token(
         with pytest.raises(TimeoutError):
             server.wait_for_connection(timeout=0.3)
 
-        store.arm_bind("selly_test_bot", "nonce-xyz789", adapter="discord")  # same token, new nonce
+        # same token, new nonce
+        store.arm_bind("sellee_test_bot", "nonce-xyz789", adapter="discord")
         identify = _serve_hello_and_read_identify(server)  # redials despite the identical token
         assert identify["d"]["token"] == FAKE_TOKEN
     finally:

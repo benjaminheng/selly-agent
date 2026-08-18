@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BOT_ID = "123456789012345678"
 APPLICATION_ID = "123456789012345678"
-BOT = {"id": BOT_ID, "username": "selly_test_bot", "bot": True}
+BOT = {"id": BOT_ID, "username": "sellee_test_bot", "bot": True}
 CHANNEL_ID = 987654321098765432
 # A structurally fake Discord bot token (three dot-separated base64url-shaped segments), never a
 # real credential. Assembled from separate parts, none of which is itself a single

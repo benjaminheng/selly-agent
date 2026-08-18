@@ -10,10 +10,10 @@ import threading
 
 import pytest
 
-from selly_agent import passes, paths
-from selly_agent.config import Config
-from selly_agent.tools import TIER_ATTENDED
-from selly_agent.tools.registry import ToolError, dispatch
+from sellee import passes, paths
+from sellee.config import Config
+from sellee.tools import TIER_ATTENDED
+from sellee.tools.registry import ToolError, dispatch
 
 # A fake harness that emits an init line then sleeps well past any test deadline, so the only way
 # it ends is the babysitter killing it.
@@ -125,7 +125,7 @@ def test_pause_and_resume_tools_flip_the_flag(make_ctx, store) -> None:
 
 def test_pause_via_fast_path_uses_a_generic_source(store) -> None:
     """The fastpaths' pause handler should set source='channel', not a provider-specific name."""
-    from selly_agent.channel import fastpaths
+    from sellee.channel import fastpaths
 
     reply, controls = fastpaths.handle_fast_path(
         store, {"kind": "command", "text": "/pause", "payload": {}}

@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import os
 
-from selly_agent import healthcheck, secrets, supervisor
-from selly_agent.config import Config
-from selly_agent.installer import checks
+from sellee import healthcheck, secrets, supervisor
+from sellee.config import Config
+from sellee.installer import checks
 
 # --- the daemon ---------------------------------------------------------------------------------
 
@@ -39,7 +39,7 @@ def test_manual_mode_not_running_is_reported_not_blamed() -> None:
     # them to ignore the report.
     result = healthcheck.daemon_check(mode=supervisor.MANUAL, registered=False, heartbeat_age=None)
     assert result.status == checks.WARN
-    assert result.fix == "selly-agent daemon start"
+    assert result.fix == "sellee daemon start"
 
 
 def test_login_start_not_running_is_a_failure() -> None:
@@ -54,7 +54,7 @@ def test_a_bound_channel_passes_and_an_unbound_one_only_warns() -> None:
     assert healthcheck.channel_check(bound=True, adapter=None).status == checks.OK
     unbound = healthcheck.channel_check(bound=False, adapter=None)
     assert unbound.status == checks.WARN  # optional by design — never a failure
-    assert unbound.fix == "selly-agent connect telegram (or `connect discord`)"
+    assert unbound.fix == "sellee connect telegram (or `connect discord`)"
 
 
 def test_a_bound_discord_channel_shows_the_adapter_name() -> None:
@@ -106,7 +106,7 @@ def test_being_signed_out_of_an_enabled_market_fails_with_the_command_to_fix_it(
         states=[{"market": "carousell", "state": "logged_out"}],
     )
     assert result.status == checks.FAIL
-    assert result.fix == "selly-agent connect carousell"
+    assert result.fix == "sellee connect carousell"
 
 
 def test_an_unconfirmable_login_warns_rather_than_claiming_signed_out() -> None:
@@ -204,12 +204,12 @@ def test_the_report_renders_a_glyph_per_check_and_a_verdict() -> None:
     text = healthcheck.report(
         [
             checks.ok("daemon", "running"),
-            checks.warn("channel", "not connected", "selly-agent connect telegram"),
+            checks.warn("channel", "not connected", "sellee connect telegram"),
         ]
     )
     assert "✅ daemon: running" in text
     assert "⚠️ channel: not connected" in text
-    assert "→ selly-agent connect telegram" in text
+    assert "→ sellee connect telegram" in text
     assert text.endswith("All good.")
 
 
@@ -222,8 +222,8 @@ def test_a_warning_alone_still_exits_zero_but_a_failure_does_not() -> None:
 def test_the_browser_check_says_unknown_rather_than_none_when_the_daemon_is_down(
     xdg_tmp, monkeypatch
 ) -> None:
-    from selly_agent import control
-    from selly_agent.config import Config
+    from sellee import control
+    from sellee.config import Config
 
     monkeypatch.setattr(secrets, "read_mcp_token", lambda: "tok")
 
@@ -242,7 +242,7 @@ def test_the_browser_check_says_unknown_rather_than_none_when_the_daemon_is_down
 def test_a_container_worker_is_fixed_by_the_container_not_by_a_launchd_verb(
     container, xdg_tmp
 ) -> None:
-    """`selly-agent daemon start` cannot be the fix where there is no job to start — and naming
+    """`sellee daemon start` cannot be the fix where there is no job to start — and naming
     the command that *is* would mean guessing an engine and a container name we did not choose."""
     stopped = healthcheck._daemon_probe()
     assert stopped.status == checks.FAIL
@@ -253,7 +253,7 @@ def test_a_container_worker_is_fixed_by_the_container_not_by_a_launchd_verb(
 def test_a_container_reports_the_host_chrome_as_the_thing_to_start() -> None:
     """On a host a closed Chrome resolves itself — the daemon opens one. Here it waits on the
     seller, so the report has to say so."""
-    from selly_agent.browser import chrome
+    from sellee.browser import chrome
 
     result = healthcheck.browser_check(
         enabled=["carousell"],
@@ -268,9 +268,9 @@ def test_a_container_reports_the_host_chrome_as_the_thing_to_start() -> None:
 def test_a_block_that_is_not_chrome_keeps_the_standing_answer(container, xdg_tmp, monkeypatch):
     """A pass holding the browser is ordinary and resolves itself, so it must not be dressed up
     as something the seller has to go and do."""
-    from selly_agent import control
-    from selly_agent.browser import chrome
-    from selly_agent.config import Config
+    from sellee import control
+    from sellee.browser import chrome
+    from sellee.config import Config
 
     monkeypatch.setattr(secrets, "read_mcp_token", lambda: "tok")
     monkeypatch.setattr(chrome, "is_ready", lambda port, **kw: True)
@@ -291,7 +291,7 @@ def test_the_container_browser_server_is_checked_against_the_image_path(
 ) -> None:
     """There is no recorded node fragment and no job definition to carry one — node was installed
     into the image, so the image's PATH is the worker's PATH."""
-    from selly_agent.config import Config
+    from sellee.config import Config
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()

@@ -12,8 +12,8 @@ from datetime import datetime, timezone
 import pytest
 
 from fake_discord_api import BOT_ID, CHANNEL_ID, FAKE_TOKEN, FakeDiscordAPI
-from selly_agent.channel.discord import transport
-from selly_agent.channel.discord.transport import ChannelError, DiscordClient
+from sellee.channel.discord import transport
+from sellee.channel.discord.transport import ChannelError, DiscordClient
 
 # --- _normalize (pure) ------------------------------------------------------------------------
 

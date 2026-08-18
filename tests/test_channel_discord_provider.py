@@ -6,10 +6,10 @@ provider coverage.
 from __future__ import annotations
 
 from fake_discord_api import FAKE_TOKEN
-from selly_agent import secrets
-from selly_agent.channel.discord import provider
-from selly_agent.config import Config
-from selly_agent.scheduler import Scheduler
+from sellee import secrets
+from sellee.channel.discord import provider
+from sellee.config import Config
+from sellee.scheduler import Scheduler
 
 
 def test_not_configured_with_no_token(xdg_tmp) -> None:

@@ -13,7 +13,7 @@ import threading
 import pytest
 
 from fake_ws_server import FakeWebSocketServer
-from selly_agent.channel.discord.ws_client import ConnectionClosed, HandshakeError, connect
+from sellee.channel.discord.ws_client import ConnectionClosed, HandshakeError, connect
 
 
 @pytest.fixture

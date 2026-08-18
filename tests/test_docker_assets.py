@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from selly_agent import deployment
-from selly_agent.browser import chrome, client
+from sellee import deployment
+from sellee.browser import chrome, client
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = (ROOT / "Dockerfile").read_text()
@@ -92,7 +92,7 @@ def test_the_image_pins_the_harness_it_installs() -> None:
 
 
 def test_the_secrets_file_never_enters_the_build_context() -> None:
-    """docs point the seller at a .env beside compose.yaml, and `COPY . /opt/selly-agent` would
+    """docs point the seller at a .env beside compose.yaml, and `COPY . /opt/sellee` would
     otherwise bake their harness token into an image layer — which deleting the file afterwards
     does not undo, and which travels with any export of that image."""
     assert "\n.env\n" in (ROOT / ".dockerignore").read_text()
@@ -123,24 +123,35 @@ def test_the_forwarder_listens_on_loopback_only() -> None:
 
 def test_a_linux_host_swaps_the_forwarder_for_the_host_network() -> None:
     assert "network_mode: host" in COMPOSE_LINUX
-    assert 'SELLY_CDP_FORWARD: "0"' in COMPOSE_LINUX
+    assert 'SELLEE_CDP_FORWARD: "0"' in COMPOSE_LINUX
 
 
 # --- compose --------------------------------------------------------------------------------
 
 
 def test_the_container_refuses_to_start_without_a_timezone_or_a_token() -> None:
-    """Both absences are silent: a UTC clock moves quiet hours, a missing token dies at the first
-    pass. The entrypoint checks, not compose — compose interpolates on every command, so a
-    `${VAR:?}` here would refuse to build an image containing neither value."""
+    """Both absences are silent: a UTC clock moves quiet hours, having neither credential dies at
+    the first pass. The entrypoint checks, not compose — compose interpolates on every command,
+    so a `${VAR:?}` here would refuse to build an image containing none of these values."""
     assert "TZ: ${TZ:-}" in COMPOSE
     assert "CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}" in COMPOSE
+    assert "ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}" in COMPOSE
     directives = [line for line in COMPOSE.splitlines() if not line.strip().startswith("#")]
     assert ":?" not in "\n".join(directives)
 
     assert "error: TZ is unset" in ENTRYPOINT
-    assert "error: CLAUDE_CODE_OAUTH_TOKEN is unset" in ENTRYPOINT
+    assert "error: neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set" in ENTRYPOINT
     assert "exit 1" in ENTRYPOINT
+
+
+def test_setting_both_credentials_warns_which_one_wins() -> None:
+    """The both-set case happens by accident: compose reads the host shell's environment before
+    .env, so an ANTHROPIC_API_KEY exported in the seller's shell silently outbids the token they
+    put in .env — and the claude CLI prefers the API key, moving billing from their subscription
+    to per-token Console billing. The entrypoint names the winner instead of leaving it to the
+    invoice."""
+    assert "both CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_API_KEY are set" in ENTRYPOINT
+    assert "will use ANTHROPIC_API_KEY" in ENTRYPOINT
 
 
 def test_the_one_published_port_is_scoped_to_host_loopback() -> None:
@@ -154,12 +165,12 @@ def test_the_one_published_port_is_scoped_to_host_loopback() -> None:
 
 def test_a_container_binds_wide_enough_for_that_port_to_reach_it() -> None:
     """A published port arrives on the bridge address, so a loopback-only bind answers nothing."""
-    assert "ENV SELLY_BIND_HOST=0.0.0.0" in DOCKERFILE
+    assert "ENV SELLEE_BIND_HOST=0.0.0.0" in DOCKERFILE
 
 
 def test_sharing_a_host_s_network_namespace_puts_the_bind_back_on_loopback() -> None:
     """0.0.0.0 there is the machine's real interfaces, and the control surface with it."""
-    assert "SELLY_BIND_HOST: 127.0.0.1" in COMPOSE_LINUX
+    assert "SELLEE_BIND_HOST: 127.0.0.1" in COMPOSE_LINUX
 
 
 def test_compose_mounts_one_directory_and_lets_docker_supervise() -> None:

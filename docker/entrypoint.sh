@@ -4,28 +4,38 @@
 # The endpoint has to be loopback on this side too: Chrome refuses a /json request whose Host
 # header is a DNS name, and the WebSocket URL it answers with is loopback-shaped and dialled
 # verbatim by Playwright. So socat listens on 127.0.0.1 in here and forwards to the host. A Linux
-# host shares the host's network namespace instead and sets SELLY_CDP_FORWARD=0.
+# host shares the host's network namespace instead and sets SELLEE_CDP_FORWARD=0.
 
 set -eu
 
-# Both fail silently if unset — UTC moves the seller's quiet hours, no token dies at the first
-# pass — so refuse to start. Checked here because compose interpolation runs on every command,
-# including a build that needs neither.
+# Both fail silently if unset — UTC moves the seller's quiet hours, having neither credential
+# dies at the first pass — so refuse to start. Checked here because compose interpolation runs
+# on every command, including a build that needs none of them.
 missing=0
 if [ -z "${TZ:-}" ]; then
 	echo "error: TZ is unset" >&2
 	missing=1
 fi
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+	echo "error: neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set" >&2
+	missing=1
+fi
 [ "$missing" = 0 ] || exit 1
 
-port="${SELLY_CDP_PORT:-9222}"
-# Docker Desktop's name for the host. Podman calls it host.containers.internal.
-host="${SELLY_CDP_HOST:-host.docker.internal}"
+# Both set is usually an accident. API key billing takes precedence, which is rarely what the user wants if they also have an active subscription.
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+	echo "sellee: both CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_API_KEY are set;" \
+		"the claude CLI will use ANTHROPIC_API_KEY (per-token Console billing)" >&2
+fi
 
-if [ "${SELLY_CDP_FORWARD:-1}" = "1" ]; then
+port="${SELLEE_CDP_PORT:-9222}"
+# Docker Desktop's name for the host. Podman calls it host.containers.internal.
+host="${SELLEE_CDP_HOST:-host.docker.internal}"
+
+if [ "${SELLEE_CDP_FORWARD:-1}" = "1" ]; then
 	if ! getent hosts "$host" >/dev/null 2>&1; then
-		echo "selly-agent: cannot resolve $host, so the browser will be unreachable" >&2
-		echo "selly-agent: on a Linux host, add -f compose.yaml -f compose.linux.yaml" >&2
+		echo "sellee: cannot resolve $host, so the browser will be unreachable" >&2
+		echo "sellee: on a Linux host, add -f compose.yaml -f compose.linux.yaml" >&2
 	fi
 	socat "TCP-LISTEN:${port},bind=127.0.0.1,fork,reuseaddr" "TCP:${host}:${port}" &
 fi

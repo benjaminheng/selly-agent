@@ -14,11 +14,11 @@ from pathlib import Path
 import pytest
 
 from fake_discord_api import CHANNEL_ID, FAKE_TOKEN, FakeDiscordAPI
-from selly_agent import secrets
-from selly_agent.channel.discord import gateway
-from selly_agent.channel.discord.gateway import DiscordGateway
-from selly_agent.channel.discord.transport import DiscordClient
-from selly_agent.config import Config
+from sellee import secrets
+from sellee.channel.discord import gateway
+from sellee.channel.discord.gateway import DiscordGateway
+from sellee.channel.discord.transport import DiscordClient
+from sellee.config import Config
 
 _NONCE = "nonce-abc123"
 
@@ -39,14 +39,14 @@ def test_state_off_with_no_token(store) -> None:
 
 def test_state_awaiting_bind_with_token_and_nonce(store, xdg_tmp) -> None:
     secrets.write_discord_bot_token(FAKE_TOKEN)
-    store.arm_bind("selly_test_bot", _NONCE, adapter="discord")
+    store.arm_bind("sellee_test_bot", _NONCE, adapter="discord")
     gw = DiscordGateway(store=store, config=Config(), bus=None)
     assert gw._state(FAKE_TOKEN, store.get_channel()) == "awaiting_bind"
 
 
 def test_state_bound_once_chat_id_is_set(store, xdg_tmp) -> None:
     secrets.write_discord_bot_token(FAKE_TOKEN)
-    store.arm_bind("selly_test_bot", _NONCE, adapter="discord")
+    store.arm_bind("sellee_test_bot", _NONCE, adapter="discord")
     store.complete_bind(CHANNEL_ID, 0)
     gw = DiscordGateway(store=store, config=Config(), bus=None)
     assert gw._state(FAKE_TOKEN, store.get_channel()) == "bound"
@@ -54,7 +54,7 @@ def test_state_bound_once_chat_id_is_set(store, xdg_tmp) -> None:
 
 def test_a_dm_matching_the_nonce_binds(store, bus, xdg_tmp) -> None:
     secrets.write_discord_bot_token(FAKE_TOKEN)
-    store.arm_bind("selly_test_bot", _NONCE, adapter="discord")
+    store.arm_bind("sellee_test_bot", _NONCE, adapter="discord")
     with FakeDiscordAPI() as api:
         gw = _gateway(store, bus, api)
         gw._handle_awaiting_bind_message(
@@ -67,7 +67,7 @@ def test_a_dm_matching_the_nonce_binds(store, bus, xdg_tmp) -> None:
 
 def test_a_dm_not_matching_the_nonce_never_binds(store, bus, xdg_tmp) -> None:
     secrets.write_discord_bot_token(FAKE_TOKEN)
-    store.arm_bind("selly_test_bot", _NONCE, adapter="discord")
+    store.arm_bind("sellee_test_bot", _NONCE, adapter="discord")
     with FakeDiscordAPI() as api:
         gw = _gateway(store, bus, api)
         gw._handle_awaiting_bind_message(
@@ -78,7 +78,7 @@ def test_a_dm_not_matching_the_nonce_never_binds(store, bus, xdg_tmp) -> None:
 
 def test_fast_path_command_replies_and_marks_handled(store, bus, xdg_tmp) -> None:
     secrets.write_discord_bot_token(FAKE_TOKEN)
-    store.arm_bind("selly_test_bot", _NONCE, adapter="discord")
+    store.arm_bind("sellee_test_bot", _NONCE, adapter="discord")
     store.complete_bind(CHANNEL_ID, 0)
     with FakeDiscordAPI() as api:
         gw = _gateway(store, bus, api)
@@ -95,7 +95,7 @@ def test_fast_path_command_replies_and_marks_handled(store, bus, xdg_tmp) -> Non
 
 def test_free_text_stays_pending_for_the_channel_pass(store, bus, xdg_tmp) -> None:
     secrets.write_discord_bot_token(FAKE_TOKEN)
-    store.arm_bind("selly_test_bot", _NONCE, adapter="discord")
+    store.arm_bind("sellee_test_bot", _NONCE, adapter="discord")
     store.complete_bind(CHANNEL_ID, 0)
     with FakeDiscordAPI() as api:
         gw = _gateway(store, bus, api)
@@ -112,7 +112,7 @@ def test_free_text_stays_pending_for_the_channel_pass(store, bus, xdg_tmp) -> No
 
 def _bound(store) -> None:
     secrets.write_discord_bot_token(FAKE_TOKEN)
-    store.arm_bind("selly_test_bot", _NONCE, adapter="discord")
+    store.arm_bind("sellee_test_bot", _NONCE, adapter="discord")
     store.complete_bind(CHANNEL_ID, 0)
 
 
@@ -231,7 +231,7 @@ def test_a_non_component_interaction_is_ignored(store, bus, xdg_tmp) -> None:
 
 def test_binding_queues_the_welcome_and_publishes_channel_bound(store, bus, xdg_tmp) -> None:
     secrets.write_discord_bot_token(FAKE_TOKEN)
-    store.arm_bind("selly_test_bot", _NONCE, adapter="discord")
+    store.arm_bind("sellee_test_bot", _NONCE, adapter="discord")
     with FakeDiscordAPI() as api:
         _gateway(store, bus, api)._handle_awaiting_bind_message(
             _dm(content=_NONCE) | {"author": {"id": "555", "bot": False}}
@@ -247,7 +247,7 @@ def test_a_bot_authored_dm_never_binds(store, bus, xdg_tmp) -> None:
     """The bot's own messages echo back over the Gateway, and other bots can DM it. Neither may
     complete a bind, even holding the nonce."""
     secrets.write_discord_bot_token(FAKE_TOKEN)
-    store.arm_bind("selly_test_bot", _NONCE, adapter="discord")
+    store.arm_bind("sellee_test_bot", _NONCE, adapter="discord")
     with FakeDiscordAPI() as api:
         _gateway(store, bus, api)._handle_awaiting_bind_message(
             {

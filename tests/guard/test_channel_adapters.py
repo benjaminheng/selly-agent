@@ -12,11 +12,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from selly_agent import store
+from sellee import store
 
 SRC = Path(__file__).resolve().parents[2] / "src"
-DAEMON = SRC / "selly_agent" / "daemon.py"
-CHANNEL = SRC / "selly_agent" / "channel"
+DAEMON = SRC / "sellee" / "daemon.py"
+CHANNEL = SRC / "sellee" / "channel"
 
 
 def _daemon_provider_names() -> set:

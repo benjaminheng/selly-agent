@@ -7,10 +7,10 @@ from __future__ import annotations
 import pytest
 
 from fake_discord_api import APPLICATION_ID, BOT, FAKE_TOKEN, FakeDiscordAPI
-from selly_agent import secrets
-from selly_agent.channel.discord.bind import BindError, channel_status, connect_discord
-from selly_agent.channel.discord.transport import DiscordClient
-from selly_agent.config import Config
+from sellee import secrets
+from sellee.channel.discord.bind import BindError, channel_status, connect_discord
+from sellee.channel.discord.transport import DiscordClient
+from sellee.config import Config
 
 
 def _make_client_for(api):

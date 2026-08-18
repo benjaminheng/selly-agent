@@ -2,14 +2,14 @@
 
 These are the deterministic substrate the poller, drain lane, and catchup all build on, so they
 are pinned directly (the poller/transport tests layer on top). The store is exercised over a
-freshly-migrated selly.db via the shared `store` fixture.
+freshly-migrated sellee.db via the shared `store` fixture.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from selly_agent.store import StoreError
+from sellee.store import StoreError
 
 # --- channel state: off -> awaiting-bind -> bound -------------------------------------------
 
@@ -23,16 +23,16 @@ def test_channel_defaults_when_no_row(store) -> None:
 
 
 def test_arm_bind_sets_nonce_and_clears_chat(store) -> None:
-    store.arm_bind("selly_bot", "nonce-1")
+    store.arm_bind("sellee_bot", "nonce-1")
     ch = store.get_channel()
-    assert ch["bot_username"] == "selly_bot"
+    assert ch["bot_username"] == "sellee_bot"
     assert ch["bind_nonce"] == "nonce-1"
     assert ch["chat_id"] is None
     assert ch["update_offset"] == 0
 
 
 def test_complete_bind_atomic_chat_nonce_cursor(store) -> None:
-    store.arm_bind("selly_bot", "nonce-1")
+    store.arm_bind("sellee_bot", "nonce-1")
     store.complete_bind(555, update_offset=42)
     ch = store.get_channel()
     assert ch["chat_id"] == 555
@@ -47,11 +47,11 @@ def test_complete_bind_without_arm_raises(store) -> None:
 
 
 def test_rebind_same_bot_keeps_welcome_and_commands(store) -> None:
-    store.arm_bind("selly_bot", "n1")
+    store.arm_bind("sellee_bot", "n1")
     store.complete_bind(555, update_offset=1)
     store.stamp_welcomed()
     store.stamp_commands_hash("abc123")
-    store.arm_bind("selly_bot", "n2")  # re-connect, same bot
+    store.arm_bind("sellee_bot", "n2")  # re-connect, same bot
     ch = store.get_channel()
     assert ch["welcomed_at"] is not None  # never re-greet the same bot
     assert ch["commands_hash"] == "abc123"
@@ -59,7 +59,7 @@ def test_rebind_same_bot_keeps_welcome_and_commands(store) -> None:
 
 
 def test_rebind_new_bot_resets_welcome_and_commands(store) -> None:
-    store.arm_bind("selly_bot", "n1")
+    store.arm_bind("sellee_bot", "n1")
     store.complete_bind(555, update_offset=1)
     store.stamp_welcomed()
     store.stamp_commands_hash("abc123")
@@ -70,11 +70,11 @@ def test_rebind_new_bot_resets_welcome_and_commands(store) -> None:
 
 
 def test_rebind_same_bot_different_adapter_resets_welcome_and_commands(store) -> None:
-    store.arm_bind("selly_bot", "n1")
+    store.arm_bind("sellee_bot", "n1")
     store.complete_bind(555, update_offset=1)
     store.stamp_welcomed()
     store.stamp_commands_hash("abc123")
-    store.arm_bind("selly_bot", "n2", adapter="discord")  # same bot, different adapter
+    store.arm_bind("sellee_bot", "n2", adapter="discord")  # same bot, different adapter
     ch = store.get_channel()
     assert ch["welcomed_at"] is None  # switch to different adapter must reset
     assert ch["commands_hash"] is None
@@ -82,13 +82,13 @@ def test_rebind_same_bot_different_adapter_resets_welcome_and_commands(store) ->
 
 
 def test_arm_bind_accepts_a_discord_adapter(store) -> None:
-    store.arm_bind("SellyBot", "nonce-1", adapter="discord")
+    store.arm_bind("SelleeBot", "nonce-1", adapter="discord")
     ch = store.get_channel()
     assert ch["adapter"] == "discord"
 
 
 def test_arm_bind_still_defaults_to_telegram(store) -> None:
-    store.arm_bind("SellyBot", "nonce-1")
+    store.arm_bind("SelleeBot", "nonce-1")
     ch = store.get_channel()
     assert ch["adapter"] == "telegram"
 
@@ -97,12 +97,12 @@ def test_arm_bind_refuses_an_unknown_adapter(store) -> None:
     """The column takes any non-empty string, so arm_bind is where an adapter name is checked —
     binding to a provider the daemon will never start would leave the seller waiting forever."""
     with pytest.raises(ValueError, match="unknown channel adapter"):
-        store.arm_bind("SellyBot", "nonce-1", adapter="whatsapp")
+        store.arm_bind("SelleeBot", "nonce-1", adapter="whatsapp")
     assert store.get_channel()["bind_nonce"] is None  # nothing armed
 
 
 def test_advance_offset_only_moves_forward(store) -> None:
-    store.arm_bind("selly_bot", "n1")
+    store.arm_bind("sellee_bot", "n1")
     store.complete_bind(555, update_offset=10)
     store.advance_offset(5)  # a lower value is ignored
     assert store.get_channel()["update_offset"] == 10
@@ -182,7 +182,7 @@ def test_fold_inbox_rejects_bad_status(store) -> None:
 
 
 def test_recent_transcript_interleaves_by_local_clock(store, monkeypatch) -> None:
-    import selly_agent.store as store_mod
+    import sellee.store as store_mod
 
     # Stamp each write at a distinct, increasing local time so the interleave is deterministic.
     ticks = iter([100.0, 200.0, 300.0])
@@ -219,7 +219,7 @@ def test_recent_transcript_carries_media_paths(store) -> None:
 def test_recent_transcript_caps_to_limit(store, monkeypatch) -> None:
     import itertools
 
-    import selly_agent.store as store_mod
+    import sellee.store as store_mod
 
     clock = itertools.count(1.0, 1.0)  # a distinct, increasing local time per write
     monkeypatch.setattr(store_mod, "_now", lambda: next(clock))
@@ -263,7 +263,7 @@ def test_claim_queued_notices_is_fifo(store) -> None:
 
 
 def test_queue_welcome_notices_queues_fifo_and_stamps_welcomed(store) -> None:
-    store.arm_bind("selly_bot", "n1")
+    store.arm_bind("sellee_bot", "n1")
     store.complete_bind(555, update_offset=1)
     store.queue_welcome_notices([("hello", None), ("list something", [("Skip", "skipcta")])])
     queued = store.list_queued_notices()
@@ -312,7 +312,7 @@ def test_pause_and_resume(store) -> None:
 
 
 def test_redundant_pause_keeps_since(store, monkeypatch) -> None:
-    import selly_agent.store as store_mod
+    import sellee.store as store_mod
 
     ticks = iter([111.0, 222.0])
     monkeypatch.setattr(store_mod, "_now", lambda: next(ticks))

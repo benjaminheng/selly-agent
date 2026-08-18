@@ -5,9 +5,9 @@ REST API, mirroring tests/test_channel_transport.py's Telegram counterpart at th
 from __future__ import annotations
 
 from fake_discord_api import CHANNEL_ID, FAKE_TOKEN, FakeDiscordAPI
-from selly_agent import secrets
-from selly_agent.channel.discord import outbound
-from selly_agent.config import Config
+from sellee import secrets
+from sellee.channel.discord import outbound
+from sellee.config import Config
 
 
 def test_deliver_sends_text_and_controls(xdg_tmp) -> None:
