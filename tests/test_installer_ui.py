@@ -55,6 +55,26 @@ def test_color_is_off_when_the_stream_is_not_a_tty(monkeypatch) -> None:
     assert ui.color is False
 
 
+def test_narrow_terminal_falls_back_to_a_one_line_banner() -> None:
+    ui, out, _ = make_ui(width=40)
+    ui.banner("1.2.3")
+    assert out.getvalue() == "Sellee v1.2.3\n"
+
+
+def test_wide_terminal_draws_the_banner() -> None:
+    ui, out, _ = make_ui(width=100)
+    ui.banner("1.2.3")
+    lines = out.getvalue().splitlines()
+    assert len(lines) > 1
+    assert lines[-1] == "Sellee v1.2.3"  # the version survives the art
+
+
+def test_banner_art_fits_its_own_width_gate() -> None:
+    from sellee.installer import ui as ui_module
+
+    assert max(len(line) for line in ui_module.BANNER) <= ui_module.BANNER_MIN_COLUMNS
+
+
 # --- prompts ---------------------------------------------------------------------------------
 
 
