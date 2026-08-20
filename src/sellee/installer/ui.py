@@ -14,8 +14,23 @@ reads as a transcript rather than a hang.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 
+# The banner is skipped below this width rather than wrapped: a wrapped banner is unreadable
+# noise, and the one-line fallback carries the same information.
+BANNER_MIN_COLUMNS = 72
+
+BANNER = (
+    "███████╗███████╗██╗     ██╗     ███████╗███████╗    ▟██▙     ▟██▙",
+    "██╔════╝██╔════╝██║     ██║     ██╔════╝██╔════╝   ▟█████████████▙",
+    "███████╗█████╗  ██║     ██║     █████╗  █████╗    ▐████  ███  ████▌",
+    "╚════██║██╔══╝  ██║     ██║     ██╔══╝  ██╔══╝    ▐███████▄███████▌",
+    "███████║███████╗███████╗███████╗███████╗███████╗   ▜█████████████▛",
+    "╚══════╝╚══════╝╚══════╝╚══════╝╚══════╝╚══════╝     ▀▀▀▀▀▀▀▀▀▀▀",
+)
+
+_TEAL = "\033[36m"
 _BOLD_TEAL = "\033[1;36m"
 _YELLOW = "\033[33m"
 _RED = "\033[31m"
@@ -46,6 +61,7 @@ class Ui:
         err=None,
         interactive: bool | None = None,
         color: bool | None = None,
+        width: int | None = None,
         assume_yes: bool = False,
         input_fn=None,
     ):
@@ -53,6 +69,7 @@ class Ui:
         self.err = err if err is not None else sys.stderr
         self.interactive = self._detect_interactive() if interactive is None else interactive
         self.color = self._detect_color() if color is None else color
+        self._width = width
         self.assume_yes = assume_yes
         self._input = input_fn if input_fn is not None else input
 
@@ -67,6 +84,12 @@ class Ui:
         if os.environ.get("NO_COLOR"):
             return False
         return bool(getattr(self.stream, "isatty", lambda: False)())
+
+    @property
+    def width(self) -> int:
+        if self._width is not None:
+            return self._width
+        return shutil.get_terminal_size(fallback=(80, 24)).columns
 
     def _paint(self, text: str, code: str) -> str:
         return f"{code}{text}{_RESET}" if self.color else text
@@ -99,6 +122,10 @@ class Ui:
         print(self._paint(f"warn: {text}", _YELLOW), file=self.stream)
 
     def banner(self, version: str) -> None:
+        """Open the install with the cat. Narrow terminals get the version line alone."""
+        if self.width >= BANNER_MIN_COLUMNS:
+            for line in BANNER:
+                print(self._paint(line, _TEAL), file=self.stream)
         print(self._paint(f"Sellee v{version}", _BOLD_TEAL), file=self.stream)
 
     def fatal(self, exc: Abort) -> None:
