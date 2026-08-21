@@ -83,6 +83,8 @@ def fake_rail():
         yield server, base
     finally:
         server.shutdown()
+        # shutdown() only stops the accept loop; the listening socket stays open without this.
+        server.server_close()
 
 
 def _client(base, key="guest-key"):

@@ -49,6 +49,8 @@ class FakeDiscordAPI:
     def __exit__(self, *exc) -> None:
         self._server.shutdown()
         self._thread.join()
+        # shutdown() only stops the accept loop; the listening socket stays open without this.
+        self._server.server_close()
 
     def _make_handler(self):
         api = self

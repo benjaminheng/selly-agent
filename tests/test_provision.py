@@ -44,6 +44,8 @@ def guests_server():
         yield server, base
     finally:
         server.shutdown()
+        # shutdown() only stops the accept loop; the listening socket stays open without this.
+        server.server_close()
 
 
 def test_ensure_provisions_stores_0600_and_hides_key(xdg_tmp, guests_server) -> None:

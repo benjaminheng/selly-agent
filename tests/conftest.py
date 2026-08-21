@@ -14,6 +14,29 @@ from sellee.db import Database
 from sellee.events import EventBus, EventStore
 
 
+@pytest.fixture(autouse=True)
+def _close_databases(monkeypatch):
+    """Close every Database a test opened, once it is done.
+
+    The fixtures and per-module helpers build Databases freely and nothing closes them — each one
+    is a live sqlite writer holding the file (plus its WAL and SHM) open. Linux's default fd limit
+    absorbs that; macOS's 256 does not, and a full run dies in EMFILE partway through. One tracker
+    here beats a close() in every fixture and helper. Closing twice is safe: sqlite3's close is
+    idempotent, so a test that closes its own Database (the migrations tests do) is unaffected.
+    """
+    opened = []
+    original_init = Database.__init__
+
+    def tracking_init(self, path):
+        original_init(self, path)
+        opened.append(self)
+
+    monkeypatch.setattr(Database, "__init__", tracking_init)
+    yield
+    for db in opened:
+        db.close()
+
+
 def leak_paths(node, sentinel, path="$") -> list:
     """Where a sentinel value appears inside a payload, walking its structure — [] is clean.
 
