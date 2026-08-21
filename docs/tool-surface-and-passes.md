@@ -25,8 +25,10 @@ surfaces:
   Telegram bind flow (attended token only): the connect route takes the BotFather
   token, validates it, writes it 0600, mints a bind nonce, and returns the
   `t.me/<bot>?start=<nonce>` deep link; the status route reports off /
-  awaiting-bind / bound for the connecting CLI to poll. The token is never echoed
-  or logged; only `bot_username` is published (`channel.bind_attempt`).
+  awaiting-bind / bound for the connecting CLI to poll, plus the `adapter` those
+  states belong to (one provider binds at a time — see `docs/channels.md`). The
+  token is never echoed or logged; only `bot_username` is published
+  (`channel.bind_attempt`).
 - **`POST /control/settings-set`** — set a setting outright (attended token
   only). Same registry parser and same `check_for_seller` as the propose path;
   what it skips is the approval round-trip, which exists to gate the model rather

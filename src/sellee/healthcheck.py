@@ -76,15 +76,15 @@ def daemon_check(
     return checks.fail("daemon", "not running", start_hint)
 
 
-def channel_check(*, bound: bool) -> checks.Check:
-    """Telegram is optional by design, so its absence is never a failure — only a note about
+def channel_check(*, bound: bool, adapter: str | None) -> checks.Check:
+    """A channel is optional by design, so its absence is never a failure — only a note about
     where escalations will wait instead."""
     if bound:
-        return checks.ok("channel", "Telegram connected")
+        return checks.ok("channel", f"{(adapter or 'telegram').capitalize()} connected")
     return checks.warn(
         "channel",
         "no channel — anything needing you waits for your next session",
-        "sellee connect telegram",
+        "sellee connect telegram (or `connect discord`)",
     )
 
 
@@ -203,7 +203,8 @@ def _daemon_probe(platform=None) -> checks.Check:
 
 
 def _channel_probe(platform=None) -> checks.Check:
-    return channel_check(bound=supervisor.gather_status(platform=platform).channel_bound)
+    status = supervisor.gather_status(platform=platform)
+    return channel_check(bound=status.channel_bound, adapter=status.channel_adapter)
 
 
 def _browser_probe(cfg) -> checks.Check:

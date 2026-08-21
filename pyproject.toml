@@ -22,6 +22,11 @@ dependencies = [
     # pillow-heif is the HEIC decoder Pillow does not ship, and HEIC is what a phone produces.
     "pillow>=12,<13",
     "pillow-heif>=1.5,<2",
+    # The Discord Gateway connection (a persistent WebSocket, unlike Telegram's long-poll). RFC
+    # 6455 has enough edge cases (fragmentation, ping/pong, close-code negotiation) that a vetted
+    # implementation is worth the grant; this is the maintainer-preferred pick over aiohttp, which
+    # brings a full HTTP client/server stack this project doesn't need.
+    "websockets>=17,<18",
 ]
 
 # Dev tooling. A dependency *group* rather than an extra, because uv installs groups by default

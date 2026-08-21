@@ -51,7 +51,12 @@ def _build_parser() -> argparse.ArgumentParser:
     setup.add_argument(
         "--skip-markets", action="store_true", help="don't offer marketplace sign-in"
     )
-    setup.add_argument("--skip-telegram", action="store_true", help="don't offer Telegram")
+    setup.add_argument(
+        "--skip-telegram", action="store_true", help="leave Telegram out of the channel menu"
+    )
+    setup.add_argument(
+        "--skip-discord", action="store_true", help="leave Discord out of the channel menu"
+    )
     setup.add_argument(
         "--no-modify-path",
         action="store_true",
@@ -184,6 +189,14 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="seconds to wait for /start (default: 300 interactive, 120 piped)",
+    )
+    cdis = consub.add_parser("discord", help="bind a Discord bot (token read from stdin)")
+    cdis.add_argument("--status", action="store_true", help="report bind status and exit")
+    cdis.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help="seconds to wait for the bind DM (default: 300 interactive, 120 piped)",
     )
     # One per marketplace we can actually drive, so `connect --help` lists what exists rather
     # than accepting any word and failing at the door.

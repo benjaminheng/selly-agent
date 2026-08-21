@@ -70,13 +70,18 @@ def connect_telegram(store, config, token, *, make_client=_default_client, mint_
 
 
 def channel_status(store) -> dict:
-    """The bind state for the connecting CLI to poll: bound / awaiting_bind / off, plus the bot
-    username (and, once bound, the chat id — returned only to the localhost caller)."""
+    """Telegram's own bind state for the connecting CLI to poll: bound / awaiting_bind / off, plus
+    the bot username (and, once bound, the chat id — returned only to the localhost caller).
+
+    `adapter` names whose state this is: the channel row is shared, so `bound` alone cannot tell a
+    Telegram binding from the other provider's."""
     ch = store.get_channel()
     token = secrets.read_telegram_bot_token()
-    bound = token is not None and ch["chat_id"] is not None
-    awaiting = token is not None and not bound and ch["bind_nonce"] is not None
+    mine = ch["adapter"] == "telegram"
+    bound = mine and token is not None and ch["chat_id"] is not None
+    awaiting = mine and token is not None and not bound and ch["bind_nonce"] is not None
     return {
+        "adapter": "telegram",
         "bound": bound,
         "awaiting_bind": awaiting,
         "bot_username": ch["bot_username"],

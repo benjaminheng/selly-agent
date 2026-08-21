@@ -217,6 +217,11 @@ def telegram_bot_token_path() -> Path:
     return config_dir() / "telegram_bot_token"
 
 
+def discord_bot_token_path() -> Path:
+    """The bound Discord bot token (a 0600 secret file, written by the connect flow)."""
+    return config_dir() / "discord_bot_token"
+
+
 # --- platform-owned -----------------------------------------------------------------------
 
 

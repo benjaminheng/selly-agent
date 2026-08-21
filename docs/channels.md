@@ -4,8 +4,8 @@ The channel is how the agent talks to the seller asynchronously — buyer
 escalations land on their phone, and they can steer the agent back. It is
 **optional**: the daemon runs fully without one, and the needs-me queue (things
 awaiting the seller) still works — surfaced at an attended session's catch-up
-instead of pushed. Telegram is the only provider today; the design keeps a second
-one (Slack, iMessage) a sibling package rather than a rewrite.
+instead of pushed. Telegram and Discord are the providers today; the design keeps
+additional ones (Slack, iMessage) as sibling packages rather than rewrites.
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for where this sits in the whole.
 
@@ -84,7 +84,66 @@ with nothing listed yet also gets the **first-listing CTA** — "send a photo of
 something you want to sell" — with an inline *Skip for now* button; a seller with
 real items never sees it.
 
-## The poller's three states
+## Bind (Discord)
+
+`sellee connect discord` reads the Discord bot token — never from argv, so it stays
+out of `ps`/shell history — and sends it to the running daemon, which:
+
+1. validates it against the Discord API and reads the bot's application ID from
+   `GET /oauth2/applications/@me` (the seller never has to find it), writes the token to
+   a 0600 file, and mints a one-time **nonce**;
+2. returns a zero-permission OAuth authorize link (`scope=bot&permissions=0` — the bot
+   only ever DMs, so it needs no guild permission grant at all) and starts the provider;
+3. binds the DM from the first user who sends the nonce code — and no other.
+
+The flow is deliberately two-step: unlike Telegram's one-tap deep link, the seller
+invites the bot to their server first (via OAuth), then sends the nonce in a DM to
+establish the binding. This decouples bot installation from session binding and makes
+the nonce flow harder to race.
+
+The provider uses Discord's Gateway connection (WebSocket) instead of long-poll,
+connecting once and streaming all events. The gateway intent is scoped to **DIRECT_MESSAGES**
+only — it receives only DMs and ignores all server traffic — keeping the connection
+minimal. Reading DM text needs no privileged grant: Discord exempts DM content from the
+`MESSAGE_CONTENT` intent, which otherwise gates a bot's access to message text and takes
+per-server approval.
+
+A dropped connection reconnects on a 5s→60s backoff. The exception is a close code that
+will never resolve itself — a revoked token, a refused intent — where reconnecting would
+re-authenticate into the same refusal every minute forever. There the gateway goes quiet
+for that token, queues one notice explaining why (it surfaces in the needs-me queue, since
+the channel that would normally carry it is what is down), and comes back on its own as
+soon as `connect discord` writes a different token. No daemon restart needed.
+
+On bind the daemon queues a deterministic welcome as ordinary notices (drain-
+delivered, retried, catchup-backstopped — never a fire-and-forget send), stamping
+`welcomed_at` in the same transaction so the same bot never re-greets. A seller
+with nothing listed yet also gets the **first-listing CTA** — "send a photo of
+something you want to sell" — with an inline *Skip for now* button; a seller with
+real items never sees it.
+
+## One channel at a time
+
+The `channel` row is a singleton: exactly one provider is bound at any moment,
+and connecting the other **replaces** the binding (`store.arm_bind` clears the
+sibling's chat, cursor, and welcome stamp).
+
+That singleton is why **`setup` offers the channel as one pick-one menu** rather
+than a yes/no per provider: a sequential offer let the first answer decide the
+second, so accepting Telegram made Discord read as unavailable and a seller who
+had not heard of Discord never learned it existed. The menu shows both, and an
+empty answer picks none — as does `--yes` or a pipe, since binding takes a
+credential and a phone the absent seller has to supply.
+
+`GET /control/channel-status` answers for whichever provider the row names, and
+its `adapter` field says which. Anything that reports a connection to a seller
+reads that field — `bound` alone cannot tell a Telegram binding from a Discord
+one, and "Discord: already connected" on a Telegram-only install claims a channel
+they never set up. So `setup` names the holder instead of re-offering,
+`connect <provider> --status` reports only that provider, and the closing "open
+\<app\> and send a photo" points at the app actually bound.
+
+## The Telegram poller's three states
 
 One thread owns *all* Bot API traffic, so "an unbound channel consumes nothing"
 is a property of that single consumer. State is derived from durable rows each
@@ -94,6 +153,11 @@ tick, always failing toward the less-capable one:
 - **awaiting-bind** — token + nonce, no chat: only a `/start` matching the nonce
   binds; everything else is consumed and discarded.
 - **bound** — a chat is bound: only that chat's updates are ingested.
+
+Discord's gateway derives the same three states from the same rows, re-reading
+them on every reconnect and on every inbound message (a bind can complete
+mid-session). The difference is what "off" costs: a poller makes no API call,
+while the gateway holds no WebSocket open at all.
 
 ## Durable inbox
 
@@ -155,7 +219,7 @@ A missing control row reads as *not paused* (fail toward not-paused).
 
 ## Adding a provider
 
-A second channel is a sibling package under `channel/`, not a change to the core.
+Each new channel provider is a sibling package under `channel/`, not a change to the core.
 It brings its own receive mechanism (long-poll, a webhook route, or a socket) and,
 once it normalizes inbound messages into the shared event shape
 `{event_id, kind, text, payload, src_ts}`, reuses the core unchanged:

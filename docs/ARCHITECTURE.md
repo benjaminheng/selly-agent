@@ -2,7 +2,7 @@
 
 ![Architecture overview](architecture-master.png)
 
-1. Sellers interact with Sellee using **control surfaces**. Chat apps like Telegram, and agent harnesses like Claude Code are examples of control surfaces.
+1. Sellers interact with Sellee using **control surfaces**. Chat apps like Telegram or Discord, and agent harnesses like Claude Code are examples of control surfaces.
 2. The **Sellee daemon** contains all of the core logic. It uses an event bus for scheduling. It stores data in a SQLite database. It exposes an MCP server; anything an agent does goes through it.
 3. The **agent harness and browser** are the only components that sit outside the daemon. The agent harness interacts with the browser using Playwright, and the daemon using its MCP server.
 4. The seller is signed into **marketplaces** on the browser. Buyers interact with the seller's listings on the marketplaces.
@@ -226,9 +226,9 @@ a phone produces and no marketplace takes it — uploads each photo, and stamps 
 whole set in one transaction. A partial failure stamps nothing: the marketplace
 replaces a photo set wholesale, so half a set is a listing with the wrong cover.
 
-The channel subsystem — the optional bound chat (Telegram today) plus the
+The channel subsystem — the optional bound chat (Telegram or Discord today) plus the
 needs-me queue that works with none bound. A provider-agnostic core (`channel/`)
-with per-provider packages (`channel/telegram/`); a manager starts a provider
+with per-provider packages (`channel/telegram/`, `channel/discord/`); a manager starts a provider
 only when it's configured or connected, so a daemon with no channel set up runs
 no channel thread. Pause lives here too (a paused daemon runs but acts on
 nothing). Detail in [`channels.md`](channels.md).
@@ -273,7 +273,7 @@ Resolved by `paths.py` from the XDG base directories:
 ~/.cache/sellee/         downloaded release artifacts
 ```
 
-Secrets (the attended MCP token, the carousell.ai guest key, the Telegram bot
+Secrets (the attended MCP token, the carousell.ai guest key, the channel provider's bot
 token) are 0600 files in the config dir, never logged or evented. Inbound channel
 media (photo bursts) is downloaded to `share/media/` before any LLM sees it. Per-pass workspaces live under
 `state/passes/<pass_id>/` and are swept on pass end. Tests point the XDG

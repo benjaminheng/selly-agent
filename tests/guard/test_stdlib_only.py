@@ -27,12 +27,25 @@ OWN_TOP_LEVEL = "sellee"
 # pyproject.toml — this set is the review gate, so a name appears here only alongside a
 # relocked uv.lock and a reviewer who accepted the dependency.
 # Import names, not distribution names: pillow imports as PIL, pillow-heif as pillow_heif.
-ALLOWED_RUNTIME_DEPS = {"psutil", "segno", "PIL", "pillow_heif"}
+ALLOWED_RUNTIME_DEPS = {"psutil", "segno", "PIL", "pillow_heif", "websockets"}
 
 # Network / async modules a runtime module may not import unless its src-relative path is
 # listed here. Every entry is a deliberate decision: adding a module here means it is allowed
-# to open sockets, and a review should treat that as a real capability grant.
-NETWORK_MODULES = {"socket", "ssl", "urllib", "http", "asyncio", "ftplib", "smtplib", "telnetlib"}
+# to open sockets, and a review should treat that as a real capability grant. `websockets` is a
+# dependency rather than stdlib, but it opens sockets like any of the others, so it is gated the
+# same way — being on ALLOWED_RUNTIME_DEPS only says the project may use it somewhere, not that
+# every module may.
+NETWORK_MODULES = {
+    "socket",
+    "ssl",
+    "urllib",
+    "http",
+    "asyncio",
+    "ftplib",
+    "smtplib",
+    "telnetlib",
+    "websockets",
+}
 NETWORK_ALLOWLIST: set[str] = {
     "sellee/http_server.py",  # the daemon's localhost HTTP server (MCP + tail + control)
     "sellee/mcp_proxy.py",  # stdio shim forwarding JSON-RPC to the daemon over HTTP
@@ -42,6 +55,8 @@ NETWORK_ALLOWLIST: set[str] = {
     "sellee/rail/client.py",  # carousell.ai MCP client + live listing verify
     "sellee/rail/provision.py",  # carousell.ai guest-key provisioning
     "sellee/channel/telegram/transport.py",  # the Telegram Bot API transport (one pipe)
+    "sellee/channel/discord/transport.py",  # the Discord REST API transport (one pipe)
+    "sellee/channel/discord/ws_client.py",  # the Gateway's WebSocket connection
     "sellee/browser/chrome.py",  # the warm Chrome's CDP readiness probe (loopback GET)
 }
 

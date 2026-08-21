@@ -14,3 +14,12 @@ package, not changes to the core.
 """
 
 from __future__ import annotations
+
+# What a seller calls each provider. Adapter ids are internal; anything printed at a terminal or
+# sent to a chat uses these.
+_DISPLAY_NAMES = {"telegram": "Telegram", "discord": "Discord"}
+
+
+def display_name(adapter: str) -> str:
+    """The human name for an adapter id, or the id itself (fail-open) for an unknown one."""
+    return _DISPLAY_NAMES.get(adapter) or adapter

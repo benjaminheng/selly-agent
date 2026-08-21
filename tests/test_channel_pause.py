@@ -121,3 +121,15 @@ def test_pause_and_resume_tools_flip_the_flag(make_ctx, store) -> None:
     assert store.is_paused() is True
     assert dispatch("resume_agent", {}, ctx) == {"paused": False}
     assert store.is_paused() is False
+
+
+def test_pause_via_fast_path_uses_a_generic_source(store) -> None:
+    """The fastpaths' pause handler should set source='channel', not a provider-specific name."""
+    from sellee.channel import fastpaths
+
+    reply, controls = fastpaths.handle_fast_path(
+        store, {"kind": "command", "text": "/pause", "payload": {}}
+    )
+    assert "Paused" in reply
+    ctrl_row = store._db.query("SELECT source FROM control WHERE id = 1")[0]
+    assert ctrl_row["source"] == "channel"

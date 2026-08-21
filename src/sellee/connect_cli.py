@@ -28,7 +28,7 @@ import getpass
 import sys
 import time
 
-from sellee import config, control, deployment, qr
+from sellee import channel, config, control, deployment, qr
 from sellee.browser import foreground
 
 _POLL_INTERVAL_SEC = 1.0
@@ -46,13 +46,19 @@ _BOTFATHER_GUIDANCE = (
     "  3. Copy the HTTP API token it replies with (looks like 123456789:AA...)\n"
 )
 
+_DEVELOPER_PORTAL_GUIDANCE = (
+    "To connect Discord you need a bot token from the Discord Developer Portal:\n"
+    "  1. Go to https://discord.com/developers/applications and create a New Application\n"
+    "  2. Open the Bot tab, click Reset Token, and copy it\n"
+)
 
-def _read_token(interactive: bool) -> str:
-    """Read the BotFather token. Interactive: a non-echoed getpass prompt (a credential must stay
-    off the scrollback). Piped: one readline, no prompt."""
+
+def _read_token(interactive: bool, *, prompt: str = "Paste your BotFather bot token: ") -> str:
+    """Read the bot token. Interactive: a non-echoed getpass prompt (a credential must stay off
+    the scrollback). Piped: one readline, no prompt."""
     if interactive:
         try:
-            return getpass.getpass("Paste your BotFather bot token: ").strip()
+            return getpass.getpass(prompt).strip()
         except (EOFError, KeyboardInterrupt):
             print(file=sys.stderr)  # close the dangling prompt line
             return ""
@@ -66,8 +72,12 @@ def run(args) -> int:
     port = config.load().http_port
     if args.connect_command == "telegram":
         if getattr(args, "status", False):
-            return _print_status(port, token)
+            return _print_status(port, token, "telegram")
         return bind_flow(port, token, timeout=getattr(args, "timeout", None))
+    if args.connect_command == "discord":
+        if getattr(args, "status", False):
+            return _print_status(port, token, "discord", awaiting_hint="a DM")
+        return discord_bind_flow(port, token, timeout=getattr(args, "timeout", None))
     return market_flow(port, token, args.connect_command)
 
 
@@ -260,7 +270,21 @@ def _print_bind_prompt(bot_username: str, start_url: str, *, timeout: int) -> No
     print(f"\nWaiting for you to start the bot (up to {timeout}s)...")
 
 
-def _await_bind(port: int, token: str, *, timeout: int, interactive: bool) -> int:
+_TELEGRAM_TIMEOUT_MSG = (
+    "Timed out waiting for /start. Open the link on your phone, then re-run: "
+    "sellee connect telegram"
+)
+
+
+def _await_bind(
+    port: int,
+    token: str,
+    *,
+    timeout: int,
+    interactive: bool,
+    timeout_message: str = _TELEGRAM_TIMEOUT_MSG,
+) -> int:
+    """Poll /control/channel-status until bound or timeout."""
     deadline = time.monotonic() + timeout
     next_notice = timeout - _REMAINING_NOTICE_SEC
     while True:
@@ -278,15 +302,85 @@ def _await_bind(port: int, token: str, *, timeout: int, interactive: bool) -> in
             print(f"  still waiting — {int(remaining)}s left...")
             next_notice = remaining - _REMAINING_NOTICE_SEC
         time.sleep(_POLL_INTERVAL_SEC)
-    print(
-        "Timed out waiting for /start. Open the link on your phone, then re-run: "
-        "sellee connect telegram",
-        file=sys.stderr,
-    )
+    print(timeout_message, file=sys.stderr)
     return 1
 
 
-def _print_status(port: int, token: str) -> int:
+_DISCORD_TIMEOUT_MSG = (
+    "Timed out waiting for the DM. Send the bot a direct message with the code, then re-run: "
+    "sellee connect discord"
+)
+
+
+def discord_bind_flow(
+    port: int, mcp_token: str, *, timeout: int | None = None, interactive: bool | None = None
+) -> int:
+    """Two steps instead of Telegram's one-tap deep link: a Discord bot can only be DMed once it
+    shares a server with the user, so the seller first adds the bot via the invite URL, then DMs
+    it the nonce."""
+    if interactive is None:
+        interactive = sys.stdin.isatty()
+    if timeout is None:
+        timeout = _INTERACTIVE_TIMEOUT_SEC if interactive else _PIPED_TIMEOUT_SEC
+
+    if interactive:
+        print(_DEVELOPER_PORTAL_GUIDANCE)
+
+    bot_token = _read_token(interactive, prompt="Paste your Discord bot token: ")
+    if not bot_token:
+        if interactive:
+            print("sellee: no token entered — nothing to connect.", file=sys.stderr)
+        else:
+            print(
+                "sellee: no token on stdin — pipe the Developer Portal token in",
+                file=sys.stderr,
+            )
+        return 2
+
+    try:
+        status, body = control.post(
+            port, mcp_token, "/control/connect-discord", {"token": bot_token}, timeout=60
+        )
+    except control.DaemonUnreachable as exc:
+        print(f"sellee: could not reach the daemon: {exc}", file=sys.stderr)
+        return 3
+    if status != 200:
+        kind = body.get("error", "error")
+        if kind in ("bad_token_format", "unauthorized"):
+            print(f"sellee: token rejected ({kind})", file=sys.stderr)
+            return 2
+        print(f"sellee: Discord API error ({body.get('detail', kind)})", file=sys.stderr)
+        return 3
+
+    _print_discord_bind_prompt(
+        body["bot_username"], body["invite_url"], body["nonce"], timeout=timeout
+    )
+    return _await_bind(
+        port,
+        mcp_token,
+        timeout=timeout,
+        interactive=interactive,
+        timeout_message=_DISCORD_TIMEOUT_MSG,
+    )
+
+
+def _print_discord_bind_prompt(
+    bot_username: str, invite_url: str, nonce: str, *, timeout: int
+) -> None:
+    print(f"Bot @{bot_username} validated.\n")
+    print(qr.render_terminal(invite_url))
+    print("Scan the code — or open this link — to add the bot to any server you're in")
+    print("(even a private one just for you). It needs no server permissions; it only DMs you:")
+    print(f"  {invite_url}")
+    print("\nThen send the bot a direct message containing exactly this code:")
+    print(f"\n  {nonce}\n")
+    print(f"Waiting for that DM (up to {timeout}s)...")
+
+
+def _print_status(port: int, token: str, provider: str, *, awaiting_hint: str = "/start") -> int:
+    """Report `provider`'s own connection state — never the other provider's. The status route
+    answers for whichever provider holds the channel, so `bound` alone would let
+    `connect discord --status` print the Telegram bot's username."""
     try:
         code, status = control.get(port, token, "/control/channel-status")
     except control.DaemonUnreachable as exc:
@@ -295,11 +389,20 @@ def _print_status(port: int, token: str) -> int:
     if code != 200:
         print(f"sellee: {status.get('error', f'HTTP {code}')}", file=sys.stderr)
         return 3
+    holder = status.get("adapter")
+    if holder != provider:
+        # Name the holder only when it is bound; the other one merely being mid-connect is
+        # nothing to report here.
+        if status.get("bound"):
+            print(f"not connected — {channel.display_name(holder)} holds the channel")
+        else:
+            print("not connected")
+        return 1
     if status.get("bound"):
         print(f"bound to @{status.get('bot_username')}")
         return 0
     if status.get("awaiting_bind"):
-        print(f"awaiting /start for @{status.get('bot_username')}")
+        print(f"awaiting {awaiting_hint} for @{status.get('bot_username')}")
         return 1
     print("not connected")
     return 1

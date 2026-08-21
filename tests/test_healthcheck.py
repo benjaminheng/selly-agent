@@ -51,10 +51,24 @@ def test_login_start_not_running_is_a_failure() -> None:
 
 
 def test_a_bound_channel_passes_and_an_unbound_one_only_warns() -> None:
-    assert healthcheck.channel_check(bound=True).status == checks.OK
-    unbound = healthcheck.channel_check(bound=False)
+    assert healthcheck.channel_check(bound=True, adapter=None).status == checks.OK
+    unbound = healthcheck.channel_check(bound=False, adapter=None)
     assert unbound.status == checks.WARN  # optional by design — never a failure
-    assert unbound.fix == "sellee connect telegram"
+    assert unbound.fix == "sellee connect telegram (or `connect discord`)"
+
+
+def test_a_bound_discord_channel_shows_the_adapter_name() -> None:
+    result = healthcheck.channel_check(bound=True, adapter="discord")
+    assert result.status == checks.OK
+    assert result.detail == "Discord connected"
+
+
+def test_a_bound_channel_without_adapter_defaults_to_telegram() -> None:
+    """A row predating the adapter column carries no adapter, and it can only be a Telegram bind —
+    so it names Telegram rather than rendering a bound channel as connected to nothing."""
+    result = healthcheck.channel_check(bound=True, adapter=None)
+    assert result.status == checks.OK
+    assert result.detail == "Telegram connected"
 
 
 # --- the browser ---------------------------------------------------------------------------------

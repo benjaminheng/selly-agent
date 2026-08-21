@@ -69,6 +69,38 @@ def test_rebind_new_bot_resets_welcome_and_commands(store) -> None:
     assert ch["commands_hash"] is None
 
 
+def test_rebind_same_bot_different_adapter_resets_welcome_and_commands(store) -> None:
+    store.arm_bind("sellee_bot", "n1")
+    store.complete_bind(555, update_offset=1)
+    store.stamp_welcomed()
+    store.stamp_commands_hash("abc123")
+    store.arm_bind("sellee_bot", "n2", adapter="discord")  # same bot, different adapter
+    ch = store.get_channel()
+    assert ch["welcomed_at"] is None  # switch to different adapter must reset
+    assert ch["commands_hash"] is None
+    assert ch["adapter"] == "discord"
+
+
+def test_arm_bind_accepts_a_discord_adapter(store) -> None:
+    store.arm_bind("SelleeBot", "nonce-1", adapter="discord")
+    ch = store.get_channel()
+    assert ch["adapter"] == "discord"
+
+
+def test_arm_bind_still_defaults_to_telegram(store) -> None:
+    store.arm_bind("SelleeBot", "nonce-1")
+    ch = store.get_channel()
+    assert ch["adapter"] == "telegram"
+
+
+def test_arm_bind_refuses_an_unknown_adapter(store) -> None:
+    """The column takes any non-empty string, so arm_bind is where an adapter name is checked —
+    binding to a provider the daemon will never start would leave the seller waiting forever."""
+    with pytest.raises(ValueError, match="unknown channel adapter"):
+        store.arm_bind("SelleeBot", "nonce-1", adapter="whatsapp")
+    assert store.get_channel()["bind_nonce"] is None  # nothing armed
+
+
 def test_advance_offset_only_moves_forward(store) -> None:
     store.arm_bind("sellee_bot", "n1")
     store.complete_bind(555, update_offset=10)

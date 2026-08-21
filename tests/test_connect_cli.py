@@ -10,6 +10,7 @@ import io
 
 import pytest
 
+from fake_discord_api import FAKE_TOKEN as _DISCORD_TOKEN
 from fake_telegram_api import FAKE_TOKEN as _TOKEN
 from sellee import connect_cli, control
 from sellee.config import Config
@@ -28,7 +29,11 @@ def stub_daemon(monkeypatch):
         )
 
     def fake_get(port, token, route, params=None, **kwargs):
-        return 200, {"bound": calls.get("bound", True), "bot_username": "selleebot"}
+        return 200, {
+            "adapter": "telegram",
+            "bound": calls.get("bound", True),
+            "bot_username": "selleebot",
+        }
 
     monkeypatch.setattr(control, "post", fake_post)
     monkeypatch.setattr(control, "get", fake_get)
@@ -182,6 +187,257 @@ def test_token_never_printed_to_stdout(monkeypatch, stub_daemon, capsys) -> None
     connect_cli.bind_flow(9999, "mcp-tok", interactive=True)
     captured = capsys.readouterr()
     assert _TOKEN not in captured.out and _TOKEN not in captured.err
+
+
+# --- Discord: discord_bind_flow, mirroring bind_flow's coverage above -------------------------
+
+
+@pytest.fixture
+def stub_discord_daemon(monkeypatch):
+    """Discord's analog of `stub_daemon` — same shape, a different default POST body (invite_url
+    + nonce instead of a Telegram start_url)."""
+    calls = {"posts": []}
+
+    def fake_post(port, token, route, body, **kwargs):
+        calls["posts"].append((route, token, body))
+        return calls.get("post_status", 200), calls.get(
+            "post_body",
+            {
+                "bot_username": "selleebot",
+                "application_id": "999",
+                "invite_url": "https://discord.com/oauth2/authorize?client_id=999&scope=bot&permissions=0",
+                "nonce": "n0",
+            },
+        )
+
+    def fake_get(port, token, route, params=None, **kwargs):
+        return 200, {
+            "adapter": "discord",
+            "bound": calls.get("bound", True),
+            "bot_username": "selleebot",
+        }
+
+    monkeypatch.setattr(control, "post", fake_post)
+    monkeypatch.setattr(control, "get", fake_get)
+    return calls
+
+
+def test_discord_piped_empty_token_exits_2(monkeypatch, capsys) -> None:
+    _pipe_stdin(monkeypatch, "")
+    called = {"getpass": False}
+    monkeypatch.setattr(
+        connect_cli.getpass,
+        "getpass",
+        lambda *a, **k: called.__setitem__("getpass", True) or "",
+    )
+    rc = connect_cli.discord_bind_flow(9999, "mcp-tok", interactive=False)
+    assert rc == 2
+    assert not called["getpass"]
+    assert "no token on stdin — pipe the Developer Portal token in" in capsys.readouterr().err
+
+
+def test_discord_piped_reads_token_via_readline_and_binds(
+    monkeypatch, stub_discord_daemon, capsys
+) -> None:
+    _pipe_stdin(monkeypatch, _DISCORD_TOKEN + "\n")
+    monkeypatch.setattr(
+        connect_cli.getpass, "getpass", lambda *a, **k: pytest.fail("getpass used on piped path")
+    )
+    rc = connect_cli.discord_bind_flow(9999, "mcp-tok", interactive=False)
+    assert rc == 0
+    assert stub_discord_daemon["posts"][0][2] == {"token": _DISCORD_TOKEN}
+    out = capsys.readouterr().out
+    assert "Connected as @selleebot." in out
+    assert "Developer Portal" not in out  # no interactive guidance on the piped path
+
+
+def test_discord_interactive_prints_guidance_and_prompts_for_a_discord_token(
+    monkeypatch, stub_discord_daemon, capsys
+) -> None:
+    _pipe_stdin(monkeypatch, "should-not-be-read\n")
+    prompts = []
+    monkeypatch.setattr(
+        connect_cli.getpass,
+        "getpass",
+        lambda prompt="", *a, **k: prompts.append(prompt) or _DISCORD_TOKEN,
+    )
+    rc = connect_cli.discord_bind_flow(9999, "mcp-tok", interactive=True)
+    assert rc == 0
+    assert stub_discord_daemon["posts"][0][2] == {"token": _DISCORD_TOKEN}
+    out = capsys.readouterr().out
+    assert "Developer Portal" in out and "Reset Token" in out
+    # the getpass prompt names Discord, not BotFather — a real bug in the shared helper otherwise
+    assert prompts == ["Paste your Discord bot token: "]
+
+
+def test_discord_interactive_empty_token_exits_2(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(connect_cli.getpass, "getpass", lambda *a, **k: "")
+    rc = connect_cli.discord_bind_flow(9999, "mcp-tok", interactive=True)
+    assert rc == 2
+    assert "no token entered" in capsys.readouterr().err
+
+
+def test_discord_interactive_getpass_interrupt_exits_2(monkeypatch, capsys) -> None:
+    def boom(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(connect_cli.getpass, "getpass", boom)
+    rc = connect_cli.discord_bind_flow(9999, "mcp-tok", interactive=True)
+    assert rc == 2
+
+
+def test_discord_autodetects_interactive_from_isatty(
+    monkeypatch, stub_discord_daemon, capsys
+) -> None:
+    monkeypatch.setattr(connect_cli.sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(connect_cli.getpass, "getpass", lambda *a, **k: _DISCORD_TOKEN)
+    rc = connect_cli.discord_bind_flow(9999, "mcp-tok")
+    assert rc == 0
+    assert "Developer Portal" in capsys.readouterr().out
+
+
+def test_discord_bad_token_format_exits_2(monkeypatch, stub_discord_daemon, capsys) -> None:
+    _pipe_stdin(monkeypatch, _DISCORD_TOKEN + "\n")
+    stub_discord_daemon["post_status"] = 400
+    stub_discord_daemon["post_body"] = {"error": "bad_token_format"}
+    rc = connect_cli.discord_bind_flow(9999, "mcp-tok", interactive=False)
+    assert rc == 2
+    assert "token rejected (bad_token_format)" in capsys.readouterr().err
+
+
+def test_discord_daemon_unreachable_exits_3(monkeypatch, capsys) -> None:
+    _pipe_stdin(monkeypatch, _DISCORD_TOKEN + "\n")
+
+    def boom(*a, **k):
+        raise control.DaemonUnreachable("connection refused")
+
+    monkeypatch.setattr(control, "post", boom)
+    rc = connect_cli.discord_bind_flow(9999, "mcp-tok", interactive=False)
+    assert rc == 3
+    assert "could not reach the daemon" in capsys.readouterr().err
+
+
+def test_discord_timeout_exits_1_with_discord_specific_wording(
+    monkeypatch, stub_discord_daemon, capsys
+) -> None:
+    _pipe_stdin(monkeypatch, _DISCORD_TOKEN + "\n")
+    stub_discord_daemon["bound"] = False  # never binds
+    rc = connect_cli.discord_bind_flow(9999, "mcp-tok", interactive=False, timeout=0)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Timed out waiting for the DM" in err
+    assert "sellee connect discord" in err
+    assert "/start" not in err  # Telegram's own timeout wording never leaks into this flow
+
+
+def test_discord_prints_the_invite_url_and_nonce(monkeypatch, stub_discord_daemon, capsys) -> None:
+    _pipe_stdin(monkeypatch, _DISCORD_TOKEN + "\n")
+    rc = connect_cli.discord_bind_flow(9999, "mcp-tok", interactive=False)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "https://discord.com/oauth2/authorize?client_id=999" in out
+    assert "n0" in out  # the nonce the seller must DM back
+
+
+def test_discord_prints_a_terminal_qr_above_the_invite(
+    monkeypatch, stub_discord_daemon, capsys
+) -> None:
+    _pipe_stdin(monkeypatch, _DISCORD_TOKEN + "\n")
+    connect_cli.discord_bind_flow(9999, "mcp-tok", interactive=False)
+    out = capsys.readouterr().out
+    qr_block = out.split("validated.", 1)[1].split("Scan the code", 1)[0]
+    assert "█" in qr_block
+    assert "\x1b" not in out
+
+
+def test_discord_interactive_default_timeout_is_300(
+    monkeypatch, stub_discord_daemon, capsys
+) -> None:
+    monkeypatch.setattr(connect_cli.getpass, "getpass", lambda *a, **k: _DISCORD_TOKEN)
+    connect_cli.discord_bind_flow(9999, "mcp-tok", interactive=True)
+    assert "up to 300s" in capsys.readouterr().out
+
+
+def test_discord_piped_default_timeout_is_120(monkeypatch, stub_discord_daemon, capsys) -> None:
+    _pipe_stdin(monkeypatch, _DISCORD_TOKEN + "\n")
+    connect_cli.discord_bind_flow(9999, "mcp-tok", interactive=False)
+    assert "up to 120s" in capsys.readouterr().out
+
+
+def test_discord_token_never_printed_to_stdout(monkeypatch, stub_discord_daemon, capsys) -> None:
+    monkeypatch.setattr(connect_cli.getpass, "getpass", lambda *a, **k: _DISCORD_TOKEN)
+    connect_cli.discord_bind_flow(9999, "mcp-tok", interactive=True)
+    captured = capsys.readouterr()
+    assert _DISCORD_TOKEN not in captured.out and _DISCORD_TOKEN not in captured.err
+
+
+# --- run(): connect_command dispatch ------------------------------------------------------------
+
+
+def test_run_dispatches_discord_status_to_print_status(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(control, "require_token", lambda: "mcp-tok")
+    monkeypatch.setattr(connect_cli.config, "load", lambda path=None: Config())
+    monkeypatch.setattr(
+        control,
+        "get",
+        lambda *a, **k: (
+            200,
+            {"adapter": "discord", "bound": False, "awaiting_bind": True, "bot_username": "b"},
+        ),
+    )
+
+    class Args:
+        connect_command = "discord"
+        status = True
+
+    assert connect_cli.run(Args()) == 1
+    assert "awaiting a DM for @b" in capsys.readouterr().out
+
+
+def _status_args(command: str):
+    class Args:
+        connect_command = command
+        status = True
+
+    return Args()
+
+
+@pytest.mark.parametrize(
+    ("asked", "holder", "holder_name"),
+    [("discord", "telegram", "Telegram"), ("telegram", "discord", "Discord")],
+)
+def test_status_never_reports_the_other_providers_binding(
+    monkeypatch, capsys, asked, holder, holder_name
+) -> None:
+    """One channel binds at a time, so the status route answers for whichever provider holds it.
+    Asking about the other one must not read back that holder's bot as this provider's."""
+    monkeypatch.setattr(control, "require_token", lambda: "mcp-tok")
+    monkeypatch.setattr(connect_cli.config, "load", lambda path=None: Config())
+    monkeypatch.setattr(
+        control,
+        "get",
+        lambda *a, **k: (200, {"adapter": holder, "bound": True, "bot_username": "otherbot"}),
+    )
+
+    assert connect_cli.run(_status_args(asked)) == 1
+    out = capsys.readouterr().out
+    assert f"not connected — {holder_name} holds the channel" in out
+    assert "otherbot" not in out
+
+
+def test_run_dispatches_discord_connect_to_discord_bind_flow(monkeypatch) -> None:
+    monkeypatch.setattr(control, "require_token", lambda: "mcp-tok")
+    monkeypatch.setattr(connect_cli.config, "load", lambda path=None: Config())
+    calls = []
+    monkeypatch.setattr(connect_cli, "discord_bind_flow", lambda *a, **k: calls.append((a, k)) or 0)
+
+    class Args:
+        connect_command = "discord"
+        status = False
+        timeout = 42
+
+    assert connect_cli.run(Args()) == 0
+    assert calls and calls[0][1]["timeout"] == 42
 
 
 # --- marketplace sign-in ---------------------------------------------------------------------

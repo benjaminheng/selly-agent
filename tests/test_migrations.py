@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 
 import pytest
@@ -47,6 +48,7 @@ def test_fresh_apply_creates_both_schemas(tmp_path) -> None:
         ("data", 7),
         ("data", 8),
         ("data", 9),
+        ("data", 10),
         ("events", 1),
     }
     assert _table_exists(data_db, "meta")
@@ -76,6 +78,7 @@ def test_fresh_apply_creates_both_schemas(tmp_path) -> None:
         7,
         8,
         9,
+        10,
     }
     assert {r["version"] for r in events_db.query("SELECT version FROM schema_migrations")} == {1}
 
@@ -101,6 +104,60 @@ def test_events_db_recreated_after_deletion(tmp_path) -> None:
     events_db2 = Database(events_db.path)
     _run(tmp_path, data_db, events_db2)
     assert _table_exists(events_db2, "events")
+
+
+def test_channel_adapter_column_takes_any_non_empty_name(tmp_path) -> None:
+    """The adapter column carries no enumerating CHECK, only a non-empty one: adding a third
+    provider is a code change (store.KNOWN_ADAPTERS), not another recreate-copy-swap of the whole
+    table — which is the only way SQLite can widen a CHECK."""
+    data_db, events_db = _make_dbs(tmp_path)
+    _run(tmp_path, data_db, events_db)
+
+    with data_db.transaction() as conn:
+        conn.execute("INSERT INTO channel (id, adapter, updated_ts) VALUES (1, 'matrix', 1.0)")
+    assert data_db.query("SELECT adapter FROM channel")[0]["adapter"] == "matrix"
+
+    with pytest.raises(sqlite3.IntegrityError), data_db.transaction() as conn:
+        conn.execute("UPDATE channel SET adapter = '' WHERE id = 1")
+
+
+def test_0010_preserves_the_existing_channel_row(tmp_path, monkeypatch) -> None:
+    """0010 recreates the channel table, so the singleton row has to survive the copy: a returning
+    seller's bound channel — cursor, greeting stamp and all — must not be reset by an upgrade.
+    Driven by applying the real migrations with 0010 withheld, binding a channel, then letting
+    0010 land on top of it."""
+    real_data = migrations._MIGRATIONS_ROOT / "data"
+    root = tmp_path / "migrations"
+    (root / "data").mkdir(parents=True)
+    (root / "events").mkdir(parents=True)
+    for src in sorted(real_data.glob("*.sql")):
+        if not src.name.startswith("0010"):
+            shutil.copy(src, root / "data" / src.name)
+    for src in (migrations._MIGRATIONS_ROOT / "events").glob("*.sql"):
+        shutil.copy(src, root / "events" / src.name)
+    monkeypatch.setattr(migrations, "_MIGRATIONS_ROOT", root)
+
+    data_db, events_db = _make_dbs(tmp_path)
+    _run(tmp_path, data_db, events_db)
+    with data_db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO channel (id, adapter, bot_username, chat_id, update_offset, bind_nonce,"
+            " welcomed_at, commands_hash, bound_ts, updated_ts)"
+            " VALUES (1, 'telegram', 'sellee_bot', 555, 7, NULL, 100.0, 'abc123', 90.0, 110.0)"
+        )
+
+    shutil.copy(real_data / "0010_discord_channel.sql", root / "data" / "0010_discord_channel.sql")
+    applied = _run(tmp_path, data_db, events_db)
+
+    assert [(a.db, a.version) for a in applied] == [("data", 10)]
+    row = data_db.query("SELECT * FROM channel WHERE id = 1")[0]
+    assert row["adapter"] == "telegram"
+    assert row["bot_username"] == "sellee_bot"
+    assert row["chat_id"] == 555
+    assert row["update_offset"] == 7
+    assert row["welcomed_at"] == 100.0
+    assert row["commands_hash"] == "abc123"
+    assert row["bound_ts"] == 90.0
 
 
 # --- against synthetic migration sets ------------------------------------------------------

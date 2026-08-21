@@ -4,7 +4,7 @@ description: Status, settings, and what needs the seller
 
 Show the seller where things stand, then offer to act. In one pass:
 
-1. `get_status` — daemon health, paused or not, whether Telegram is bound.
+1. `get_status` — daemon health, paused or not, whether a chat channel is bound.
 2. `list_items` — what's live and what's still a draft.
 3. `get_catchup` — anything waiting on them. Render it the same way as `/catchup`.
 4. `get_settings` — their settings, current values first; mention the ones still at defaults only

@@ -38,6 +38,7 @@ from sellee.browser import chrome, inbox
 from sellee.browser import client as browser_client
 from sellee.browser import sink as browser_sink
 from sellee.channel import outbound
+from sellee.channel.discord import provider as discord_provider
 from sellee.channel.manager import ChannelManager
 from sellee.channel.telegram import provider as telegram_provider
 from sellee.db import Database
@@ -315,7 +316,7 @@ def run_daemon(*, once: bool) -> int:
         None
         if once
         else ChannelManager(
-            providers={"telegram": telegram_provider},
+            providers={"telegram": telegram_provider, "discord": discord_provider},
             bus=bus,
             store=store,
             config=cfg,

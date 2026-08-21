@@ -286,3 +286,23 @@ def test_a_container_status_never_resolves_a_host_platform(container, xdg_tmp, m
 
     monkeypatch.setattr(supervisor, "get_platform", explode)
     assert supervisor.gather_status().mode == "container"
+
+
+def test_gather_status_reads_channel_adapter_when_bound(store, xdg_tmp, monkeypatch) -> None:
+    paths.ensure_state_dirs()
+    store.arm_bind("test_bot", "nonce1", adapter="discord")
+    store.complete_bind(12345, 1)  # chat_id, update_offset
+    monkeypatch.setattr(supervisor.paths, "sellee_db", lambda: store._db.path)
+
+    status = supervisor.gather_status()
+    assert status.channel_bound is True
+    assert status.channel_adapter == "discord"
+
+
+def test_gather_status_channel_adapter_none_when_unbound(store, xdg_tmp, monkeypatch) -> None:
+    paths.ensure_state_dirs()
+    monkeypatch.setattr(supervisor.paths, "sellee_db", lambda: store._db.path)
+
+    status = supervisor.gather_status()
+    assert status.channel_bound is False
+    assert status.channel_adapter is None
