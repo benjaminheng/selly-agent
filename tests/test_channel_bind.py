@@ -278,6 +278,7 @@ def test_channel_status_reports_states(store, bus, xdg_tmp) -> None:
     with FakeTelegramAPI() as api, _Server(store, bus, api) as server:
         base = "/control/channel-status?token=attended-secret"
         assert _get(server, base) == {
+            "adapter": "telegram",
             "bound": False,
             "awaiting_bind": False,
             "bot_username": None,
@@ -362,7 +363,9 @@ def test_discord_connect_route_requires_attended_token(store, bus, xdg_tmp) -> N
 def test_discord_channel_status_reports_states(store, bus, xdg_tmp) -> None:
     with FakeDiscordAPI() as api, _Server(store, bus, api, config=_discord_config(api)) as server:
         base = "/control/channel-status?token=attended-secret"
+        # Nothing connected yet, so the row still names the default adapter and Telegram answers.
         assert _get(server, base) == {
+            "adapter": "telegram",
             "bound": False,
             "awaiting_bind": False,
             "bot_username": None,
@@ -371,6 +374,7 @@ def test_discord_channel_status_reports_states(store, bus, xdg_tmp) -> None:
         _post(server, "/control/connect-discord", {"token": DISCORD_FAKE_TOKEN})
         awaiting = _get(server, base)
         assert awaiting["awaiting_bind"] is True and awaiting["bound"] is False
+        assert awaiting["adapter"] == "discord"
         store.complete_bind(111, update_offset=1)
         bound = _get(server, base)
         assert bound["bound"] is True and bound["chat_id"] == 111
@@ -399,7 +403,8 @@ def test_channel_status_follows_whichever_adapter_is_actually_bound(store, bus, 
     """The channel row is a shared singleton (one adapter bound at a time — see store.arm_bind):
     connecting Discord after Telegram replaces the bound adapter, and /control/channel-status must
     switch to answering from Discord's own channel_status, not keep reporting Telegram's stale
-    (now-superseded) bot identity."""
+    (now-superseded) bot identity. `adapter` names whose answer it is, so a caller reading `bound`
+    cannot mistake one provider's binding for the other's."""
     with FakeTelegramAPI() as tg_api, FakeDiscordAPI() as dc_api:
         cfg = Config(
             telegram_api_base=tg_api.base_url, discord_api_base=dc_api.base_url + "/api/v10"
@@ -410,9 +415,23 @@ def test_channel_status_follows_whichever_adapter_is_actually_bound(store, bus, 
             status = _get(server, base)
             assert status["bot_username"] == BOT["username"]
             assert status["awaiting_bind"] is True
+            assert status["adapter"] == "telegram"
+
+            store.complete_bind(CHAT_ID, update_offset=1)
+            assert _get(server, base) == {
+                "adapter": "telegram",
+                "bound": True,
+                "awaiting_bind": False,
+                "bot_username": BOT["username"],
+                "chat_id": CHAT_ID,
+            }
 
             _post(server, "/control/connect-discord", {"token": DISCORD_FAKE_TOKEN})
             status = _get(server, base)
             assert status["bot_username"] == DISCORD_BOT["username"]
             assert status["awaiting_bind"] is True
+            assert status["adapter"] == "discord"
+            # The Telegram token file survives the switch, so nothing but the adapter keeps this
+            # from reading as a live Telegram binding.
+            assert status["bound"] is False
             assert store.get_channel()["adapter"] == "discord"

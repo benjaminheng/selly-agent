@@ -122,6 +122,20 @@ with nothing listed yet also gets the **first-listing CTA** — "send a photo of
 something you want to sell" — with an inline *Skip for now* button; a seller with
 real items never sees it.
 
+## One channel at a time
+
+The `channel` row is a singleton: exactly one provider is bound at any moment,
+and connecting the other **replaces** the binding (`store.arm_bind` clears the
+sibling's chat, cursor, and welcome stamp).
+
+`GET /control/channel-status` therefore answers for whichever provider the row
+names, and its `adapter` field says which. Anything that reports a connection to
+a seller reads that field — `bound` alone cannot tell a Telegram binding from a
+Discord one, and "Discord: already connected" on a Telegram-only install claims a
+channel they never set up. So `setup` names the holder when it skips the other
+provider's offer, `connect <provider> --status` reports only that provider, and
+the closing "open <app> and send a photo" points at the app actually bound.
+
 ## The Telegram poller's three states
 
 One thread owns *all* Bot API traffic, so "an unbound channel consumes nothing"

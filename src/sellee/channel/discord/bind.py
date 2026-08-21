@@ -88,6 +88,8 @@ def connect_discord(store, config, token, *, make_client=_default_client, mint_n
 
 
 def channel_status(store) -> dict:
+    """Discord's own bind state, in the shape Telegram's `channel_status` returns — `adapter`
+    included, so a caller reading `bound` knows which provider it is bound about."""
     ch = store.get_channel()
     token = secrets.read_discord_bot_token()
     bound = token is not None and ch["chat_id"] is not None and ch["adapter"] == "discord"
@@ -98,6 +100,7 @@ def channel_status(store) -> dict:
         and ch["adapter"] == "discord"
     )
     return {
+        "adapter": "discord",
         "bound": bound,
         "awaiting_bind": awaiting,
         "bot_username": ch["bot_username"],

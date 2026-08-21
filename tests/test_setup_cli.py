@@ -63,7 +63,15 @@ def world(monkeypatch, xdg_tmp, tree):
     # record rather than serve.
     paths.ensure_config_dir()
     secrets.write_secret(paths.mcp_token_path(), "attended-secret")
-    calls = {"posts": [], "basics": {}, "markets": [], "settings": {}, "bound": False}
+    calls = {
+        "posts": [],
+        "basics": {},
+        "markets": [],
+        "settings": {},
+        "bound": False,
+        # Which provider a `bound` channel belongs to — the status route answers for one at a time.
+        "adapter": "telegram",
+    }
 
     def fake_post(port, token, route, body, **kwargs):
         calls["posts"].append((route, body))
@@ -82,7 +90,7 @@ def world(monkeypatch, xdg_tmp, tree):
         if route == "/control/seller-basics":
             return 200, {"basics": calls["basics"]}
         if route == "/control/channel-status":
-            return 200, {"bound": calls["bound"]}
+            return 200, {"bound": calls["bound"], "adapter": calls["adapter"]}
         return 200, {}
 
     def fake_set_setting(port, token, key, value):
@@ -666,11 +674,42 @@ def test_discord_is_offered_and_declining_points_at_the_verb(world, capsys) -> N
     assert "sellee connect discord" in capsys.readouterr().out
 
 
-def test_an_already_bound_channel_is_not_offered_discord_either(world, capsys) -> None:
+def test_a_telegram_binding_skips_discord_without_claiming_discord_is_connected(
+    world, capsys
+) -> None:
+    """An existing Telegram binding settles the Discord step too, but it is Telegram that is
+    connected: "already connected" under the Discord heading tells a seller they have a Discord
+    channel they never set up."""
     world.calls["bound"] = True
     assert setup_main("--yes", "--manual") == 0
     out = capsys.readouterr().out
-    assert out.count("already connected") == 2  # Telegram's own check, then Discord's
+    assert out.count("already connected") == 1  # Telegram's own check, and only that one
+    assert "you're on Telegram" in out
+    assert "Connect Discord now?" not in out
+    assert "sellee connect discord" in out  # how to switch, since the offer went unasked
+
+
+def test_a_discord_binding_skips_telegram_without_claiming_telegram_is_connected(
+    world, capsys
+) -> None:
+    """The mirror of the case above: whichever provider holds the channel is the one named."""
+    world.calls["bound"] = True
+    world.calls["adapter"] = "discord"
+    assert setup_main("--yes", "--manual") == 0
+    out = capsys.readouterr().out
+    assert out.count("already connected") == 1  # Discord's own check, and only that one
+    assert "you're on Discord" in out
+    assert "Connect Telegram now?" not in out
+    assert "sellee connect telegram" in out
+
+
+def test_finish_points_a_discord_install_at_discord(world, capsys) -> None:
+    world.calls["bound"] = True
+    world.calls["adapter"] = "discord"
+    assert setup_main("--yes", "--manual") == 0
+    out = capsys.readouterr().out
+    assert "Open Discord" in out and "photo" in out
+    assert "Open Telegram" not in out  # the app the seller actually connected
 
 
 def test_skip_discord_never_offers(world, capsys) -> None:

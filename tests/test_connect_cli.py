@@ -29,7 +29,11 @@ def stub_daemon(monkeypatch):
         )
 
     def fake_get(port, token, route, params=None, **kwargs):
-        return 200, {"bound": calls.get("bound", True), "bot_username": "selleebot"}
+        return 200, {
+            "adapter": "telegram",
+            "bound": calls.get("bound", True),
+            "bot_username": "selleebot",
+        }
 
     monkeypatch.setattr(control, "post", fake_post)
     monkeypatch.setattr(control, "get", fake_get)
@@ -207,7 +211,11 @@ def stub_discord_daemon(monkeypatch):
         )
 
     def fake_get(port, token, route, params=None, **kwargs):
-        return 200, {"bound": calls.get("bound", True), "bot_username": "selleebot"}
+        return 200, {
+            "adapter": "discord",
+            "bound": calls.get("bound", True),
+            "bot_username": "selleebot",
+        }
 
     monkeypatch.setattr(control, "post", fake_post)
     monkeypatch.setattr(control, "get", fake_get)
@@ -372,7 +380,10 @@ def test_run_dispatches_discord_status_to_print_status(monkeypatch, capsys) -> N
     monkeypatch.setattr(
         control,
         "get",
-        lambda *a, **k: (200, {"bound": False, "awaiting_bind": True, "bot_username": "b"}),
+        lambda *a, **k: (
+            200,
+            {"adapter": "discord", "bound": False, "awaiting_bind": True, "bot_username": "b"},
+        ),
     )
 
     class Args:
@@ -381,6 +392,37 @@ def test_run_dispatches_discord_status_to_print_status(monkeypatch, capsys) -> N
 
     assert connect_cli.run(Args()) == 1
     assert "awaiting a DM for @b" in capsys.readouterr().out
+
+
+def _status_args(command: str):
+    class Args:
+        connect_command = command
+        status = True
+
+    return Args()
+
+
+@pytest.mark.parametrize(
+    ("asked", "holder", "holder_name"),
+    [("discord", "telegram", "Telegram"), ("telegram", "discord", "Discord")],
+)
+def test_status_never_reports_the_other_providers_binding(
+    monkeypatch, capsys, asked, holder, holder_name
+) -> None:
+    """One channel binds at a time, so the status route answers for whichever provider holds it.
+    Asking about the other one must not read back that holder's bot as this provider's."""
+    monkeypatch.setattr(control, "require_token", lambda: "mcp-tok")
+    monkeypatch.setattr(connect_cli.config, "load", lambda path=None: Config())
+    monkeypatch.setattr(
+        control,
+        "get",
+        lambda *a, **k: (200, {"adapter": holder, "bound": True, "bot_username": "otherbot"}),
+    )
+
+    assert connect_cli.run(_status_args(asked)) == 1
+    out = capsys.readouterr().out
+    assert f"not connected — {holder_name} holds the channel" in out
+    assert "otherbot" not in out
 
 
 def test_run_dispatches_discord_connect_to_discord_bind_flow(monkeypatch) -> None:

@@ -19,6 +19,7 @@ import time
 
 from sellee import (
     __version__,
+    channel,
     config,
     connect_cli,
     control,
@@ -109,7 +110,7 @@ def _run(args, ui: Ui) -> None:
     _attended_workspace(ui)
     # Re-probed here rather than threaded through: the bind may have just happened inside
     # _offer_telegram, and the closing next-step depends on where the seller can act.
-    _finish(ui, platform, bound=_channel_bound(port, token))
+    _finish(ui, platform, bound_to=_bound_channel(port, token))
 
 
 # --- what this is, and what it will touch ---------------------------------------------------
@@ -628,8 +629,7 @@ def _offer_telegram(ui: Ui, args, port: int, token: str) -> None:
     if args.skip_telegram:
         return
     ui.step("Telegram")
-    if _channel_bound(port, token):
-        ui.say("already connected")
+    if _channel_settled(ui, port, token, "telegram"):
         return
 
     ui.say("Telegram delivers buyer chats to your phone. Connecting takes about two minutes.")
@@ -648,13 +648,12 @@ def _offer_telegram(ui: Ui, args, port: int, token: str) -> None:
 
 def _offer_discord(ui: Ui, args, port: int, token: str) -> None:
     """Offer Discord as an alternative channel. Re-probes bound state itself (like
-    `_offer_telegram`) so a Telegram bind that just happened above reads as "already connected"
-    and Discord is never offered on top of it."""
+    `_offer_telegram`) so a Telegram bind that just happened above settles this step too and
+    Discord is never offered on top of it."""
     if args.skip_discord:
         return
     ui.step("Discord")
-    if _channel_bound(port, token):
-        ui.say("already connected")
+    if _channel_settled(ui, port, token, "discord"):
         return
 
     ui.say("Discord delivers buyer chats to your phone or desktop. Connecting takes about two")
@@ -669,12 +668,31 @@ def _offer_discord(ui: Ui, args, port: int, token: str) -> None:
         ui.say("not connected — resume later with `sellee connect discord`")
 
 
-def _channel_bound(port: int, token: str) -> bool:
+def _channel_settled(ui: Ui, port: int, token: str, provider: str) -> bool:
+    """Whether an existing binding already answers this provider's offer, naming which one holds
+    it. One channel binds at a time, so the *other* provider's binding settles this step too —
+    but "already connected" under this heading would claim a channel the seller never set up."""
+    bound = _bound_channel(port, token)
+    if bound is None:
+        return False
+    if bound == provider:
+        ui.say("already connected")
+        return True
+    ui.say(f"skipped — you're on {channel.display_name(bound)}, and I deliver over one channel")
+    ui.say(f"at a time. Switch with `sellee connect {provider}`.")
+    return True
+
+
+def _bound_channel(port: int, token: str) -> str | None:
+    """The provider a channel is bound to, or None. Unreachable or unnamed reads as None, which
+    costs a re-offer rather than a wrong claim about what is connected."""
     try:
         status, body = control.get(port, token, "/control/channel-status")
     except control.DaemonUnreachable:
-        return False
-    return status == 200 and bool(body.get("bound"))
+        return None
+    if status != 200 or not body.get("bound"):
+        return None
+    return body.get("adapter")
 
 
 # --- the attended session ----------------------------------------------------------------------
@@ -699,7 +717,7 @@ def _attended_workspace(ui: Ui) -> None:
 # --- the last word ------------------------------------------------------------------------------
 
 
-def _finish(ui: Ui, platform, bound: bool) -> None:
+def _finish(ui: Ui, platform, bound_to: str | None) -> None:
     ui.step("Checking the installation")
     for line in checks.render(healthcheck.run_checks(platform=platform)):
         ui.say(line)
@@ -708,8 +726,9 @@ def _finish(ui: Ui, platform, bound: bool) -> None:
     ui.say("Sellee is running.")
     ui.say("")
     ui.say("Next: your first listing.")
-    if bound:
-        ui.say("Open Telegram and send your Sellee bot a photo of something you want to sell —")
+    if bound_to:
+        app = channel.display_name(bound_to)
+        ui.say(f"Open {app} and send your Sellee bot a photo of something you want to sell —")
         ui.say("it checks the price with you before anything goes live.")
     else:
         ui.say("Run `sellee chat` and use /sell to list your first item.")

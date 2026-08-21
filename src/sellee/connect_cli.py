@@ -28,7 +28,7 @@ import getpass
 import sys
 import time
 
-from sellee import config, control, deployment, qr
+from sellee import channel, config, control, deployment, qr
 from sellee.browser import foreground
 
 _POLL_INTERVAL_SEC = 1.0
@@ -72,11 +72,11 @@ def run(args) -> int:
     port = config.load().http_port
     if args.connect_command == "telegram":
         if getattr(args, "status", False):
-            return _print_status(port, token)
+            return _print_status(port, token, "telegram")
         return bind_flow(port, token, timeout=getattr(args, "timeout", None))
     if args.connect_command == "discord":
         if getattr(args, "status", False):
-            return _print_status(port, token, awaiting_hint="a DM")
+            return _print_status(port, token, "discord", awaiting_hint="a DM")
         return discord_bind_flow(port, token, timeout=getattr(args, "timeout", None))
     return market_flow(port, token, args.connect_command)
 
@@ -377,7 +377,10 @@ def _print_discord_bind_prompt(
     print(f"Waiting for that DM (up to {timeout}s)...")
 
 
-def _print_status(port: int, token: str, *, awaiting_hint: str = "/start") -> int:
+def _print_status(port: int, token: str, provider: str, *, awaiting_hint: str = "/start") -> int:
+    """Report `provider`'s own connection state — never the other provider's. The status route
+    answers for whichever provider holds the channel, so `bound` alone would let
+    `connect discord --status` print the Telegram bot's username."""
     try:
         code, status = control.get(port, token, "/control/channel-status")
     except control.DaemonUnreachable as exc:
@@ -386,6 +389,15 @@ def _print_status(port: int, token: str, *, awaiting_hint: str = "/start") -> in
     if code != 200:
         print(f"sellee: {status.get('error', f'HTTP {code}')}", file=sys.stderr)
         return 3
+    holder = status.get("adapter")
+    if holder != provider:
+        # Name the holder only when it is bound; the other one merely being mid-connect is
+        # nothing to report here.
+        if status.get("bound"):
+            print(f"not connected — {channel.display_name(holder)} holds the channel")
+        else:
+            print("not connected")
+        return 1
     if status.get("bound"):
         print(f"bound to @{status.get('bot_username')}")
         return 0
