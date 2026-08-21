@@ -30,6 +30,7 @@ class FakeDiscordAPI:
         self.outbox: list = []
         self.typing_pulses: list = []
         self.acknowledged: list = []
+        self.user_agents: list = []
         self.files: dict = {"/attachments/fake.jpg": b"\xff\xd8\xff\xe0fake-jpeg-bytes"}
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._make_handler())
         self._server.daemon_threads = True
@@ -68,6 +69,18 @@ class FakeDiscordAPI:
                 length = int(self.headers.get("Content-Length", 0))
                 return json.loads(self.rfile.read(length)) if length else {}
 
+            def _rejects_blocked_user_agent(self) -> bool:
+                # Discord's edge 403s urllib's default User-Agent before reading the token, on
+                # every route including the CDN. Reproducing it makes the whole suite a net for a
+                # missing header; without it, a transport that sends none passes every test.
+                if not (self.headers.get("User-Agent") or "").startswith("DiscordBot "):
+                    self.send_response(403)
+                    self.send_header("Content-Length", "17")
+                    self.end_headers()
+                    self.wfile.write(b"error code: 1010\n")
+                    return True
+                return False
+
             def _rejects_bad_bot_token(self) -> bool:
                 # Attachment CDN links are unauthenticated by design (see transport.py's
                 # download_attachment docstring); every /api/v10/* route requires the real fake
@@ -83,7 +96,8 @@ class FakeDiscordAPI:
 
             def do_GET(self) -> None:
                 api.calls.append(("GET", self.path))
-                if self._rejects_bad_bot_token():
+                api.user_agents.append(self.headers.get("User-Agent"))
+                if self._rejects_blocked_user_agent() or self._rejects_bad_bot_token():
                     return
                 if self.path.startswith("/attachments/"):
                     data = api.files.get(self.path, api.files["/attachments/fake.jpg"])
@@ -100,7 +114,8 @@ class FakeDiscordAPI:
 
             def do_POST(self) -> None:
                 api.calls.append(("POST", self.path))
-                if self._rejects_bad_bot_token():
+                api.user_agents.append(self.headers.get("User-Agent"))
+                if self._rejects_blocked_user_agent() or self._rejects_bad_bot_token():
                     return
                 body = self._body()
                 if self.path == f"/api/v10/channels/{CHANNEL_ID}/messages":

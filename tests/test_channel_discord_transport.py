@@ -168,6 +168,42 @@ def test_download_attachment(tmp_path) -> None:
         assert dest.read_bytes() == api.files["/attachments/fake.jpg"]
 
 
+def test_every_request_carries_the_documented_user_agent() -> None:
+    """Discord's edge blocklists urllib's default User-Agent and 403s before reading the token, so
+    a missing header surfaces as a rejected credential — the failure the fake now reproduces on
+    every route. This pins the header's shape; the rest of the suite covers its presence."""
+    with FakeDiscordAPI() as api:
+        client = _client(api)
+        client.get_me()
+        client.get_application()
+        client.send_message(CHANNEL_ID, "hi")
+        assert api.user_agents  # the fake saw requests at all
+        assert set(api.user_agents) == {transport.USER_AGENT}
+        assert transport.USER_AGENT.startswith("DiscordBot (https://")
+        assert "urllib" not in transport.USER_AGENT
+
+
+def test_the_attachment_cdn_gets_the_user_agent_too(tmp_path) -> None:
+    # The CDN sits behind the same edge filter, so a photo download 403s without the header.
+    with FakeDiscordAPI() as api:
+        dest = tmp_path / "photo.jpg"
+        _client(api).download_attachment(api.base_url + "/attachments/fake.jpg", dest)
+        assert dest.read_bytes() == api.files["/attachments/fake.jpg"]
+        assert api.user_agents == [transport.USER_AGENT]
+
+
+def test_a_missing_user_agent_is_refused_the_way_discord_refuses_it(tmp_path) -> None:
+    """The guard that makes the suite load-bearing: with urllib's default UA the fake answers the
+    same 403 real Discord does, so a transport that stops sending the header fails here."""
+    import urllib.error
+    import urllib.request
+
+    with FakeDiscordAPI() as api:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(api.base_url + "/api/v10/users/@me", timeout=5)  # noqa: S310
+        assert exc.value.code == 403
+
+
 def test_transport_error_never_carries_the_token() -> None:
     with FakeDiscordAPI() as api:
         client = DiscordClient("bad-token-shape", api_base=api.base_url + "/api/v10")

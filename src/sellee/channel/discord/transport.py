@@ -24,6 +24,14 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from sellee import __version__
+
+# Required, in this documented shape, and enforced at the edge: urllib's default
+# `Python-urllib/x.y` is blocklisted, so the API and the CDN both 403 (Cloudflare 1010) before the
+# token is read — indistinguishable from a rejected token. Enforcement is reputation-driven, so it
+# passes from some networks and not others.
+USER_AGENT = f"DiscordBot (https://github.com/carousell/sellee, {__version__})"
+
 MAX_TEXT_LEN = 2000
 _ACTION_ROW = 1
 _BUTTON = 2
@@ -154,6 +162,7 @@ class DiscordClient:
             headers={
                 "Authorization": f"Bot {self._token}",
                 "Content-Type": "application/json",
+                "User-Agent": USER_AGENT,
             },
         )
         try:
@@ -199,10 +208,12 @@ class DiscordClient:
     def download_attachment(self, url: str, dest: Path) -> Path:
         """Discord attachment URLs are pre-signed/public CDN links — no Authorization header
         needed or sent, deliberately: the bot token must never ride on a URL that could be logged
-        or cached by an intermediary."""
+        or cached by an intermediary. The User-Agent still goes: the CDN sits behind the same
+        edge filter as the API."""
         dest.parent.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         try:
-            with urllib.request.urlopen(url, timeout=self._timeout) as resp:  # noqa: S310 our URL
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # noqa: S310 our URL
                 dest.write_bytes(resp.read())
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise ChannelError(f"attachment download failed: {exc.__class__.__name__}") from None
