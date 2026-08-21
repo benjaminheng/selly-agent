@@ -33,7 +33,18 @@ def _write_config(tmp_path) -> None:
     cfg_dir = tmp_path / "config" / "sellee"
     cfg_dir.mkdir(parents=True)
     # http_port 0 → an ephemeral port, so two daemon subprocesses never collide on a fixed port.
-    (cfg_dir / "config.json").write_text(json.dumps({"tick_interval_sec": 0.3, "http_port": 0}))
+    # The browser command override points at nothing: this daemon is real (conftest stubs cannot
+    # reach it), and without this its lanes would probe — and on a developer's machine launch —
+    # the real Chrome, and its startup would warm the real npx cache off the network.
+    (cfg_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "tick_interval_sec": 0.3,
+                "http_port": 0,
+                "playwright_mcp_cmd": ["/nonexistent/browser-blocked-by-test"],
+            }
+        )
+    )
 
 
 def _events_db(tmp_path) -> Path:

@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from sellee import migrations, paths
+from sellee.browser import chrome
 from sellee.config import Config
 from sellee.db import Database
 from sellee.events import EventBus, EventStore
+
+# The real probe, for the one test that exercises it — the guard below stubs the module
+# attribute for everyone else.
+real_is_ready = chrome.is_ready
 
 
 @pytest.fixture(autouse=True)
@@ -35,6 +42,33 @@ def _close_databases(monkeypatch):
     yield
     for db in opened:
         db.close()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_chrome(monkeypatch):
+    """Keep the suite away from the machine's real Chrome, in both directions.
+
+    Any lane that ticks acquires the browser before checking whether it has work, so a test that
+    runs the daemon un-stubbed reaches a real launch: on a developer's machine the binary exists
+    and a window opens (CI never sees this — it has no Chrome, so the same path dies silently in
+    UNAVAILABLE). And the readiness probe is a real loopback GET, so a live Chrome on the CDP port
+    would flip those tests READY and send them driving it. Blocking the spawn with an OSError
+    lands in ensure_running's existing handler — every machine now behaves like CI.
+
+    Popen is stubbed by replacing the chrome module's `subprocess` attribute, never
+    subprocess.Popen itself, which the rest of the suite uses for real. Tests that exercise the
+    launch flow monkeypatch is_ready/Popen themselves and simply override this.
+    """
+
+    def blocked_popen(*args, **kwargs):
+        raise OSError("tests must not launch a real Chrome")
+
+    monkeypatch.setattr(
+        chrome, "subprocess", SimpleNamespace(Popen=blocked_popen, DEVNULL=subprocess.DEVNULL)
+    )
+    monkeypatch.setattr(chrome, "is_ready", lambda port, **kwargs: False)
+    # Module state: a blocked launch must not quiet the next test's launch expectations.
+    monkeypatch.setattr(chrome, "_last_failed_launch_ts", None)
 
 
 def leak_paths(node, sentinel, path="$") -> list:

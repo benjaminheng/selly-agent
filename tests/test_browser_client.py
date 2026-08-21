@@ -422,8 +422,11 @@ def test_same_page_ignores_only_what_a_navigation_may_change(left, right, same) 
 
 
 def test_the_readiness_probe_is_false_with_nothing_listening() -> None:
-    # port 1 is privileged and never our Chrome, so this exercises the unreachable path
-    assert chrome.is_ready(1, timeout_sec=0.2) is False
+    # port 1 is privileged and never our Chrome, so this exercises the unreachable path — via the
+    # real probe, which the conftest guard stubs out for every other test
+    from tests.conftest import real_is_ready
+
+    assert real_is_ready(1, timeout_sec=0.2) is False
 
 
 def test_the_launch_command_uses_the_agents_own_profile(xdg_tmp) -> None:
