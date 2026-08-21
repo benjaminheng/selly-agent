@@ -128,13 +128,20 @@ The `channel` row is a singleton: exactly one provider is bound at any moment,
 and connecting the other **replaces** the binding (`store.arm_bind` clears the
 sibling's chat, cursor, and welcome stamp).
 
-`GET /control/channel-status` therefore answers for whichever provider the row
-names, and its `adapter` field says which. Anything that reports a connection to
-a seller reads that field — `bound` alone cannot tell a Telegram binding from a
-Discord one, and "Discord: already connected" on a Telegram-only install claims a
-channel they never set up. So `setup` names the holder when it skips the other
-provider's offer, `connect <provider> --status` reports only that provider, and
-the closing "open <app> and send a photo" points at the app actually bound.
+That singleton is why **`setup` offers the channel as one pick-one menu** rather
+than a yes/no per provider: a sequential offer let the first answer decide the
+second, so accepting Telegram made Discord read as unavailable and a seller who
+had not heard of Discord never learned it existed. The menu shows both, and an
+empty answer picks none — as does `--yes` or a pipe, since binding takes a
+credential and a phone the absent seller has to supply.
+
+`GET /control/channel-status` answers for whichever provider the row names, and
+its `adapter` field says which. Anything that reports a connection to a seller
+reads that field — `bound` alone cannot tell a Telegram binding from a Discord
+one, and "Discord: already connected" on a Telegram-only install claims a channel
+they never set up. So `setup` names the holder instead of re-offering,
+`connect <provider> --status` reports only that provider, and the closing "open
+\<app\> and send a photo" points at the app actually bound.
 
 ## The Telegram poller's three states
 

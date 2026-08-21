@@ -538,8 +538,8 @@ def test_nothing_is_provisioned_without_a_region(world, monkeypatch) -> None:
 
 
 def test_picking_a_marketplace_records_the_setting_then_signs_in(world, monkeypatch) -> None:
-    # region confirmed, Carousell picked, window question defaulted, Telegram declined
-    _answer(monkeypatch, ["y", "1", "", "n"])
+    # region confirmed, Carousell picked, window question defaulted, no chat channel
+    _answer(monkeypatch, ["y", "1", "", ""])
 
     assert setup_main("--manual", "--skip-discord") == 0
 
@@ -550,8 +550,8 @@ def test_picking_a_marketplace_records_the_setting_then_signs_in(world, monkeypa
 
 
 def test_skipping_the_marketplace_offer_enables_nothing(world, monkeypatch, capsys) -> None:
-    # region confirmed, no marketplace picked, window question defaulted, Telegram declined
-    _answer(monkeypatch, ["y", "", "", "n"])
+    # region confirmed, no marketplace picked, window question defaulted, no chat channel
+    _answer(monkeypatch, ["y", "", "", ""])
 
     assert setup_main("--manual", "--skip-discord") == 0
 
@@ -576,8 +576,8 @@ def test_a_region_with_no_marketplaces_says_so_rather_than_offering_an_empty_lis
 
 
 def test_declining_the_browser_window_question_records_the_setting(world, monkeypatch) -> None:
-    # region confirmed, no marketplace, window declined, Telegram declined
-    _answer(monkeypatch, ["y", "", "n", "n"])
+    # region confirmed, no marketplace, window declined, no chat channel
+    _answer(monkeypatch, ["y", "", "n", ""])
     assert setup_main("--manual", "--skip-discord") == 0
     assert world.calls["settings"]["raise_browser"] == "false"
 
@@ -585,7 +585,7 @@ def test_declining_the_browser_window_question_records_the_setting(world, monkey
 def test_accepting_the_browser_window_question_writes_nothing(world, monkeypatch) -> None:
     """The default lives in code; writing it back would list the setting as customized on the
     /sellee card."""
-    _answer(monkeypatch, ["y", "", "", "n"])
+    _answer(monkeypatch, ["y", "", "", ""])
     assert setup_main("--manual", "--skip-discord") == 0
     assert "raise_browser" not in world.calls["settings"]
 
@@ -595,7 +595,7 @@ def test_the_browser_question_comes_after_the_marketplace_sign_in(
 ) -> None:
     """The first window of an install must always come forward — a sign-in window the seller
     cannot find is a wall — so the question that could turn that off is asked only afterwards."""
-    _answer(monkeypatch, ["y", "1", "n", "n"])
+    _answer(monkeypatch, ["y", "1", "n", ""])
     assert setup_main("--manual", "--skip-discord") == 0
     assert world.calls["markets"] == ["carousell"]  # signed in under the raise-by-default
     out = capsys.readouterr().out
@@ -612,7 +612,7 @@ def test_an_os_that_cannot_raise_a_window_is_never_asked(world, monkeypatch, cap
     """Offering to turn off a behavior the OS cannot perform teaches the seller something untrue
     about their install — and would put a question in the script that has no answer to give."""
     monkeypatch.setattr(setup_cli.foreground, "is_supported", lambda: False)
-    _answer(monkeypatch, ["y", "", "n"])  # region, no marketplace, Telegram — no window question
+    _answer(monkeypatch, ["y", "", ""])  # region, no marketplace, channel — no window question
     assert setup_main("--manual", "--skip-discord") == 0
     out = capsys.readouterr().out
     assert "Browser window" not in out
@@ -629,24 +629,90 @@ def test_a_container_setup_is_never_asked_about_the_window(world, container, cap
     assert "Browser window" not in capsys.readouterr().out
 
 
-# --- Telegram ------------------------------------------------------------------------------------
+# --- the chat channel ----------------------------------------------------------------------------
 
 
-def test_telegram_is_offered_and_declining_points_at_the_verb(world, capsys) -> None:
-    # Not interactive, so the offer is declined for us — the path a piped install takes.
+def test_the_menu_lists_every_channel_so_neither_is_hidden_behind_the_other(
+    world, monkeypatch, capsys
+) -> None:
+    """The reason this is a menu: only one channel binds, so a yes/no on Telegram first decided
+    Discord too — accepting Telegram made Discord look unavailable, and a seller who had never
+    heard of Discord never learned it was an option."""
+    _answer(monkeypatch, ["y", "", "", ""])  # region, no marketplace, window default, no channel
     assert setup_main("--manual") == 0
-    assert "sellee connect telegram" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Chat channel" in out
+    assert "1) Telegram" in out and "2) Discord" in out
+    assert "Only one channel can be" in out  # the constraint is stated before the choice
 
 
-def test_an_already_bound_channel_is_not_offered_again(world, capsys) -> None:
+def test_picking_from_the_menu_runs_that_channel_s_bind_flow(world, monkeypatch) -> None:
+    ran = []
+    monkeypatch.setattr(connect_cli, "bind_flow", lambda *a, **k: ran.append("telegram") or 0)
+    monkeypatch.setattr(
+        connect_cli, "discord_bind_flow", lambda *a, **k: ran.append("discord") or 0
+    )
+    _answer(monkeypatch, ["y", "", "", "2"])  # ... then Discord, the second entry
+    assert setup_main("--manual") == 0
+    assert ran == ["discord"]
+
+
+def test_an_empty_answer_binds_nothing_and_names_both_verbs(world, monkeypatch, capsys) -> None:
+    ran = []
+    monkeypatch.setattr(connect_cli, "bind_flow", lambda *a, **k: ran.append("telegram") or 0)
+    _answer(monkeypatch, ["y", "", "", ""])
+    assert setup_main("--manual") == 0
+    assert ran == []
+    out = capsys.readouterr().out
+    assert "sellee connect telegram" in out and "sellee connect discord" in out
+
+
+def test_a_failed_bind_points_at_the_verb_that_resumes_it(world, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(connect_cli, "discord_bind_flow", lambda *a, **k: 1)
+    _answer(monkeypatch, ["y", "", "", "2"])
+    assert setup_main("--manual") == 0
+    assert "resume later with `sellee connect discord`" in capsys.readouterr().out
+
+
+def test_a_piped_install_picks_no_channel_and_says_so(world, capsys) -> None:
+    # Nothing is chosen for a seller who is not there to choose: binding a channel takes a
+    # credential and a phone, so --yes and a pipe both mean "none", not "the first one".
+    assert setup_main("--yes", "--manual") == 0
+    out = capsys.readouterr().out
+    assert "skipped — connect later with" in out
+    assert "sellee connect telegram" in out
+
+
+def test_an_already_bound_channel_is_named_rather_than_re_offered(world, capsys) -> None:
     world.calls["bound"] = True
     assert setup_main("--yes", "--manual") == 0
-    assert "already connected" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "already connected: Telegram" in out
+    assert "Connect now?" not in out
 
 
-def test_skip_telegram_never_offers(world, capsys) -> None:
-    assert setup_main("--yes", "--manual", "--skip-telegram") == 0
-    assert "Connect Telegram now?" not in capsys.readouterr().out
+def test_an_already_bound_discord_channel_is_named_as_discord(world, capsys) -> None:
+    """The status route answers for whichever provider holds the singleton row, so this is the
+    case that used to read as Telegram — or as both channels being connected at once."""
+    world.calls["bound"] = True
+    world.calls["adapter"] = "discord"
+    assert setup_main("--yes", "--manual") == 0
+    out = capsys.readouterr().out
+    assert "already connected: Discord" in out
+    assert "already connected: Telegram" not in out
+
+
+def test_skipping_one_channel_leaves_a_menu_of_the_other(world, monkeypatch, capsys) -> None:
+    _answer(monkeypatch, ["y", "", "", ""])
+    assert setup_main("--manual", "--skip-telegram") == 0
+    out = capsys.readouterr().out
+    assert "1) Discord" in out
+    assert ") Telegram" not in out  # not an entry at all
+
+
+def test_skipping_both_channels_skips_the_step_entirely(world, capsys) -> None:
+    assert setup_main("--yes", "--manual", "--skip-telegram", "--skip-discord") == 0
+    assert "Chat channel" not in capsys.readouterr().out
 
 
 def test_finish_points_a_bound_install_at_the_phone(world, capsys) -> None:
@@ -655,52 +721,6 @@ def test_finish_points_a_bound_install_at_the_phone(world, capsys) -> None:
     out = capsys.readouterr().out
     assert "Next: your first listing." in out
     assert "Open Telegram" in out and "photo" in out
-
-
-def test_finish_points_an_unbound_install_at_the_terminal(world, capsys) -> None:
-    assert setup_main("--yes", "--manual", "--skip-telegram") == 0
-    out = capsys.readouterr().out
-    assert "Next: your first listing." in out
-    assert "/sell" in out
-    assert "Open Telegram" not in out  # no phone to send the photo to
-
-
-# --- Discord --------------------------------------------------------------------------------------
-
-
-def test_discord_is_offered_and_declining_points_at_the_verb(world, capsys) -> None:
-    # Not interactive, so the offer is declined for us — the path a piped install takes.
-    assert setup_main("--manual", "--skip-telegram") == 0
-    assert "sellee connect discord" in capsys.readouterr().out
-
-
-def test_a_telegram_binding_skips_discord_without_claiming_discord_is_connected(
-    world, capsys
-) -> None:
-    """An existing Telegram binding settles the Discord step too, but it is Telegram that is
-    connected: "already connected" under the Discord heading tells a seller they have a Discord
-    channel they never set up."""
-    world.calls["bound"] = True
-    assert setup_main("--yes", "--manual") == 0
-    out = capsys.readouterr().out
-    assert out.count("already connected") == 1  # Telegram's own check, and only that one
-    assert "you're on Telegram" in out
-    assert "Connect Discord now?" not in out
-    assert "sellee connect discord" in out  # how to switch, since the offer went unasked
-
-
-def test_a_discord_binding_skips_telegram_without_claiming_telegram_is_connected(
-    world, capsys
-) -> None:
-    """The mirror of the case above: whichever provider holds the channel is the one named."""
-    world.calls["bound"] = True
-    world.calls["adapter"] = "discord"
-    assert setup_main("--yes", "--manual") == 0
-    out = capsys.readouterr().out
-    assert out.count("already connected") == 1  # Discord's own check, and only that one
-    assert "you're on Discord" in out
-    assert "Connect Telegram now?" not in out
-    assert "sellee connect telegram" in out
 
 
 def test_finish_points_a_discord_install_at_discord(world, capsys) -> None:
@@ -712,27 +732,12 @@ def test_finish_points_a_discord_install_at_discord(world, capsys) -> None:
     assert "Open Telegram" not in out  # the app the seller actually connected
 
 
-def test_skip_discord_never_offers(world, capsys) -> None:
-    assert setup_main("--yes", "--manual", "--skip-discord") == 0
-    assert "Connect Discord now?" not in capsys.readouterr().out
-
-
-def test_a_telegram_bind_this_run_stops_discord_from_being_offered(
-    world, monkeypatch, capsys
-) -> None:
-    """The channel row is a shared singleton (see store.arm_bind) — binding Discord right after
-    Telegram would silently replace it. _offer_discord re-probes bound state itself rather than
-    taking a value threaded through, so a Telegram bind that happens during this same run is
-    picked up before Discord is offered."""
-    # region confirmed, no marketplace, window default, Telegram: yes
-    _answer(monkeypatch, ["y", "", "", "y"])
-    monkeypatch.setattr(
-        connect_cli,
-        "bind_flow",
-        lambda *a, **k: world.calls.__setitem__("bound", True) or 0,
-    )
-    assert setup_main("--manual") == 0
-    assert "Connect Discord now?" not in capsys.readouterr().out
+def test_finish_points_an_unbound_install_at_the_terminal(world, capsys) -> None:
+    assert setup_main("--yes", "--manual", "--skip-telegram", "--skip-discord") == 0
+    out = capsys.readouterr().out
+    assert "Next: your first listing." in out
+    assert "/sell" in out
+    assert "Open Telegram" not in out  # no phone to send the photo to
 
 
 # --- the attended workspace ----------------------------------------------------------------------

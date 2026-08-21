@@ -95,6 +95,38 @@ def test_choose_without_a_terminal_takes_the_default_index() -> None:
     assert ui.choose("Pick", ["a", "b"], default_index=1) == 1
 
 
+def test_choose_optional_returns_the_index_picked() -> None:
+    ui, out, _ = make_ui(interactive=True, input_fn=lambda: "2")
+    assert ui.choose_optional("Which?", ["a", "b"]) == 1
+    assert "1) a" in out.getvalue() and "2) b" in out.getvalue()
+
+
+def test_choose_optional_treats_an_empty_answer_as_no_pick() -> None:
+    # Unlike `choose`, this one has no default to land on: Enter means none.
+    ui, _, _ = make_ui(interactive=True, input_fn=lambda: "")
+    assert ui.choose_optional("Which?", ["a", "b"]) is None
+
+
+def test_choose_optional_reprompts_on_an_out_of_range_or_unparsable_answer() -> None:
+    answers = iter(["7", "x", "1"])
+    ui, _, _ = make_ui(interactive=True, input_fn=lambda: next(answers))
+    assert ui.choose_optional("Which?", ["a", "b"]) == 0
+
+
+def test_choose_optional_picks_nothing_without_a_terminal_or_under_assume_yes() -> None:
+    ui, _, _ = make_ui(interactive=False)
+    assert ui.choose_optional("Which?", ["a", "b"]) is None
+
+    ui, _, _ = make_ui(interactive=True, assume_yes=True)
+    assert ui.choose_optional("Which?", ["a", "b"]) is None
+
+
+def test_choose_optional_with_no_options_asks_nothing() -> None:
+    ui, out, _ = make_ui(interactive=True, input_fn=lambda: "1")
+    assert ui.choose_optional("Which?", []) is None
+    assert out.getvalue() == ""
+
+
 def test_multiselect_accepts_numbers_all_and_skip() -> None:
     ui, _, _ = make_ui(interactive=True, input_fn=lambda: "3,1")
     assert ui.multiselect("Which?", ["a", "b", "c"]) == [0, 2]

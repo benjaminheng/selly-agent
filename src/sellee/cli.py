@@ -51,8 +51,12 @@ def _build_parser() -> argparse.ArgumentParser:
     setup.add_argument(
         "--skip-markets", action="store_true", help="don't offer marketplace sign-in"
     )
-    setup.add_argument("--skip-telegram", action="store_true", help="don't offer Telegram")
-    setup.add_argument("--skip-discord", action="store_true", help="don't offer Discord")
+    setup.add_argument(
+        "--skip-telegram", action="store_true", help="leave Telegram out of the channel menu"
+    )
+    setup.add_argument(
+        "--skip-discord", action="store_true", help="leave Discord out of the channel menu"
+    )
     setup.add_argument(
         "--no-modify-path",
         action="store_true",

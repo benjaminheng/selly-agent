@@ -105,11 +105,10 @@ def _run(args, ui: Ui) -> None:
     _provision_rail(ui, region)
     _connect_markets(ui, args, port, token, region)
     _browser_window(ui, port, token)
-    _offer_telegram(ui, args, port, token)
-    _offer_discord(ui, args, port, token)
+    _offer_channel(ui, args, port, token)
     _attended_workspace(ui)
     # Re-probed here rather than threaded through: the bind may have just happened inside
-    # _offer_telegram, and the closing next-step depends on where the seller can act.
+    # _offer_channel, and the closing next-step depends on where the seller can act.
     _finish(ui, platform, bound_to=_bound_channel(port, token))
 
 
@@ -127,7 +126,7 @@ def _intro(ui: Ui, platform) -> None:
     ui.say("  • install this version, plus the `sellee` command")
     ui.say("  • register and start the background worker")
     ui.say("  • record the region and currency to price in")
-    ui.say("  • optionally connect marketplaces, Telegram, and Discord")
+    ui.say("  • optionally connect marketplaces and a chat channel (Telegram or Discord)")
     ui.say("")
     ui.say("Sellee will be installed into the following locations:")
     for line in materialize.layout_preview(platform=platform):
@@ -151,7 +150,7 @@ def _intro_container(ui: Ui) -> None:
     ui.say("This will:")
     ui.say("  • record the region and currency to price in")
     ui.say("  • set up carousell.ai")
-    ui.say("  • optionally connect marketplaces, Telegram, and Discord")
+    ui.say("  • optionally connect marketplaces and a chat channel (Telegram or Discord)")
     ui.say("  • write the workspace for the terminal session")
     ui.say("")
     ui.say("Everything it writes lands in the directory you mounted at /data, and nothing is")
@@ -620,67 +619,56 @@ def _browser_window(ui: Ui, port: int, token: str) -> None:
     )
 
 
-# --- Telegram ---------------------------------------------------------------------------------
+# --- the chat channel ---------------------------------------------------------------------------
+
+# The channels a seller can pick, in menu order: id, then the name the menu shows for it.
+_CHANNELS = (
+    ("telegram", "Telegram"),
+    ("discord", "Discord"),
+)
 
 
-def _offer_telegram(ui: Ui, args, port: int, token: str) -> None:
-    """Offer the phone channel. Declining is a first-class answer — the agent runs without it,
-    and everything it would push is queued and shown at the start of an attended session."""
-    if args.skip_telegram:
+def _offer_channel(ui: Ui, args, port: int, token: str) -> None:
+    """Offer the chat channel as one pick-one menu.
+
+    A menu rather than a yes/no per provider: only one channel binds (see store.arm_bind), so
+    asking about Telegram first hid Discord behind that answer entirely — accept Telegram and
+    Discord looked unavailable, decline it and the second question read as a re-ask. The seller
+    has to see both to choose between them. Picking nothing stays a first-class answer: the agent
+    runs without a channel and queues whatever needs the seller for their next terminal session.
+    """
+    choices = [c for c in _CHANNELS if not getattr(args, f"skip_{c[0]}", False)]
+    if not choices:
         return
-    ui.step("Telegram")
-    if _channel_settled(ui, port, token, "telegram"):
-        return
+    ui.step("Chat channel")
 
-    ui.say("Telegram delivers buyer chats to your phone. Connecting takes about two minutes.")
-    ui.say("Without it, anything needing you is queued for your next session in the terminal.")
-    if not ui.interactive or not ui.confirm("Connect Telegram now?", default=True, lead=False):
-        ui.say("skipped — connect later with `sellee connect telegram`")
-        return
-
-    code = connect_cli.bind_flow(port, token, interactive=ui.interactive)
-    if code != 0:
-        ui.say("not connected — resume later with `sellee connect telegram`")
-
-
-# --- Discord ------------------------------------------------------------------------------------
-
-
-def _offer_discord(ui: Ui, args, port: int, token: str) -> None:
-    """Offer Discord as an alternative channel. Re-probes bound state itself (like
-    `_offer_telegram`) so a Telegram bind that just happened above settles this step too and
-    Discord is never offered on top of it."""
-    if args.skip_discord:
-        return
-    ui.step("Discord")
-    if _channel_settled(ui, port, token, "discord"):
-        return
-
-    ui.say("Discord delivers buyer chats to your phone or desktop. Connecting takes about two")
-    ui.say("minutes. Without it, anything needing you is queued for your next session in the")
-    ui.say("terminal.")
-    if not ui.interactive or not ui.confirm("Connect Discord now?", default=True, lead=False):
-        ui.say("skipped — connect later with `sellee connect discord`")
-        return
-
-    code = connect_cli.discord_bind_flow(port, token, interactive=ui.interactive)
-    if code != 0:
-        ui.say("not connected — resume later with `sellee connect discord`")
-
-
-def _channel_settled(ui: Ui, port: int, token: str, provider: str) -> bool:
-    """Whether an existing binding already answers this provider's offer, naming which one holds
-    it. One channel binds at a time, so the *other* provider's binding settles this step too —
-    but "already connected" under this heading would claim a channel the seller never set up."""
     bound = _bound_channel(port, token)
-    if bound is None:
-        return False
-    if bound == provider:
-        ui.say("already connected")
-        return True
-    ui.say(f"skipped — you're on {channel.display_name(bound)}, and I deliver over one channel")
-    ui.say(f"at a time. Switch with `sellee connect {provider}`.")
-    return True
+    if bound is not None:
+        ui.say(f"already connected: {channel.display_name(bound)}")
+        ui.note("switch any time with `sellee connect <name>` — one channel at a time")
+        return
+
+    ui.say("You can interact with Sellee using various channels. Only one channel can be")
+    ui.say("connected at a time, for now. Connecting takes about two minutes.")
+    ui.say("Channels are optional, you can also interact with Sellee using the terminal.")
+    index = ui.choose_optional("Connect now?", [label for _, label in choices], lead=False)
+    if index is None:
+        verbs = " or ".join(f"`sellee connect {name}`" for name, _ in choices)
+        ui.say(f"skipped — connect later with {verbs}")
+        return
+
+    name = choices[index][0]
+    if _bind_channel(port, token, name, interactive=ui.interactive) != 0:
+        ui.say(f"not connected — resume later with `sellee connect {name}`")
+
+
+def _bind_channel(port: int, token: str, name: str, *, interactive: bool) -> int:
+    # Dispatched by name at call time rather than held in _CHANNELS, so the flows stay the ones
+    # connect_cli exposes now (and the ones a test substitutes) instead of whatever was bound at
+    # import.
+    if name == "discord":
+        return connect_cli.discord_bind_flow(port, token, interactive=interactive)
+    return connect_cli.bind_flow(port, token, interactive=interactive)
 
 
 def _bound_channel(port: int, token: str) -> str | None:

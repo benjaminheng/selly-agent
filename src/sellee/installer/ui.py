@@ -177,6 +177,34 @@ class Ui:
             if 1 <= picked <= len(options):
                 return picked - 1
 
+    def choose_optional(self, question: str, options, *, lead: bool = True) -> int | None:
+        """Pick one of a numbered list, or none; returns its index or None.
+
+        `choose` always lands on something, which is right for a question with a real default. This
+        is for the pick-one step whose honest default is nothing — so, like `multiselect`, a
+        non-interactive run and `--yes` select none rather than choosing on the seller's behalf.
+        """
+        if not options:
+            return None
+        self._open_prompt(lead)
+        if not self.interactive or self.assume_yes:
+            self._auto_answer(f"{question} (skipped — nothing selected)")
+            return None
+        self._auto_answer(question)
+        for number, option in enumerate(options, start=1):
+            self.say(f"{number}) {option}")
+        while True:
+            raw = self._ask_raw(f"Enter 1-{len(options)}, or empty to skip: ")
+            if not raw:
+                return None
+            try:
+                picked = int(raw)
+            except ValueError:
+                picked = 0
+            if 1 <= picked <= len(options):
+                return picked - 1
+            self.say(f"Not understood — a number from 1 to {len(options)}, or Enter to skip.")
+
     def multiselect(self, question: str, options, *, lead: bool = True) -> list:
         """Pick any number of a numbered list; returns their indices, possibly none.
 
