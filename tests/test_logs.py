@@ -153,6 +153,13 @@ def test_follow_sees_live_writer(tmp_path) -> None:
         PYTHONPATH=str(REPO_ROOT / "src"),
     )
     (tmp_path / "home").mkdir()
+    # This daemon is a real subprocess, so the conftest Chrome guard cannot reach it. Pointing the
+    # browser command at nothing makes the factory raise before it starts Chrome on a dev machine.
+    cfg_dir = tmp_path / "config" / "sellee"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.json").write_text(
+        json.dumps({"playwright_mcp_cmd": ["/nonexistent/browser-blocked-by-test"]})
+    )
 
     # seed the events DB so the tail has something to open
     subprocess.run([sys.executable, str(LAUNCHER), "daemon", "run", "--once"], env=env, check=True)
