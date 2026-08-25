@@ -60,7 +60,7 @@ def test_a_chrome_that_cannot_start_raises_the_by_hand_command(store, bus, monke
 # --- probe-only acquisition (the browser is on the seller's own machine) ------------------------
 
 
-def test_a_container_never_asks_for_a_launch(store, bus, container, monkeypatch) -> None:
+def test_a_container_never_asks_for_a_launch(store, bus, container, xdg_tmp, monkeypatch) -> None:
     seen = {}
 
     def _ensure(port, **kwargs):
@@ -76,7 +76,7 @@ def test_a_container_never_asks_for_a_launch(store, bus, container, monkeypatch)
 
 
 def test_a_closed_host_chrome_points_at_the_script_not_at_an_argv(
-    store, bus, container, monkeypatch
+    store, bus, container, xdg_tmp, monkeypatch
 ) -> None:
     """The argv would describe a Chrome on this machine; the one that matters is the seller's,
     with its own profile and its own path to the binary."""
