@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from fake_telegram_api import BOT, CHAT_ID, FAKE_TOKEN, FakeTelegramAPI
-from sellee.channel.telegram import transport
+from sellee.channel.telegram import commands, transport
 from sellee.channel.telegram.transport import (
     ChannelError,
     TelegramClient,
@@ -133,6 +133,27 @@ def test_build_keyboard_enforces_callback_cap() -> None:
     build_inline_keyboard([[("ok", "short")]])  # fine
     with pytest.raises(ValueError, match="64 bytes"):
         build_inline_keyboard([[("ok", "x" * 65)]])
+
+
+def test_controls_wrap_onto_rows_rather_than_crowding_one() -> None:
+    """The marketplace picker is as long as the seller's enabled list, and these are tapped on a
+    phone. Every button in the spec is rendered — wrapped, never dropped."""
+    spec = [(f"m{i}", f"m{i}:connectmkt") for i in range(6)]
+
+    rows = commands.render_controls(spec)["inline_keyboard"]
+
+    assert [len(row) for row in rows] == [4, 2]
+    assert [b["callback_data"] for row in rows for b in row] == [token for _label, token in spec]
+
+
+def test_a_short_control_row_still_renders_as_one_row() -> None:
+    rows = commands.render_controls([("⏸ Pause", "pause"), ("What needs me", "needsme")])
+    assert len(rows["inline_keyboard"]) == 1
+
+
+def test_no_controls_renders_no_keyboard() -> None:
+    assert commands.render_controls(None) is None
+    assert commands.render_controls([]) is None
 
 
 def test_commands_hash_is_stable_and_change_sensitive() -> None:

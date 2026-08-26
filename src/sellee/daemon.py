@@ -37,6 +37,7 @@ from sellee import (
 )
 from sellee.browser import chrome, inbox
 from sellee.browser import client as browser_client
+from sellee.browser import connect as browser_connect
 from sellee.browser import sink as browser_sink
 from sellee.channel import outbound
 from sellee.channel.discord import provider as discord_provider
@@ -68,6 +69,10 @@ _SETTINGS_EXPIRY_INTERVAL_SEC = 3600.0
 # publish takes minutes — so this is about how soon a seller hears their listing went up, not about
 # throughput.
 _CROSSLIST_LANE_INTERVAL_SEC = 30.0
+# The connect lane reads one indexed row and does nothing the rest of the time, so this is purely
+# how long a seller waits after tapping Sign in on desktop before Chrome starts moving. They are
+# watching the chat when they tap, so it is short.
+_CONNECT_LANE_INTERVAL_SEC = 2.0
 # A cold `npx` fetch of the browser server and its dependencies is a download, so minutes. This is
 # off the hot path entirely, so it only has to be longer than a slow connection needs.
 _BROWSER_WARM_TIMEOUT_SEC = 600.0
@@ -458,6 +463,22 @@ def run_daemon(*, once: bool) -> int:
             name="inbox_read",
             interval_sec=float(cfg.inbox_read_interval_sec),
             func=lambda: inbox.inbox_lane(inbox_deps),
+        )
+    )
+    # Sign the seller in to a marketplace when they ask from chat. The tap itself lands on the
+    # provider's receive loop, which must keep answering messages, so it only writes a row — this
+    # is what actually drives Chrome, and what tells them how it went.
+    connect_deps = browser_connect.ConnectDeps(
+        store=store,
+        bus=bus,
+        config=cfg,
+        browser_factory=browser_factory,
+    )
+    scheduler.register(
+        Task(
+            name="market_connect",
+            interval_sec=_CONNECT_LANE_INTERVAL_SEC,
+            func=lambda: browser_connect.connect_lane(connect_deps),
         )
     )
     # Answer the buyers who are waiting. Driven off durable rows rather than off the read lane, so a

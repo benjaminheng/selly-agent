@@ -26,6 +26,11 @@ import inspect
 from dataclasses import dataclass
 
 from sellee.db import Database
+from sellee.store.browser import (
+    CONNECT_MODE_OPEN,
+    CONNECT_MODE_PROBE,
+    BrowserMixin,
+)
 from sellee.store.channel import ChannelMixin
 from sellee.store.escalations import EscalationsMixin
 from sellee.store.helpers import (
@@ -58,6 +63,8 @@ from sellee.store.wants import WantsMixin
 # the package is not part of the contract, this list is.
 __all__ = [
     "BIND_NONCE_TTL_SEC",
+    "CONNECT_MODE_OPEN",
+    "CONNECT_MODE_PROBE",
     "KNOWN_ADAPTERS",
     "MAX_PHOTOS",
     "QA_GLOBAL_ITEM",
@@ -75,6 +82,7 @@ __all__ = [
 
 class Store(
     ItemsMixin,
+    BrowserMixin,
     ThreadsMixin,
     WantsMixin,
     NegotiationMixin,

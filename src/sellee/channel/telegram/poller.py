@@ -178,7 +178,13 @@ class Poller:
         return True
 
     def _ensure_commands(self, client) -> None:
-        """Register the "/" menu, content-hash idempotent so a re-bind of the same bot is free."""
+        """Register the "/" menu, content-hash idempotent so a re-bind of the same bot is free.
+
+        Called on every bound poll, not only at bind: the menu is a property of the code, and a
+        seller who bound months ago is exactly the one who never learns a command the release
+        added. The hash makes the steady state a single store read — the API is touched only on
+        the first poll after the set actually changed.
+        """
         digest = commands_hash(commands.BOT_COMMANDS)
         if self.store.get_channel()["commands_hash"] == digest:
             return
@@ -188,6 +194,7 @@ class Poller:
     # --- bound ----------------------------------------------------------------------------
 
     def _poll_bound(self, client, ch) -> None:
+        self._ensure_commands(client)
         updates = client.get_updates(ch["update_offset"], self._poll_timeout, _ALLOWED_UPDATES)
         if not updates:
             return

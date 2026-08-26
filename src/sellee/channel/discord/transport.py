@@ -36,6 +36,9 @@ MAX_TEXT_LEN = 2000
 _ACTION_ROW = 1
 _BUTTON = 2
 _BUTTON_STYLE_PRIMARY = 1
+# Discord's own cap: an action row holds at most five buttons, and a sixth is a rejected message,
+# not a wrapped one. Enforced at build so an over-long spec is chunked here rather than on the wire.
+MAX_BUTTONS_PER_ROW = 5
 
 
 class ChannelError(Exception):
@@ -58,7 +61,14 @@ def chunk_text(text: str, limit: int = MAX_TEXT_LEN) -> list:
 
 
 def build_components(spec: list) -> list:
-    """A provider-neutral (label, custom_id) control spec into a single action row of buttons."""
+    """A provider-neutral (label, custom_id) control spec into action rows of buttons.
+
+    Chunked because Discord rejects an action row holding more than five buttons, and the
+    marketplace picker is as long as the seller's enabled list. Chunking rather than truncating:
+    a control the core emitted is always rendered, or the seller is looking at a door they cannot
+    open.
+    """
+    rows = [spec[i : i + MAX_BUTTONS_PER_ROW] for i in range(0, len(spec), MAX_BUTTONS_PER_ROW)]
     return [
         {
             "type": _ACTION_ROW,
@@ -69,9 +79,10 @@ def build_components(spec: list) -> list:
                     "label": label,
                     "custom_id": token,
                 }
-                for label, token in spec
+                for label, token in row
             ],
         }
+        for row in rows
     ]
 
 

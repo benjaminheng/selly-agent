@@ -31,6 +31,7 @@ from sellee import deployment, marketplaces
 from sellee.browser import markets as market_adapters
 from sellee.browser import reconcile
 from sellee.browser.client import BrowserError, BrowserUnavailable
+from sellee.channel import fastpaths
 from sellee.engines import hosts
 from sellee.engines import scam as scam_engine
 from sellee.store import StoreError
@@ -56,14 +57,14 @@ CONTAINER_CHROME_CHECK = (
     "still logged in."
 )
 LOGGED_OUT_NOTICE = (
-    "Your {market} session is logged out, so I've stopped reading that market. "
-    "Run `sellee connect {market}`{where} and I'll open it for you to sign in — then I'll "
-    "pick up where I left off."
+    "Your {name} session is signed out, so I've stopped reading that market. Tap below and I'll "
+    "open the sign-in page in my Chrome for you — I never sign in for you."
 )
-# This notice is read on a phone and acted on at a shell, so it has to say where that shell is.
-# Not *how* to get there: which container runtime, and what the container is called, are the
-# operator's business and not something we can guess for them.
-IN_CONTAINER = " in the container"
+# The notice is read on a phone, so the way out of it has to be reachable from one. It used to
+# name `sellee connect <market>` at a shell, which is on a desktop the seller may be nowhere near
+# — the market stayed dead until they happened to sit down at it. The button hands the same job to
+# the connect lane; the CLI is still there, and browser/connect.py names it in the one case where
+# it is the remaining option (the lane could not drive Chrome at all).
 UNAVAILABLE_NOTICE = (
     "I can't drive the browser at the moment, so browser marketplaces are paused. "
     "The carousell.ai side is unaffected. Details: {reason}"
@@ -88,13 +89,13 @@ def seller_region(store) -> str | None:
     return store.seller_region()
 
 
-def _notify_once(deps: InboxDeps, key: str, text: str) -> None:
+def _notify_once(deps: InboxDeps, key: str, text: str, controls: list | None = None) -> None:
     """Queue a needs-me notice at most once per condition, so a lane that keeps failing keeps
     telling the event log and stops telling the seller."""
     if deps.notified.get(key):
         return
     deps.notified[key] = True
-    deps.store.queue_notice(text)
+    deps.store.queue_notice(text, controls=controls)
 
 
 def _clear_notice(deps: InboxDeps, key: str) -> None:
@@ -103,10 +104,6 @@ def _clear_notice(deps: InboxDeps, key: str) -> None:
 
 def _chrome_check() -> str:
     return CONTAINER_CHROME_CHECK if deployment.is_container() else CHROME_CHECK
-
-
-def _where() -> str:
-    return IN_CONTAINER if deployment.is_container() else ""
 
 
 def _unavailable(deps: InboxDeps, exc: BrowserUnavailable) -> None:
@@ -181,10 +178,16 @@ def _read_market(deps: InboxDeps, client, adapter, region: str | None) -> None:
         _notify_once(
             deps,
             f"logged_out:{market}",
-            LOGGED_OUT_NOTICE.format(market=market, where=_where()),
+            LOGGED_OUT_NOTICE.format(name=marketplaces.display_name(market)),
+            controls=fastpaths.signin_controls(market),
         )
         return
-    _clear_notice(deps, f"logged_out:{market}")
+    # Only a confirmed sign-in re-arms the notice. `unknown` is "no answer" everywhere else in this
+    # module, and clearing on it made the once-guard worthless in exactly the case it exists for: a
+    # probe that flaps between logged_out and unknown re-armed on every flap, so a seller who was
+    # signed out for two hours got the same message seven times instead of once.
+    if state == "logged_in":
+        _clear_notice(deps, f"logged_out:{market}")
 
     answer = client.evaluate(adapter.conversations_list_js)
     if not isinstance(answer, dict) or not isinstance(answer.get("conversations"), list):

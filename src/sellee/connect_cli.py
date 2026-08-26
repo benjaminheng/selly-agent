@@ -151,8 +151,11 @@ def market_flow(port: int, mcp_token: str, market: str, *, interactive: bool | N
 def _surface_window(body: dict) -> None:
     """Bring the agent's Chrome window in front of the seller, or say where to look instead.
 
-    The raise happens here — the seller's own frontmost terminal, where macOS honors activation —
-    not in the daemon. It runs only when the daemon says the seller wants it (the `raise_window`
+    The raise happens here rather than in the route because this is the seller's own frontmost
+    terminal, where macOS honors activation. The chat flow (browser/connect.py) has no terminal to
+    run in and raises from the daemon instead, where the activation may simply not land — so its
+    copy never claims the window came forward, only where to find it. It runs only when the daemon
+    says the seller wants it (the `raise_window`
     field carries their `raise_browser` setting; absent means the default, raise). Success is
     silent: the window arriving in front of them is its own message. Every way it cannot happen —
     a container's Chrome on another machine, an OS the raise doesn't support, background mode, a

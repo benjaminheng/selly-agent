@@ -133,6 +133,23 @@ def test_send_message_records_content_and_components() -> None:
         assert api.outbox[-1]["components"][0]["components"][0]["custom_id"] == "pause"
 
 
+def test_components_wrap_at_discords_five_button_row_cap() -> None:
+    """Discord rejects an action row holding a sixth button — the whole message, not just the
+    button. The marketplace picker is as long as the seller's enabled list, so this has to chunk
+    rather than trust the spec to be short."""
+    spec = [(f"m{i}", f"m{i}:connectmkt") for i in range(6)]
+
+    rows = transport.build_components(spec)
+
+    assert [len(row["components"]) for row in rows] == [5, 1]
+    assert [b["custom_id"] for row in rows for b in row["components"]] == [t for _l, t in spec]
+
+
+def test_a_short_spec_is_still_one_action_row() -> None:
+    rows = transport.build_components([("Pause", "pause"), ("What needs me", "needsme")])
+    assert len(rows) == 1
+
+
 def test_send_message_over_the_2000_char_limit_is_chunked() -> None:
     with FakeDiscordAPI() as api:
         _client(api).send_message(CHANNEL_ID, "x" * 2500)

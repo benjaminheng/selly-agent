@@ -13,6 +13,7 @@ import pytest
 from sellee.browser import inbox, reconcile
 from sellee.browser.client import BrowserToolError, BrowserUnavailable
 from sellee.browser.markets import carousell as carousell_market
+from sellee.channel import fastpaths
 from sellee.config import Config
 
 _INBOX = "https://www.carousell.sg/inbox/"
@@ -130,6 +131,10 @@ def _kinds(bus, kind):
 
 def _texts(store):
     return [notice["text"] for notice in store.claim_queued_notices(10)]
+
+
+def _notices(store):
+    return list(store.claim_queued_notices(10))
 
 
 # --- the happy path -----------------------------------------------------------------------------
@@ -449,19 +454,65 @@ def test_a_logged_out_market_is_skipped_with_one_notice(store, bus, seeded) -> N
     assert [e.payload["state"] for e in _kinds(bus, "browser.login")] == ["logged_out"] * 2
 
 
-def test_the_notices_name_commands_the_seller_can_actually_run(
+def test_the_logged_out_notice_offers_a_button_not_a_shell_command(store, bus, seeded) -> None:
+    """The notice is read on a phone. It used to name `sellee connect carousell`, which is a shell
+    on a desktop the seller may be nowhere near — so the market stayed dead until they sat down at
+    it. The way out has to be tappable from where the notice is read."""
+    _thread(store, seeded)
+    inbox.inbox_lane(_deps(store, bus, StubClient(login="logged_out", conversations=[_conv()])))
+
+    notice = _notices(store)[0]
+    assert "sellee connect" not in notice["text"]
+    assert "Carousell" in notice["text"]  # the display name, not the raw id it used to paste
+    assert notice["controls"] == [[fastpaths.SIGN_IN_LABEL, "carousell:connectmkt"]]
+
+
+def test_the_blind_notice_still_names_the_chrome_the_seller_can_actually_start(
     store, bus, seeded, container
 ) -> None:
-    """Both notices are read away from the machine — on a phone, usually — and acted on at a
-    shell where the CLI lives inside a container and Chrome does not."""
+    """Being blind is the one case that is still theirs to fix by hand: in a container Chrome runs
+    on their own desktop, and closing it is the most likely reason we cannot see."""
     _thread(store, seeded)
-    deps = _deps(store, bus, StubClient(login="logged_out", conversations=[_conv()]))
-    inbox.inbox_lane(deps)
-    assert "`sellee connect carousell` in the container" in _texts(store)[0]
-
     blind = _deps(store, bus, StubClient(error="boom"), browser_blind_after=1)
     inbox.inbox_lane(blind)
     assert "start-chrome.sh" in _texts(store)[-1]
+
+
+def test_a_flapping_probe_does_not_re_nag(store, bus, seeded) -> None:
+    """An `unknown` tick between two `logged_out` ticks must not re-arm the notice.
+
+    This is the shape the seller actually hit: the probe alternated between logged_out and
+    unknown for two hours, the guard cleared on every unknown, and they got the same message seven
+    times from one daemon that never restarted. `unknown` is "no answer" everywhere else in the
+    lane; only a confirmed sign-in ends the condition.
+    """
+    _thread(store, seeded)
+    client = StubClient(login="logged_out", conversations=[_conv()])
+    deps = _deps(store, bus, client)
+
+    inbox.inbox_lane(deps)
+    client.login = "unknown"
+    inbox.inbox_lane(deps)
+    client.login = "logged_out"
+    inbox.inbox_lane(deps)
+
+    assert store.count_queued_notices() == 1
+
+
+def test_signing_back_in_re_arms_the_notice(store, bus, seeded) -> None:
+    """The guard is not one-shot for the lifetime of the process: once the seller is confirmed
+    back in, a later sign-out is news again."""
+    _thread(store, seeded)
+    client = StubClient(login="logged_out", conversations=[_conv()], tails={"99": []})
+    deps = _deps(store, bus, client)
+
+    inbox.inbox_lane(deps)
+    client.login = "logged_in"
+    inbox.inbox_lane(deps)
+    client.login = "logged_out"
+    inbox.inbox_lane(deps)
+
+    assert store.count_queued_notices() == 2
 
 
 def test_an_unknown_login_state_still_reads(store, bus, seeded) -> None:

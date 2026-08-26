@@ -20,6 +20,7 @@ from sellee.store import Store
 
 _EXPECTED = {
     "ItemsMixin",
+    "BrowserMixin",
     "ThreadsMixin",
     "WantsMixin",
     "NegotiationMixin",
