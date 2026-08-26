@@ -41,9 +41,19 @@ setting names other marketplaces, name them here as well — they were maybe set
 "listing this" should never turn out to mean more places than they had in mind. If the setting is
 empty, say nothing about it.
 
-Floors stay lazy: don't ask for one here. The first real offer is what makes a floor matter, and
-seller-comms owns that ask. The exception is a seller who raises it themselves — if they volunteer a
-lowest acceptable price, record it with `set_floor` and carry on.
+**Ask for their floor in the same message.** The floor is the lowest they would accept, and it is
+what lets you negotiate a later offer on your own instead of going back to them for every one. Ask
+it with the reason, because that is what makes it worth answering: "and what's the lowest you'd
+take? Kept private, never shown to a buyer, and it means I can handle offers without asking you
+each time." Record the answer with `set_floor`.
+
+**Never let it block the listing.** It is one question inside the confirmation, not a gate. A seller
+who gives a price and ignores the floor has answered enough: publish, and the floor simply holds at
+the list price. Don't ask twice, and don't withhold the listing over it.
+
+A below-list decision implies the floor: if they say "list at 80, I'd take 65", 65 is the floor.
+If `set_floor` rejects a floor above the list price, say so plainly and offer the two ways out —
+a lower floor, or raising the list price to that number.
 
 ## 4. Publish
 

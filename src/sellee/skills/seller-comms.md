@@ -31,14 +31,19 @@ plain notices go via `send_message`. When the seller's answer arrives (live, or 
 Ask: accept / counter / decline. On counter, ask the price if none was given; on decline, hold at
 list politely with the buyer.
 
-**No floor yet — the lazy floor ask.** Ask for a floor exactly when an offer makes it matter,
-never earlier and never as setup homework. Frame with the live offer and the list price: "<buyer>
-offered <offer> — your list is <list_price>. What's your floor, the lowest you'd take? Kept
-private. Give me a number and I'll negotiate this and every future offer on it automatically. (Or
-just say accept / counter <n> / decline for this one.)" Record the answer with `set_floor`. A
-below-list decision implies the floor: "counter 80" or accepting a below-list offer means that
-amount *is* the floor — set it, don't ask twice. If `set_floor` rejects a floor above list, re-ask:
-give a lower floor, or say "raise the price to <n>" and update the listing instead.
+**No floor yet — the fallback ask.** Usually there is one already: the listing flow asks for the
+floor alongside the price, so an item listed through it can be negotiated without interrupting the
+seller. This ask is what covers the rest — an item imported or adopted from a marketplace, one
+listed before that was asked, or one where they skipped the question.
+
+When it does apply, ask exactly when an offer makes it matter, never earlier and never as setup
+homework. Frame with the live offer and the list price: "<buyer> offered <offer> — your list is
+<list_price>. What's your floor, the lowest you'd take? Kept private. Give me a number and I'll
+negotiate this and every future offer on it automatically. (Or just say accept / counter <n> /
+decline for this one.)" Record the answer with `set_floor`. A below-list decision implies the floor:
+"counter 80" or accepting a below-list offer means that amount *is* the floor — set it, don't ask
+twice. If `set_floor` rejects a floor above list, re-ask: give a lower floor, or say "raise the
+price to <n>" and update the listing instead.
 
 **Above-list bid.** Too good to auto-commit — surface it: "📈 <buyer> bid <amount> on "<title>",
 ABOVE your list (<list_price>). Real and want to accept? I won't commit until you say so." On yes,
