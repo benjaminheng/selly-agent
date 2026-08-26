@@ -33,6 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse, urlsplit
 
 from sellee import __version__, passes
+from sellee.browser import connect as _connect
 from sellee.db import connect_reader
 from sellee.events import event_to_wire, latest_seq, query_events, routine_kinds
 from sellee.paths import PACKAGE_DATA_DIR
@@ -811,46 +812,21 @@ class _Handler(BaseHTTPRequestHandler):
     def _open_and_probe(self, adapter, *, bring_tab_forward=False):
         """Put the market's own page in front of the seller and read back whether they are in.
 
-        Held exclusively across the navigate and the probe: the read lane shares this one tab,
-        and a probe that ran after it moved on would be answering about a different page.
-
-        `bring_tab_forward` selects the tab within the agent's window and is set only by the
-        connect route: being asked to open a marketplace is being asked for a window, while a
-        read probe that reordered tabs would elbow the seller mid-browse.
+        The work itself lives in `browser.connect` because the seller reaches it two ways: this
+        route (`sellee connect <market>` at a shell) and the connect lane (the Sign in on desktop
+        button in chat). One implementation means the two can never drift on what "signed in"
+        means.
         """
-        from sellee import marketplaces
-        from sellee.browser.client import BrowserError
+        from sellee.browser import connect
 
-        region = self._app.store.seller_region()
-        url = marketplaces.market_home(adapter.market, region)
-        if url is None:
-            raise _BrowserDown(
-                f"{marketplaces.display_name(adapter.market)} has no site for "
-                f"{region or 'an unset region'}"
-            )
         session = Session(tier="attended", pass_id=None)
         ctx = self._app.context_factory(session)
-        try:
-            client = ctx.browser_factory()
-            with client.exclusive():
-                client.navigate(url)
-                if bring_tab_forward:
-                    try:
-                        client.ensure_frontmost(url)
-                    except Exception:
-                        # A tab that won't come forward must never turn a working sign-in page
-                        # into a 503. But bringing one forward selects a tab before it can check
-                        # which tab it got, and a select repoints every later call — so a failure
-                        # can leave the probe below reading the seller's own page and reporting a
-                        # login state about it. Navigating again re-opens a tab of ours and puts
-                        # the market back in it, which is what the probe has to be answering about.
-                        log.debug("could not bring the connect tab forward", exc_info=True)
-                        client.navigate(url)
-                answer = client.evaluate(adapter.login_js) or {}
-        except BrowserError as exc:
-            raise _BrowserDown(str(exc)) from exc
-        state = answer.get("state")
-        return (state if state in ("logged_in", "logged_out") else "unknown"), url
+        return connect.open_and_probe(
+            store=self._app.store,
+            browser_factory=ctx.browser_factory,
+            adapter=adapter,
+            bring_tab_forward=bring_tab_forward,
+        )
 
     def _handle_settings_list(self, parsed) -> None:
         from sellee import settings
@@ -966,9 +942,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(page)
 
 
-class _BrowserDown(Exception):
-    """The browser could not be driven for a connect/probe request — answered as a 503 with the
-    reason, so the CLI can print the by-hand hint instead of pretending the market is signed out."""
+# Raised by browser.connect.open_and_probe; answered here as a 503 with the reason, so the CLI can
+# print the by-hand hint instead of pretending the market is signed out. Aliased rather than
+# re-declared so the `except` clauses below catch what the shared function actually raises.
+_BrowserDown = _connect.BrowserDown
 
 
 class _RpcError(Exception):

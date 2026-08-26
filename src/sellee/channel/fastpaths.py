@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import time
 
-from sellee import prompt_data, settings
+from sellee import marketplaces, prompt_data, settings
+from sellee.browser import markets as market_adapters
+from sellee.store.browser import CONNECT_MODE_OPEN, CONNECT_MODE_PROBE
 
 # The commands answered deterministically (exact first-word token). Everything else routes to the
 # channel pass.
-_FAST_PATH_COMMANDS = frozenset({"/pause", "/resume", "/status", "/catchup", "/sellee"})
+_FAST_PATH_COMMANDS = frozenset({"/pause", "/resume", "/status", "/catchup", "/sellee", "/connect"})
 
 # Callback tokens the control row emits. Provider-neutral: a provider carries them in whatever its
 # interactive widget uses (Telegram callback_data, Slack action_id). The settings surface reuses the
@@ -25,7 +27,50 @@ CB_RESUME = "resume"
 CB_NEEDS_ME = "needsme"
 # The first-listing CTA's "Skip for now" button (outbound.queue_welcome attaches it).
 CB_SKIP_CTA = "skipcta"
-_FAST_PATH_CALLBACKS = frozenset({CB_PAUSE, CB_RESUME, CB_NEEDS_ME, CB_SKIP_CTA})
+# Marketplace sign-in, from the logged-out notice and the /connect picker. Both carry the market
+# as the callback ref (`carousell:connectmkt`), the same ref:token shape the settings doors use.
+# Open = "sign me in"; probe = "I've signed in, look again".
+CB_CONNECT_MARKET = "connectmkt"
+CB_CONNECT_PROBE = "connectchk"
+_FAST_PATH_CALLBACKS = frozenset(
+    {CB_PAUSE, CB_RESUME, CB_NEEDS_ME, CB_SKIP_CTA, CB_CONNECT_MARKET, CB_CONNECT_PROBE}
+)
+
+_CONNECT_MODE_FOR_CALLBACK = {
+    CB_CONNECT_MARKET: CONNECT_MODE_OPEN,
+    CB_CONNECT_PROBE: CONNECT_MODE_PROBE,
+}
+
+# Button labels, defined once because three surfaces attach them (the logged-out notice, and the
+# lane's two retry notices) and a seller who sees the same door worded three ways cannot tell it
+# is the same door. "on desktop" is the load-bearing half: this is tapped on a phone and acted on
+# at a computer, and a bare "Sign in" reads like something the phone is about to do.
+SIGN_IN_LABEL = "Sign in on desktop"
+CHECK_AGAIN_LABEL = "Check again"
+
+
+def signin_controls(market: str) -> list:
+    """The one-button control spec that opens `market` for sign-in."""
+    return [(SIGN_IN_LABEL, f"{market}:{CB_CONNECT_MARKET}")]
+
+
+def check_again_controls(market: str) -> list:
+    """The one-button control spec that re-probes `market` without touching the window."""
+    return [(CHECK_AGAIN_LABEL, f"{market}:{CB_CONNECT_PROBE}")]
+
+
+# What the seller sees the moment they tap. Chrome cold-starts in seconds, so this promises a
+# follow-up rather than a moment — the lane sends the real answer when it has one.
+CONNECT_ACK = (
+    "Opening {name} in my Chrome now — it takes a few seconds to come up. I'll message you the "
+    "moment the sign-in page is there."
+)
+CONNECT_CHECK_ACK = "Checking whether you're signed in to {name} — one moment while I look."
+CONNECT_PICK = "Which marketplace do you want to sign in to?"
+CONNECT_NONE = (
+    "You don't have any marketplaces switched on that I sign in to — /sellee to turn one on."
+)
+CONNECT_UNKNOWN = "I don't sell on {market}, so there's nothing for me to open."
 
 # The one meta row this surface writes: when the seller tapped Skip on the first-listing CTA. An
 # explicit seller answer is genuine, underivable state; the nudge lane reads it to stay quiet.
@@ -106,6 +151,12 @@ def handle_fast_path(store, event: dict) -> tuple:
     control flag here (the enforcement — gating passes and killing a running one — lives in the
     pause wiring); the reads render from the store. Assumes is_fast_path(event) is True."""
     token = event["text"] if event["kind"] == "command" else event["payload"]["choice"]
+    if token in _CONNECT_MODE_FOR_CALLBACK:
+        return _connect_button(
+            store, event["payload"].get("ref"), _CONNECT_MODE_FOR_CALLBACK[token]
+        )
+    if token == "/connect":
+        return _connect_command(store)
     if token in ("/pause", CB_PAUSE):
         store.set_paused(True, source="channel")
         return "Paused — I won't act on anything until you resume.", _control_spec(store)
@@ -122,6 +173,57 @@ def handle_fast_path(store, event: dict) -> tuple:
         return "No problem — whenever you're ready, just send a photo.", None
     # /sellee and the what-needs-me button both render the settings card + control row.
     return render_settings_card(store), _control_spec(store)
+
+
+def _signin_markets(store) -> list:
+    """The marketplaces `/connect` can offer: the ones the seller switched on that the agent has a
+    browser adapter for.
+
+    The seller's raw setting, not `settings.crosslist_markets` — that one filters to what is
+    *publishable*, which is a different question. A market can be readable long before it can be
+    listed to, and being signed out of it stops the read lane either way. carousell.ai is excluded
+    by the same filter: it is reached with an API key, so there is no window to open and nothing
+    for the seller to type into.
+    """
+    signable = set(market_adapters.supported_markets())
+    return [market for market in settings.get(store, "crosslist_markets") if market in signable]
+
+
+def _connect_button(store, market, mode: str) -> tuple:
+    """A tap on Sign in on desktop / Check again. The market rides in the callback ref, so this
+    never has to guess which one they meant — even months later, from a button in the
+    scrollback."""
+    if not market or market not in market_adapters.supported_markets():
+        # A stale button, for a market whose adapter has since been withdrawn.
+        return CONNECT_UNKNOWN.format(market=market or "that marketplace"), None
+    return _request(store, market, mode)
+
+
+def _connect_command(store) -> tuple:
+    """`/connect`, which carries no argument — the providers normalize a command to its first word
+    — so the market is resolved here. One switched on is unambiguous; several is a question, and
+    asking it as buttons keeps the answer a tap rather than a spelling."""
+    markets = _signin_markets(store)
+    if not markets:
+        return CONNECT_NONE, None
+    if len(markets) == 1:
+        return _request(store, markets[0], CONNECT_MODE_OPEN)
+    controls = [
+        (marketplaces.display_name(market), f"{market}:{CB_CONNECT_MARKET}") for market in markets
+    ]
+    return CONNECT_PICK, controls
+
+
+def _request(store, market: str, mode: str) -> tuple:
+    """Hand the market to the connect lane and tell the seller what to expect.
+
+    Nothing here touches Chrome: this runs on the provider's receive loop, which is answering
+    every other message in the chat, and opening a cold Chrome takes seconds to tens of seconds.
+    The lane picks the row up within a tick and sends the real answer.
+    """
+    store.request_market_connect(market, mode)
+    template = CONNECT_ACK if mode == CONNECT_MODE_OPEN else CONNECT_CHECK_ACK
+    return template.format(name=marketplaces.display_name(market)), None
 
 
 def _control_spec(store) -> list:
