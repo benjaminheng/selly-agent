@@ -381,3 +381,31 @@ class _FakeAuth:
 
     def revoke_pass_token(self, token):
         pass
+
+
+def test_a_bound_seller_gets_a_command_the_release_added(bus, store, xdg_tmp) -> None:
+    """The "/" menu is a property of the code, so a seller who bound months ago is exactly the one
+    who would never learn about a new command.
+
+    Registration used to happen only at bind, which meant `/connect` shipped invisible to every
+    existing seller — the command worked if typed and appeared nowhere. The content hash keeps the
+    steady state free: the API is touched once, on the first poll after the set changed.
+    """
+    secrets.write_telegram_bot_token(FAKE_TOKEN)
+    store.arm_bind("sellee_test_bot", "n1")
+    store.complete_bind(CHAT_ID, update_offset=1, nonce=store.get_channel()["bind_nonce"])
+    # A seller bound by an older release: their stamp names a command set that no longer exists.
+    store.stamp_commands_hash("fromanolderrelease")
+
+    with FakeTelegramAPI() as api:
+        cfg = Config(telegram_api_base=api.base_url)
+        poller = _poller(store, bus, api, cfg)
+        api.inject_text("hello")
+        poller.tick()
+
+        assert "connect" in [c["command"] for c in api.commands]
+        registered = api.calls.count("setMyCommands")
+
+        api.inject_text("again")
+        poller.tick()
+        assert api.calls.count("setMyCommands") == registered  # hash holds, no repeat call
