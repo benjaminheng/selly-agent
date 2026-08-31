@@ -1,3 +1,6 @@
+> [!WARNING]
+> This repository is archived. Go to https://github.com/carousell/sellee instead.
+
 ```
 ███████╗███████╗██╗     ██╗     ███████╗███████╗    ▟██▙     ▟██▙
 ██╔════╝██╔════╝██║     ██║     ██╔════╝██╔════╝   ▟█████████████▙
